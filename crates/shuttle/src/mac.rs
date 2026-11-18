@@ -129,9 +129,13 @@ define_class!(
         #[unsafe(method(record:))]
         fn record(&self, _sender: Option<&AnyObject>) {
             let on = !self.ivars().controls.recording();
-            if let Err(e) = self.ivars().controls.record(on) {
-                log(&e);
-                tell(self.mtm(), &e);
+            match self.ivars().controls.record(on) {
+                Ok(Some(note)) => tell(self.mtm(), &note),
+                Ok(None) => {}
+                Err(e) => {
+                    log(&e);
+                    tell(self.mtm(), &e);
+                }
             }
             self.ivars().show(self.mtm());
         }

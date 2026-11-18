@@ -11,6 +11,7 @@ pub use zeroize::Zeroizing;
 
 /// The text of a call that succeeds with nothing to report.
 pub const OK: &str = r#"{"ok":true}"#;
+pub const INTO_PASSWORD_FIELD: &str = " (into a password field)";
 
 const MAX_FRAME: usize = 64 << 20;
 
@@ -109,6 +110,14 @@ pub async fn read_body<R: AsyncRead + Unpin>(r: &mut R) -> Result<Zeroizing<Vec<
 /// The `tool` of a call frame `body`, read without decoding the rest of it.
 pub fn tool_of(body: &[u8]) -> Option<Cow<'_, str>> {
     serde_json::from_slice::<Head>(body).ok().map(|h| h.tool)
+}
+
+pub fn into_password_field(e: String, protected: bool) -> String {
+    if protected {
+        e + INTO_PASSWORD_FIELD
+    } else {
+        e
+    }
 }
 
 #[cfg(test)]

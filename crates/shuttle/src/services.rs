@@ -1,10 +1,11 @@
 //! Service plugins: the daemon runs each as its child, starts it again when it exits, and splices the connections of its tools' calls to its socket.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use desk_core::wire::write_body;
@@ -16,7 +17,7 @@ use tokio::task::JoinSet;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::plugins::Service;
-use crate::{Backoff, Running, log};
+use crate::{Backoff, Running, lock, log};
 
 const SOCKET_VAR: &str = "SHUTTLE_SERVICE_SOCKET";
 #[cfg(unix)]
@@ -25,6 +26,8 @@ const STOP_WAIT: Duration = Duration::from_secs(3);
 const LISTEN_WAIT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(50);
 const SPLICE_BUF: usize = 64 << 10;
+
+static LAST_RUN: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
 /// The services this daemon runs.
 pub struct Services {
@@ -133,16 +136,26 @@ impl Proc {
                             terminate(&mut running).await;
                             return;
                         }
-                        status = running.child.wait() => log(format_args!("service {} exited with {status:?}; starting it again", self.name)),
+                        status = running.child.wait() => {
+                            log(format_args!("service {} exited with {status:?}; starting it again", self.name));
+                            self.ended(status.map_or_else(|e| e.to_string(), |s| format!("exited with {s}")));
+                        }
                     }
                 }
-                Err(e) => log(format_args!("service {}: {e}", self.name)),
+                Err(e) => {
+                    log(format_args!("service {}: {e}", self.name));
+                    self.ended(e);
+                }
             }
             tokio::select! {
                 _ = &mut stopped => return,
                 () = tokio::time::sleep(backoff.after(started.elapsed())) => {}
             }
         }
+    }
+
+    fn ended(&self, how: String) {
+        lock(&LAST_RUN).insert(self.socket.clone(), how);
     }
 
     #[cfg(unix)]
@@ -222,7 +235,11 @@ async fn listening(socket: &str) -> Result<server::Conn, String> {
             Err(_) => "the pipe stays busy".to_owned(),
         };
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!("no service listens at {socket}: {e}"));
+            let last = lock(&LAST_RUN)
+                .get(socket)
+                .map(|how| format!("; the service's last run: {how}"))
+                .unwrap_or_default();
+            return Err(format!("no service listens at {socket}: {e}{last}"));
         }
         tokio::time::sleep(POLL).await;
     }
@@ -542,6 +559,80 @@ server.serve_forever()
     }
 
     #[tokio::test]
+    async fn a_left_copy_in_this_cgroup_ends_with_the_children_in_its_process_group() {
+        let (child, _, gone) =
+            left_copy_and_child(r#"sleep 30 & echo $! > "$0"; wait"#, None).await;
+        assert!(gone, "the left copy's child {child} still runs");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_left_copy_ends_with_a_child_in_another_cgroup() {
+        let other =
+            Path::new("/sys/fs/cgroup").join(format!("shuttle-test-{}", std::process::id()));
+        if std::fs::create_dir(&other).is_err() {
+            println!("skipped: /sys/fs/cgroup is not writable");
+            return;
+        }
+        let moved = r#"sleep 30 & echo $! > "$1/cgroup.procs" && echo $! > "$0"; wait"#;
+        let (child, at, gone) = left_copy_and_child(moved, Some(&other)).await;
+        let _ = std::fs::remove_dir(&other);
+        let name = other.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(at.contains(&name), "the child {child} was not moved: {at}");
+        assert!(gone, "the left copy's child {child} still runs");
+    }
+
+    #[tokio::test]
+    async fn a_call_to_a_service_that_cannot_start_names_its_last_exit_or_start_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let service = |name: &str, bin: &str| -> Service {
+            serde_json::from_value(json!({
+                "service": name,
+                "bin": bin,
+                "args": ["-c", "exit 3"],
+                "tools": [{"name": format!("{name}_echo"), "description": "d", "input_schema": {"type": "object"}}],
+            }))
+            .unwrap()
+        };
+        let running = Services::start(
+            &[
+                service("quits", "/bin/sh"),
+                service("absent", "/no/such/bin"),
+            ],
+            &endpoint,
+            &[],
+        )
+        .unwrap();
+        let sockets = ["quits", "absent"].map(|name| socket(&endpoint, name));
+        assert!(
+            crate::until(100, || sockets
+                .iter()
+                .all(|s| lock(&LAST_RUN).contains_key(s)))
+            .await
+        );
+        tokio::time::pause();
+        let mut errs = Vec::new();
+        for name in ["quits", "absent"] {
+            let (_near, mut far) = tokio::io::duplex(64);
+            let body = Zeroizing::new(b"{}".to_vec());
+            errs.push(
+                route(&socket(&endpoint, name), body, &mut far)
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        running.stop().await;
+        assert!(
+            errs[0].contains("no service listens")
+                && errs[0].ends_with("exited with exit status: 3"),
+            "{}",
+            errs[0]
+        );
+        assert!(errs[1].contains("start /no/such/bin: "), "{}", errs[1]);
+    }
+
+    #[tokio::test]
     async fn a_service_whose_socket_path_is_too_long_fails_the_start_and_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let deep = dir.path().join("d".repeat(60));
@@ -584,6 +675,39 @@ server.serve_forever()
         s.daemon.answer(control("safety_resume")).await;
         assert!(!s.echo().await.is_error);
         assert_eq!(s.pid(), Some(pid));
+        s.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_service_that_closes_without_an_answer_leaves_whether_the_call_ran_unknown() {
+        let s = served(Guard::default()).await;
+        let call = Call {
+            agent_id: "agent-1".into(),
+            tool: "demo_gone".into(),
+            args: json!({}),
+        };
+        let err = server::call(&s.endpoint, &call).await.unwrap_err();
+        assert!(
+            err.contains("no answer to demo_gone could be read, so whether it ran is not known"),
+            "{err}"
+        );
+        s.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_service_call_while_the_daemon_ends_is_refused_before_it_reaches_the_service() {
+        let s = served(Guard::default()).await;
+        s.daemon.stop_answering();
+        let refused = s.echo().await;
+        assert!(
+            refused.is_error
+                && refused
+                    .text
+                    .starts_with("the daemon is stopping, so nothing ran"),
+            "{}",
+            refused.text
+        );
+        assert!(!s.state("frame").exists());
         s.stop().await;
     }
 
@@ -787,16 +911,16 @@ server.serve_forever()
         let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
         let tool = |name: &str, mcp: bool| json!({"name": name, "description": name, "input_schema": {"type": "object", "properties": {"say": {"type": "string"}}}, "mcp": mcp});
         let plugins = Plugins {
-            runs: Vec::new(),
             services: vec![
                 serde_json::from_value(json!({
                     "service": "demo",
                     "bin": bin,
                     "args": [state],
-                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false), tool("demo_early", false)],
+                    "tools": [tool("demo_echo", true), tool("demo_stream", false), tool("demo_blob", false), tool("demo_hold", false), tool("demo_early", false), tool("demo_gone", false)],
                 }))
                 .unwrap(),
             ],
+            ..Plugins::default()
         };
         let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
         let runner = Runner::new(
@@ -845,6 +969,39 @@ server.serve_forever()
 
     async fn appears(path: &Path) -> bool {
         crate::until(100, || path.exists()).await
+    }
+
+    async fn left_copy_and_child(script: &str, cgroup: Option<&Path>) -> (u32, String, bool) {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let born = dir.path().join("child");
+        let mut leader = std::process::Command::new("/bin/sh")
+            .args(["-c", script])
+            .arg(&born)
+            .args(cgroup)
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut child = 0;
+        assert!(
+            crate::until(100, || {
+                child = std::fs::read_to_string(&born)
+                    .ok()
+                    .and_then(|p| p.trim().parse().ok())
+                    .unwrap_or_default();
+                child > 0
+            })
+            .await
+        );
+        let at = std::fs::read_to_string(format!("/proc/{child}/cgroup")).unwrap_or_default();
+        assert!(crate::end_process(leader.id(), STOP_WAIT).await);
+        let _ = leader.wait();
+        let gone = crate::until(40, || crate::signal_pid(child, 0) == 0).await;
+        if !gone {
+            crate::signal_pid(child, libc::SIGKILL);
+        }
+        (child, at, gone)
     }
 
     async fn stale_copy_is_stopped(leader: bool) {

@@ -87,7 +87,7 @@ pub struct Frame {
     /// A macOS window that no display shows: minimized, or hidden by its app.
     #[serde(skip)]
     pub hidden: bool,
-    /// The window server's number of a macOS window, which cua-driver lists it by.
+    /// The number cua-driver lists the window by: the window server's number on macOS, the window handle on Windows.
     #[serde(skip)]
     pub number: Option<u32>,
 }
@@ -314,6 +314,15 @@ pub trait Access {
     fn pid_at(&mut self, _x: i32, _y: i32) -> Result<Option<u32>, String> {
         Ok(None)
     }
+    fn menu_cover(
+        &mut self,
+        _id: &str,
+        _chain: &[String],
+        _x: i32,
+        _y: i32,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        Ok(None)
+    }
     /// The process of the topmost window at the screen pixel `(x, y)` on any window level; an error when the hit test fails.
     fn owner_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
         self.pid_at(x, y)
@@ -378,7 +387,7 @@ pub trait Access {
     fn unanswered(&mut self) -> Option<Frame> {
         None
     }
-    /// The native handle of the foreground window, where the backend has one (Windows).
+    /// The foreground window as the driver lists it: the window handle on Windows, the X window `_NET_ACTIVE_WINDOW` names on Linux; none where the backend cannot tell.
     fn foreground(&mut self) -> Option<i64> {
         None
     }
@@ -388,6 +397,9 @@ pub trait Access {
     }
     fn in_view(&mut self, _window: i64) -> Option<bool> {
         None
+    }
+    fn frame_extents(&mut self, _windows: &[u32]) -> Vec<[u32; 4]> {
+        Vec::new()
     }
 }
 

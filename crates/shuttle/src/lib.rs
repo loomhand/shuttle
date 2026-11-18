@@ -144,6 +144,14 @@ pub(crate) fn private_dir(dir: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))
 }
 
+pub(crate) fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    open.open(path)?.write_all(body)
+}
+
 /// Sends `sig` to the live members of the group `group` leads that share this process's cgroup; how many it reached.
 #[cfg(target_os = "linux")]
 pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {
@@ -186,11 +194,7 @@ pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {
 /// Sends `sig` to the group `group` leads; 1 when it reached a process, so signal 0 tells whether one is left.
 #[cfg(all(unix, not(target_os = "linux")))]
 pub(crate) fn signal_group(group: u32, sig: libc::c_int) -> usize {
-    let Ok(pid) = libc::pid_t::try_from(group) else {
-        return 0;
-    };
-    // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
-    usize::from(unsafe { libc::kill(-pid, sig) } == 0)
+    signal_tree(group, sig)
 }
 
 /// Ends the group `group` leads: TERM, then KILL whatever is left after `grace`.
@@ -204,8 +208,8 @@ pub(crate) async fn end_group(group: u32, grace: Duration) {
 
 #[cfg(unix)]
 pub(crate) async fn end_process(pid: u32, grace: Duration) -> bool {
-    if signal_group(pid, libc::SIGTERM) > 0 {
-        kill_after(grace, |sig| signal_group(pid, sig)).await;
+    if signal_tree(pid, libc::SIGTERM) > 0 {
+        kill_after(grace, |sig| signal_tree(pid, sig)).await;
         return true;
     }
     if signal_pid(pid, libc::SIGTERM) == 0 {
@@ -248,6 +252,15 @@ pub(crate) fn signal_pid(pid: u32, sig: libc::c_int) -> usize {
     };
     // SAFETY: kill takes no pointers; `pid` names one process.
     usize::from(unsafe { libc::kill(pid, sig) } == 0)
+}
+
+#[cfg(unix)]
+fn signal_tree(group: u32, sig: libc::c_int) -> usize {
+    let Ok(pid) = libc::pid_t::try_from(group) else {
+        return 0;
+    };
+    // SAFETY: kill takes no pointers; the negative pid names the process group the child leads.
+    usize::from(unsafe { libc::kill(-pid, sig) } == 0)
 }
 
 /// KILLs whatever `signal` still reaches once `grace` has passed, or nothing once it reaches no process.

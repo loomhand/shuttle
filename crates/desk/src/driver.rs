@@ -283,15 +283,18 @@ impl Input for Driver {
             ending.session = None;
             return done;
         }
-        let foreground = self.admit(tool, &args).await?;
-        let done = match point {
-            Some(point) => self.spaced(point, self.call_session(tool, args)).await,
-            None => self.call_session(tool, args).await,
+        let sent = async {
+            let foreground = self.admit(tool, &args).await?;
+            let done = self.call_session(tool, args).await;
+            if foreground {
+                self.stamp();
+            }
+            done
         };
-        if foreground {
-            self.stamp();
+        match point {
+            Some(point) => self.spaced(point, sent).await,
+            None => sent.await,
         }
-        done
     }
 }
 
@@ -355,6 +358,12 @@ pub fn text_of(v: &Value) -> String {
         .join("\n")
 }
 
+pub fn without_name<'a>(tool: &str, text: &'a str) -> &'a str {
+    text.strip_prefix(tool)
+        .and_then(|t| t.strip_prefix(": "))
+        .unwrap_or(text)
+}
+
 /// The base64 data of a driver result's first image block.
 pub fn image_of(v: &Value) -> Option<&str> {
     v["content"]
@@ -383,7 +392,10 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
     if v["ok"] != true {
         return Err(format!(
             "{tool}: {}",
-            v["error"].as_str().unwrap_or("cua-driver call failed")
+            without_name(
+                tool,
+                v["error"].as_str().unwrap_or("cua-driver call failed")
+            )
         ));
     }
     let mut out = v["result"].take();
@@ -401,7 +413,10 @@ fn result(tool: &str, reply: &str) -> Result<Value, String> {
             return Err(format!("{tool}: {ENDED}"));
         }
         let text = text_of(&out);
-        let text = text.split_once(NEXT_HINT).map_or(text.as_str(), |(t, _)| t);
+        let text = without_name(
+            tool,
+            text.split_once(NEXT_HINT).map_or(text.as_str(), |(t, _)| t),
+        );
         let mut e = match out["structuredContent"]["reason"].as_str() {
             Some(reason) => format!("{tool}: {reason}: {text}"),
             None => format!("{tool}: {text}"),
@@ -641,6 +656,61 @@ mod tests {
             format!("bring_to_front: foreground activation failed{ACTUAL_FRONT}7")
         );
         assert!(result("click", "").is_err());
+    }
+
+    #[test]
+    fn a_driver_error_names_its_tool_once_whether_or_not_its_text_starts_with_it() {
+        let failed = |text: &str, reason: Option<&str>| {
+            let mut out = json!({"isError": true, "content": [{"type": "text", "text": text}]});
+            if let Some(reason) = reason {
+                out["structuredContent"] = json!({"reason": reason});
+            }
+            json!({"ok": true, "result": out}).to_string()
+        };
+        let own = "bring_to_front: no window_id given and no windows found for pid 4.";
+        let bounds = "no usable on-screen bounds were resolved for it";
+        let placed = format!(
+            "element [3] (pid 4) has no usable on-screen bounds ({bounds}) and pid 4 has no window to activate; no input was sent."
+        );
+        let unread = "No screenshot of window 491 in this session: it has not been read yet. Call get_window_state(pid:4, window_id:491) and take x,y from that window's own screenshot; pixels read off another window's screenshot do not apply to it.";
+        for (tool, reply, want) in [
+            ("bring_to_front", failed(own, None), own.to_owned()),
+            (
+                "click",
+                failed(
+                    "click: unknown button \"x\" — expected one of left, right, middle.",
+                    None,
+                ),
+                "click: unknown button \"x\" — expected one of left, right, middle.".to_owned(),
+            ),
+            (
+                "click",
+                failed(&format!("click: {placed}"), Some(bounds)),
+                format!("click: {bounds}: {placed}"),
+            ),
+            (
+                "click",
+                failed(unread, Some("window_never_read")),
+                format!("click: window_never_read: {unread}"),
+            ),
+            (
+                "click",
+                failed("off screen", None),
+                "click: off screen".to_owned(),
+            ),
+            (
+                "click",
+                json!({"ok": false, "error": "click: no permission"}).to_string(),
+                "click: no permission".to_owned(),
+            ),
+            (
+                "clicked",
+                failed("click: off screen", None),
+                "clicked: click: off screen".to_owned(),
+            ),
+        ] {
+            assert_eq!(result(tool, &reply).unwrap_err(), want, "{tool} {reply}");
+        }
     }
 
     #[cfg(unix)]
@@ -1034,6 +1104,33 @@ mod tests {
         );
         drop(d);
         daemon.await.unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_near_repeat_click_checks_the_user_after_the_spacing_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cua.sock");
+        let daemon = answering(&socket);
+        let d = Driver::new(socket.to_string_lossy().into_owned());
+        user_input_since(f64::INFINITY);
+        USER_WINDOW.set(Some((7, 42)));
+        let back = json!({"x": 100, "y": 100, "delivery_mode": "background"});
+        d.call("click", back).await.unwrap();
+        let user = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            user_input_since(0.0);
+        });
+        let err = d
+            .call("click", json!({"x": 104, "y": 100}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing was sent"), "{err}");
+        user.await.unwrap();
+        user_input_since(f64::INFINITY);
+        drop(d);
+        let lines = daemon.await.unwrap();
+        assert_eq!(lines.iter().filter(|l| l["name"] == "click").count(), 1);
     }
 
     #[tokio::test(start_paused = true)]

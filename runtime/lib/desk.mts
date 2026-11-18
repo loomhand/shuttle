@@ -17,7 +17,7 @@ export type Size = { left?: number; top?: number; width: number; height: number 
 /** The window background input goes to, by title or process; required with `[desk] input = "background"`. */
 export type Target = { window?: string; pid?: number | null; app?: string; delivery_mode?: 'foreground' }
 /** Background input the driver could not confirm carries `unverified`. */
-export type Sent = { ok: boolean; chars?: number; unverified?: string; input?: 'foreground'; terminal?: boolean; effect?: string; typed?: boolean | null }
+export type Sent = { ok: boolean; chars?: number; unverified?: string; input?: 'foreground'; terminal?: boolean; effect?: string; typed?: boolean | null; protected?: boolean }
 type Output = { text: string; is_error: boolean; image_b64?: string }
 type Metered = { usage: { model: string; input_tokens: number; output_tokens: number; cached_tokens: number } }
 type Decided = Metered & { answers: Record<string, Judgment>; served: Omit<Served, 'image'> }
@@ -54,8 +54,8 @@ export const at = (x: number, y: number, window?: string, pid?: number | null): 
 export const key = async (keys: string, to: Target = {}, repeat?: number): Promise<Sent> => ran(await call('key', { keys, ...target(to), repeat }))
 export const typeText = async (text: string, to: Target = {}): Promise<Sent> => ran(await call('type', { text, ...target(to) }))
 export const click = async (x: number, y: number, o: { button?: string; count?: number; modifiers?: string[] } & Target = {}): Promise<Sent> => ran(await call('click', { x, y, ...o, pid: o.pid ?? undefined }))
-export const focus = (window: string, pid?: number | null): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined })
-export const close = (window: string, pid?: number | null): Promise<unknown> => call('close', { window, pid: pid ?? undefined })
+export const focus = (window: string, pid?: number | null, id?: string): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined, id })
+export const close = (window: string, pid?: number | null, id?: string): Promise<unknown> => call('close', { window, pid: pid ?? undefined, id })
 export const launch = (app: string, args?: string[]): Promise<{ ok: boolean; launched: string; background?: boolean; running?: boolean; title?: string; pid?: number | null }> => call('launch', { app, args })
 /** Turns a browser's web accessibility tree on or off; `was` is its state before. */
 export const web = (pid: number, on: boolean): Promise<{ ok: boolean; was: boolean }> => call('web', { pid, on })

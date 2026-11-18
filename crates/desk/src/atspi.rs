@@ -336,6 +336,9 @@ impl Node {
         if self.has(INDETERMINATE) && matches!(self.role(), "checkbox" | "menuitemcheckbox") {
             names.push("mixed");
         }
+        if self.role == PASSWORD_TEXT {
+            names.push("protected");
+        }
         names
     }
 
@@ -513,12 +516,8 @@ impl Atspi {
                 }
             }))
             .await;
-            let mut listed: HashMap<Rc<Obj>, Vec<Rc<Obj>>> = HashMap::new();
-            for (o, list) in live.iter().zip(lists) {
-                if let Ok(list) = list {
-                    listed.insert(Rc::clone(o), list);
-                }
-            }
+            let mut listed = HashMap::with_capacity(live.len());
+            truncated |= read_into(&mut listed, live.iter().map(|o| Rc::clone(o)).zip(lists));
             let mut queued: HashSet<&Rc<Obj>> = HashSet::new();
             let mut unknown: Vec<Rc<Obj>> = live
                 .iter()
@@ -533,11 +532,7 @@ impl Atspi {
                 unknown.truncate(budget);
             }
             let fetched = join_all(unknown.iter().map(|o| self.raw(o))).await;
-            for (o, r) in unknown.into_iter().zip(fetched) {
-                if let Ok(r) = r {
-                    raw.insert(o, r);
-                }
-            }
+            truncated |= read_into(&mut raw, unknown.into_iter().zip(fetched));
             let mut next = Vec::new();
             for o in frontier {
                 let mut sorted = cached.remove(&*o).unwrap_or_default();
@@ -573,7 +568,7 @@ impl Atspi {
             &mut HashSet::new(),
             &mut nodes,
         );
-        truncated |= nodes.len() >= MAX_NODES;
+        truncated |= capped(&mut nodes);
         let mut tree = Tree {
             nodes,
             truncated,
@@ -875,7 +870,7 @@ impl Atspi {
 
     /// Asks the app on `bus` for its root's attributes once, as a screen reader does: Chromium builds its tree only after that.
     async fn wake(&self, bus: &str) {
-        if first_wake(bus) {
+        if !is_hung(bus) && first_wake(bus) {
             let root = Obj::at(bus, ROOT);
             let _ = self.reply(&root, ACCESSIBLE, "GetAttributes", &()).await;
         }
@@ -1357,6 +1352,28 @@ fn needs_live(r: &Raw, cached: Option<&Vec<(i32, Rc<Obj>)>>) -> bool {
         || cached.is_some_and(|c| c.iter().any(|(i, _)| *i < 0))
 }
 
+fn read_into<T>(
+    into: &mut HashMap<Rc<Obj>, T>,
+    reads: impl IntoIterator<Item = (Rc<Obj>, Result<T, String>)>,
+) -> bool {
+    let mut cut = false;
+    for (o, read) in reads {
+        match read {
+            Ok(v) => {
+                into.insert(o, v);
+            }
+            Err(_) => cut = true,
+        }
+    }
+    cut
+}
+
+fn capped(nodes: &mut Vec<Node>) -> bool {
+    let cut = nodes.len() > MAX_NODES;
+    nodes.truncate(MAX_NODES);
+    cut
+}
+
 /// Appends `obj` and its subtree in preorder, once per parent: an object shared by two parents under both, but a menu bar outside any document that repeats an earlier one's menus under neither; a nameless generic container gives its place to its children.
 fn flatten<'a>(
     obj: &'a Rc<Obj>,
@@ -1370,7 +1387,7 @@ fn flatten<'a>(
     let Some(r) = raw.get(obj) else {
         return;
     };
-    if out.len() >= MAX_NODES || path.contains(&obj) {
+    if out.len() > MAX_NODES || path.contains(&obj) {
         return;
     }
     if r.role == ROLE_MENU_BAR
@@ -1597,6 +1614,96 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_of_exactly_the_node_limit_is_whole_and_one_more_node_cuts_it() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        for (children, cut) in [(MAX_NODES - 1, false), (MAX_NODES, true)] {
+            let items: Vec<Rc<Obj>> = (0..children).map(|i| o(&i.to_string())).collect();
+            let mut raw: HashMap<Rc<Obj>, Raw> = items
+                .iter()
+                .map(|c| {
+                    let r = Raw {
+                        role: 33,
+                        name: c.id(),
+                        ..Raw::default()
+                    };
+                    (Rc::clone(c), r)
+                })
+                .collect();
+            raw.insert(
+                o("w"),
+                Raw {
+                    role: 23,
+                    name: "Big".to_owned(),
+                    ..Raw::default()
+                },
+            );
+            let kids = HashMap::from([(o("w"), items)]);
+            let mut out = Vec::new();
+            flatten(
+                &o("w"),
+                &raw,
+                &kids,
+                None,
+                &mut Vec::new(),
+                &mut HashSet::new(),
+                &mut out,
+            );
+            assert_eq!(
+                (capped(&mut out), out.len()),
+                (cut, MAX_NODES),
+                "{children}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_children_read_that_fails_cuts_the_tree_and_keeps_the_lists_that_answered() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        let (a, b) = (o("a"), o("b"));
+        let mut listed = HashMap::new();
+        let lists = [(a.clone(), Ok(vec![o("a1")])), (b.clone(), Ok(Vec::new()))];
+        assert!(!read_into(&mut listed, lists));
+        assert_eq!(listed.len(), 2);
+        let mut listed = HashMap::new();
+        let lists = [
+            (a.clone(), Ok(vec![o("a1")])),
+            (b.clone(), Err(not_responding(":1.9"))),
+        ];
+        assert!(read_into(&mut listed, lists));
+        assert_eq!(
+            (listed[&a].clone(), listed.contains_key(&b)),
+            (vec![o("a1")], false)
+        );
+    }
+
+    #[test]
+    fn a_listed_child_whose_own_read_fails_cuts_the_tree_and_the_children_that_answered_stay() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        let r = |name: &str| Raw {
+            role: 33,
+            name: name.to_owned(),
+            ..Raw::default()
+        };
+        let mut raw = HashMap::from([(o("w"), r("Window"))]);
+        let fetched = [(o("c1"), Ok(r("One"))), (o("c2"), Ok(r("Two")))];
+        assert!(!read_into(&mut raw, fetched));
+        assert_eq!(raw.len(), 3);
+        let fetched = [
+            (o("c3"), Ok(r("Three"))),
+            (o("c4"), Err(not_responding(":1.20"))),
+        ];
+        assert!(read_into(&mut raw, fetched));
+        assert_eq!(
+            (
+                raw[&o("c3")].name.as_str(),
+                raw.contains_key(&o("c4")),
+                raw.len()
+            ),
+            ("Three", false, 4)
+        );
+    }
+
+    #[test]
     fn a_call_on_an_app_that_left_the_bus_says_the_app_exited_or_crashed() {
         let obj = Obj::parse("1.62/947").unwrap();
         let call = zbus::Message::method_call(ROOT, "GetRole")
@@ -1745,12 +1852,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_hung_app_costs_its_wake_no_wait_and_is_not_asked_again() {
+    async fn a_hung_app_costs_its_wake_no_wait_and_keeps_it_for_its_next_tree() {
         let started = tokio::time::Instant::now();
         mark_hung(":9.95");
         Atspi::default().wake(":9.95").await;
         assert_eq!(started.elapsed(), Duration::ZERO);
-        assert!(!first_wake(":9.95"));
+        assert!(first_wake(":9.95"));
     }
 
     #[test]
@@ -2073,6 +2180,18 @@ mod tests {
         };
         assert_eq!(n(7).state_names(), vec!["indeterminate", "mixed"]);
         assert_eq!(n(42).state_names(), vec!["indeterminate"]);
+    }
+
+    #[test]
+    fn a_password_field_is_protected_and_a_plain_entry_is_not() {
+        let n = |role: u32| Node {
+            role,
+            states: (1 << ENABLED) | (1 << FOCUSED),
+            ..Node::default()
+        };
+        assert_eq!(n(PASSWORD_TEXT).state_names(), vec!["focused", "protected"]);
+        assert_eq!(n(61).state_names(), vec!["focused"]);
+        assert_eq!(n(79).state_names(), vec!["focused"]);
     }
 
     #[test]

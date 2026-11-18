@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 
 import { daemon } from './daemon.mts'
@@ -44,13 +45,13 @@ test('a chain that ends in an untitled window keeps that window\'s process', { s
   })
   const r = await main({ steps: [{ app: 'Notepad' }, { key: 'ctrl+s' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
-  const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { pid: number | null }
-  assert.equal(chain.pid, 4242)
+  const chain = (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { pid: number | null }>)['']
+  assert.equal(chain?.pid, 4242)
 })
 
 test('a plan marks the chain record dirty before it acts and clears the mark when it ends, so a killed run never chains over its steps', async (t) => {
   const seen: (boolean | undefined)[] = []; let watch = false
-  const pend = () => JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as { dirty?: boolean; steps: unknown[] }
+  const pend = () => (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { dirty?: boolean; steps: unknown[] }>)[''] ?? { steps: [] }
   await daemon(t, (c) => {
     if (watch && c.tool === 'desk_type') seen.push(pend().dirty)
     return answer(() => [notepad])(c)
@@ -63,6 +64,123 @@ test('a plan marks the chain record dirty before it acts and clears the mark whe
   assert.deepEqual(seen, [true])
   assert.equal(pend().dirty, false)
   assert.equal(pend().steps.length, 3)
+})
+
+test('a plan that starts at an untitled window of another process does not continue a chain left at an untitled window, and one of the same process does', async (t) => {
+  const a = { id: 'a1', title: '', role: 'dialog', pid: 10, active: true, app: 'A', owner: 'a0' }
+  const b = { id: 'b1', title: '', role: 'dialog', pid: 20, active: true, app: 'B', owner: 'b0' }
+  let ws = [a]
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify(ws)
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[0], truncated: false, nodes: [{ ref: 0, id: `${ws[0]?.id}/0`, parent: -1, depth: 0, role: 'dialog', name: '', states: ['showing'] }] })
+    return '{"ok":true}'
+  })
+  const chain = () => (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { pid: number | null; steps: unknown[] }>)['']
+  mkdirSync(process.env.SHUTTLE_FLOWS ?? '', { recursive: true }); writeFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, '{}')
+  assert.equal((await main({ steps: [{ app: 'A' }] })).ok, true)
+  ws = [b]
+  assert.equal((await main({ steps: [{ key: 'shift+a' }] })).ok, true)
+  assert.deepEqual([chain()?.pid, chain()?.steps], [10, [{ app: 'A' }]])
+  ws = [a]
+  assert.equal((await main({ steps: [{ key: 'shift+a' }] })).ok, true)
+  assert.deepEqual([chain()?.pid, chain()?.steps], [10, [{ app: 'A' }, { key: 'shift+a' }]])
+})
+
+test('each caller extends and saves only its own chain, a run that names no caller shares one, and a chain written before callers were kept belongs to that one', async (t) => {
+  const was = process.env.SHUTTLE_CALLER
+  t.after(() => { if (was === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = was })
+  await daemon(t, answer(() => [notepad]))
+  const as = (who: string | undefined, p: Parameters<typeof main>[0]) => { if (who === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = who; return main(p) }
+  const kinds = (name: string) => flow(name).steps.map((s) => s.app ?? s.key ?? s.type)
+  assert.equal((await as('mcp-a', { steps: [{ app: 'Notepad' }, { type: 'memo' }] })).ok, true)
+  assert.equal((await as('mcp-b', { steps: [{ key: 'ctrl+s' }] })).ok, true)
+  assert.equal((await as('mcp-b', { save: 'b-flow' })).ok, false)
+  assert.equal((await as('mcp-b', { steps: [{ app: 'Notepad' }, { type: 'other' }] })).ok, true)
+  assert.equal((await as('mcp-a', { steps: [{ type: ' more' }] })).ok, true)
+  const a = await as('mcp-a', { save: 'a-flow' })
+  assert.equal(a.ok, true, JSON.stringify(a))
+  assert.deepEqual(kinds('a-flow'), ['Notepad', '{{text}}', '{{text_2}}'])
+  assert.deepEqual(flow('a-flow').params, { text: 'memo', text_2: ' more' })
+  assert.equal((await as('mcp-b', { save: 'b-flow' })).ok, true)
+  assert.deepEqual(flow('b-flow').params, { text: 'other' })
+  assert.equal((await as(undefined, { steps: [{ app: 'Notepad' }, { type: 'x' }] })).ok, true)
+  assert.equal((await as('', { steps: [{ key: 'ctrl+s' }] })).ok, true)
+  assert.equal((await as(undefined, { save: 'shared' })).ok, true)
+  assert.deepEqual(kinds('shared'), ['Notepad', '{{text}}', 'ctrl+s'])
+  writeFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, JSON.stringify({ at: Date.now(), window: notepad.title, pid: notepad.pid, params: {}, steps: [{ app: 'Notepad' }, { type: 'old' }], dirty: false, saved: true, usage: {} }))
+  assert.equal((await as('mcp-a', { save: 'taken' })).ok, false)
+  assert.equal((await as(undefined, { save: 'kept' })).ok, true)
+  assert.deepEqual(flow('kept').params, { text: 'old' })
+})
+
+test('a plain type whose desk reply says it went into a password field is kept out of the chain record, a saved flow, the run log and the partial result, and saving the plan again types nothing', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const typed: unknown[] = []; let guarded = true
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') { typed.push(args.text); return JSON.stringify({ ok: true, ...(guarded ? { protected: true } : {}) }) }
+    return answer(() => [notepad])({ tool })
+  })
+  const disk = () => ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  const steps = () => [{ app: 'Notepad' }, { type: 'hunter12' }]
+  const ran = await partial({ steps: steps() })
+  assert.equal(ran.ok, true, JSON.stringify(ran))
+  for (const text of [JSON.stringify(ran), disk(), readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter12'), text)
+  typed.length = 0
+  const saved = await partial({ steps: steps(), save: 'pin' })
+  assert.equal(saved.ran, false, JSON.stringify(saved))
+  assert.deepEqual(typed, [])
+  assert.deepEqual(flow('pin').steps[1], { type: '{{text}}', secret: true })
+  assert.deepEqual(flow('pin').params, {})
+  guarded = false
+  const plain = await partial({ steps: [{ app: 'Notepad' }, { type: 'memo12' }] })
+  assert.equal(plain.ok, true, JSON.stringify(plain))
+  assert.deepEqual(flow(String(plain.saved)).steps[1], { type: '{{text}}' })
+  assert.deepEqual(flow(String(plain.saved)).params, { text: 'memo12' })
+  assert.ok(disk().includes('memo12'), disk())
+})
+
+test('a plain line typed with its Return into a field the step\'s own read shows as a focused password field is sealed before it goes out and sent as a secret line is', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
+  const sent: unknown[][] = []
+  for (const step of [{ type: 'hunter14\n', secret: true }, { type: 'hunter14\n' }]) {
+    const shown: string[] = []; const inputs: unknown[] = []
+    await daemon(t, ({ tool, args }) => {
+      if (tool === 'desk_type') shown.push(readFileSync(`${run}/result.json`, 'utf8'))
+      if (tool === 'desk_type' || tool === 'desk_key') inputs.push(args.text ?? args.keys)
+      if (tool === 'desk_windows') return JSON.stringify([notepad])
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field] })
+      return '{"ok":true}'
+    })
+    const r = await partial({ steps: [{ app: 'Notepad' }, step] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    assert.equal(shown.length, 1)
+    for (const text of [JSON.stringify(r), disk, ...shown]) assert.ok(!text.includes('hunter14'), text)
+    sent.push(inputs)
+  }
+  assert.deepEqual(sent, [['hunter14', 'Return'], ['hunter14', 'Return']])
+})
+
+test('a plain type whose desk call fails after finding a password field is kept out of the escalation, the partial result and the records', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const failed = 'type_text: the device did not acknowledge the clipboard set, so the line was not pasted (into a password field)'
+  await daemon(t, ({ tool }) => tool === 'desk_type' ? { text: failed, error: true } : answer(() => [notepad])({ tool }))
+  const r = await partial({ steps: [{ app: 'Notepad' }, { type: 'hunter15' }] })
+  assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, failed)
+  assert.equal(r.escalate?.outline, undefined, JSON.stringify(r))
+  const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  for (const text of [JSON.stringify(r), disk, readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter15'), text)
 })
 
 test('a value typed into a password field is never written to a saved flow or the chain record', async (t) => {
@@ -160,6 +278,176 @@ test('saving a plan whose password step adds a Return runs it again', async (t) 
   const saved = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter7\n', focus: { secure: true } }], save: 'login7' })
   assert.notEqual(saved.ran, false, JSON.stringify(saved))
   assert.deepEqual(typed, ['hunter7', 'Return'])
+})
+
+for (const [producer, back] of [['mask characters of its length, as on macOS', (v: string) => '•'.repeat([...v].length)], ['an empty value', () => ''], ['no value, as on Android and Linux', () => undefined]] as const) {
+  test(`a value set into a password field that reads back ${producer} passes, is never written to a saved flow, the chain record or the run log, and saving the plan again still types nothing`, async (t) => {
+    let value: string | undefined; let lands = true
+    const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], ...(value === undefined ? {} : { value }) })
+    const typed: unknown[] = []
+    await daemon(t, ({ tool, args }) => {
+      if (tool === 'desk_type') { typed.push(args.text); value = lands ? back(String(args.text)) : '•' }
+      if (tool === 'desk_windows') return JSON.stringify([notepad])
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+      if (tool === 'desk_read') return JSON.stringify(field())
+      return '{"ok":true}'
+    })
+    const disk = () => ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    const steps = () => [{ app: 'Notepad' }, { set: 'Password', value: '{{password}}' }, { key: 'Return' }]
+    const ran = await main({ steps: steps(), params: { password: 'hunter8' } })
+    assert.equal(ran.ok, true, JSON.stringify(ran))
+    assert.deepEqual(ran.caveats?.map((c) => c.step), back('x') ? undefined : [1], JSON.stringify(ran))
+    assert.ok(!disk().includes('hunter8'), disk())
+    typed.length = 0
+    const saved = await main({ steps: steps(), params: { password: 'hunter8' }, save: 'login8' })
+    assert.equal(saved.ran, false, JSON.stringify(saved))
+    assert.deepEqual(typed, [])
+    assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login8.json`, 'utf8').includes('hunter8'))
+    assert.deepEqual(flow('login8').steps[1], { set: 'Password', value: '{{password}}', secret: true, fp: { role: 'textbox', name: 'Password', parent: notepad.title, nth: 0 }, seen: notepad.title })
+    const literal = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter9' }], save: 'login9' })
+    assert.equal(literal.ok, true, JSON.stringify(literal))
+    assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/login9.json`, 'utf8').includes('hunter9'))
+    assert.ok(!disk().includes('hunter9'), disk())
+    lands = false
+    const stopped = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: '{{password}}' }], params: { password: 'hunter10' } })
+    assert.equal(stopped.escalate?.step, 1, JSON.stringify(stopped))
+    assert.equal(stopped.escalate?.reason, '"Password" does not read back the value after set')
+    assert.ok(!disk().includes('hunter10') && !JSON.stringify(stopped).includes('hunter10'), disk())
+  })
+}
+
+test('a value set into a password field waits out empty read-backs for its mask characters, and a field empty for the whole wait passes with a caveat that it was not checked', async (t) => {
+  let after = -1; let bullets = 2
+  const field = (v: string) => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], value: v })
+  await daemon(t, ({ tool }) => {
+    if (tool === 'desk_type') after = 0
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field('')] })
+    if (tool === 'desk_read') return JSON.stringify(field(after >= 0 && after++ >= bullets ? '•••••••' : ''))
+    return '{"ok":true}'
+  })
+  const late = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter2' }] })
+  assert.equal(late.ok, true, JSON.stringify(late))
+  assert.equal(late.caveats, undefined, JSON.stringify(late))
+  assert.equal(after, bullets + 1)
+  after = -1; bullets = Infinity
+  const empty = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter2' }] })
+  assert.equal(empty.ok, true, JSON.stringify(empty))
+  assert.deepEqual(empty.caveats, [{ step: 1, note: 'the value was sent to the password field, and the field reads back nothing, so it was not checked: do not set it again; no later step read what it unlocks' }])
+  assert.equal(after, 10)
+})
+
+test('a literal value set into a password field that reads back otherwise stops with neither the value nor the read-back in the reply or on disk', async (t) => {
+  let value = ''
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], value })
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') value = `rb-${String(args.text)}`
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Notepad' }, { set: 'Password', value: 'hunter2' }] })
+  assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"Password" does not read back the value after set')
+  assert.equal(r.escalate?.outline, undefined, JSON.stringify(r))
+  const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  for (const text of [JSON.stringify(r), disk]) assert.ok(!text.includes('hunter2'), text)
+})
+
+test('a set marked secret into a field that is not protected keeps its value and read-back out of the run log, the partial result, the chain record, a saved flow and the escalation', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  let value = ''; let lands = true
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Token', states: ['showing'], value })
+  const shown: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') { value = lands ? String(args.text) : `rb-${String(args.text)}`; shown.push(readFileSync(`${run}/result.json`, 'utf8')) }
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  const disk = () => ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  const steps = [{ app: 'Notepad' }, { set: 'Token', value: 'hunter3', secret: true }]
+  const ok = await partial({ steps, save: 'token' })
+  assert.equal(ok.ok, true, JSON.stringify(ok))
+  for (const text of [JSON.stringify(ok), disk(), ...shown, readFileSync(`${run}/result.json`, 'utf8'), readFileSync(`${process.env.SHUTTLE_FLOWS}/token.json`, 'utf8')]) assert.ok(!text.includes('hunter3'), text)
+  value = ''; lands = false
+  const bad = await partial({ steps })
+  assert.equal(bad.escalate?.step, 1, JSON.stringify(bad))
+  assert.equal(bad.escalate?.reason, '"Token" does not read back the value after set')
+  assert.equal(bad.escalate?.plan_step?.value, 'the password')
+  assert.equal(bad.escalate?.outline, undefined, JSON.stringify(bad))
+  for (const text of [JSON.stringify(bad), disk(), ...shown, readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter3') && !text.includes('rb-'), text)
+})
+
+test('a replay fronts the window of its own read by id among two of one title, and the saved flow holds no window id', async (t) => {
+  let docs: { id: string; title: string; role: string; pid: number; active: boolean; app: string }[] = []
+  const focused: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ id: 'calc', title: 'Calculator', role: 'window', pid: 9, active: !docs.some((d) => d.active) }, ...docs])
+    if (tool === 'desk_focus') { focused.push(args.id); for (const d of docs) d.active = d.id === args.id; return JSON.stringify({ ok: true, title: args.window, pid: args.pid }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: docs[0], truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: 'Untitled', states: ['showing'] }] })
+    return '{"ok":true}'
+  })
+  const two = (a: string, b: string) => [a, b].map((id) => ({ id, title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }))
+  docs = two('w-41', 'w-42')
+  const first = await main({ steps: [{ app: 'TextEdit' }, { key: 'ctrl+b' }], save: 'bold-twins' })
+  assert.equal(first.saved, 'bold-twins', JSON.stringify(first))
+  docs = two('w-51', 'w-52')
+  const replay = await main({ flow: 'bold-twins' })
+  assert.equal(replay.ok, true, JSON.stringify(replay))
+  assert.deepEqual(focused, ['w-41', 'w-51'])
+  assert.ok(!readFileSync(`${process.env.SHUTTLE_FLOWS}/bold-twins.json`, 'utf8').includes('w-'), readFileSync(`${process.env.SHUTTLE_FLOWS}/bold-twins.json`, 'utf8'))
+})
+
+test('a flow saved with the password of a set into a password field drops it when a replay rewrites the flow', async (t) => {
+  let value: string | undefined
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], ...(value === undefined ? {} : { value }) })
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') value = '•'.repeat(String(args.text).length)
+    if (tool === 'desk_windows') return JSON.stringify([notepad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  const old = { name: 'old-login', params: { password: 'hunter11' }, steps: [{ app: 'Notepad' }, { set: 'Password', value: '{{password}}', fp: { role: 'textbox', name: 'Pass', parent: notepad.title, nth: 0 } }], idempotent: true, saved_at: '2026-11-01T00:00:00.000Z' }
+  mkdirSync(String(process.env.SHUTTLE_FLOWS), { recursive: true })
+  writeFileSync(`${process.env.SHUTTLE_FLOWS}/old-login.json`, JSON.stringify(old))
+  const r = await main({ flow: 'old-login' })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(flow('old-login').steps[1]?.secret, true, JSON.stringify(flow('old-login')))
+  assert.deepEqual(flow('old-login').params, {})
+})
+
+test('a literal value set as a secret or into a password field is in no partial result, stop report or reason of the next step', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  let value: string | undefined; let stale = false; let typed = false
+  const field = () => ({ ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], ...(value === undefined ? {} : { value }) })
+  const shown: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_type') { typed = true; value = '•'.repeat(String(args.text).length); shown.push(readFileSync(`${run}/result.json`, 'utf8')) }
+    if (tool === 'desk_windows') return JSON.stringify([{ ...notepad, ...(stale && typed ? { stale: true } : {}) }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad, truncated: false, nodes: [{ ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad.title, states: ['showing'] }, field()] })
+    if (tool === 'desk_read') return JSON.stringify(field())
+    return '{"ok":true}'
+  })
+  for (const secret of [{ secret: true }, {}]) {
+    const set = { set: 'Password', value: 'hunter2', ...secret }
+    value = undefined; stale = false; typed = false
+    const stopped = await partial({ steps: [{ app: 'Notepad' }, { ...set, after: 'Signed in', timeout_ms: 100 }] })
+    assert.equal(stopped.stopped?.step, 1, JSON.stringify(stopped))
+    value = undefined; stale = true; typed = false
+    const frozen = await partial({ steps: [{ app: 'Notepad' }, set, { key: 'Return' }] })
+    assert.match(frozen.escalate?.reason ?? '', /stopped answering accessibility after step 1/, JSON.stringify(frozen))
+    for (const text of [JSON.stringify(stopped), JSON.stringify(frozen), ...shown, readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter2'), `${JSON.stringify(secret)} ${text}`)
+  }
 })
 
 test('find names the saved flow the model picks, and no flow under 0.6 or within 0.25 of the runner-up', async (t) => {

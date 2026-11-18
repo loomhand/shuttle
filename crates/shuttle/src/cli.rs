@@ -56,6 +56,7 @@ pub fn run(args: &[String]) -> ExitCode {
             let mut listed = plugins::configured(&config, &path, &tools::NAMES);
             if !config.as_ref().is_ok_and(|c| c.tools.script_run) {
                 listed.runs.clear();
+                listed.script_run_off = true;
             }
             match rest {
                 [] => {
@@ -152,7 +153,7 @@ fn call_desk(rest: &[String]) -> ExitCode {
     send(&call, format_args!("desk {verb}"))
 }
 
-/// One JSON object, or `key=value` pairs whose values parse as JSON when they can, except `id` and `window`, which stay strings.
+/// One JSON object, or `key=value` pairs whose values parse as JSON when they can, except `id`, `window` and `session`, which stay strings.
 fn cli_args(rest: &[String]) -> Result<Value, String> {
     if let [one] = rest
         && one.trim_start().starts_with('{')
@@ -165,7 +166,7 @@ fn cli_args(rest: &[String]) -> Result<Value, String> {
             .split_once('=')
             .ok_or_else(|| format!("{pair:?} is not key=value"))?;
         let v = match k {
-            "id" | "window" => Value::String(v.to_owned()),
+            "id" | "window" | "session" => Value::String(v.to_owned()),
             _ => serde_json::from_str(v).unwrap_or_else(|_| Value::String(v.to_owned())),
         };
         args.insert(k.to_owned(), v);
@@ -174,10 +175,14 @@ fn cli_args(rest: &[String]) -> Result<Value, String> {
 }
 
 fn send(call: &Call, what: impl Display) -> ExitCode {
-    match block_on(
-        Builder::new_current_thread(),
-        server::call(&desk_endpoint(), call),
-    ) {
+    let endpoint = desk_endpoint();
+    let answer = block_on(Builder::new_current_thread(), async {
+        let conn = server::connect(&endpoint)
+            .await
+            .map_err(|e| format!("no daemon answers: connect {endpoint}: {e}"))?;
+        server::exchange(conn, call).await
+    });
+    match answer {
         Ok(out) if !out.is_error => {
             let _ = writeln!(std::io::stdout(), "{}", out.text);
             if let Some(image) = &out.image_b64 {
@@ -191,7 +196,7 @@ fn send(call: &Call, what: impl Display) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(out) => fail(format_args!("{what}: {}", out.text)),
-        Err(e) => fail(format_args!("{what}: no daemon answers: {e}")),
+        Err(e) => fail(format_args!("{what}: {e}")),
     }
 }
 
@@ -235,6 +240,8 @@ fn controls_serve(endpoint: String) -> ExitCode {
         );
         if let Err(e) = &done {
             log(e);
+            #[cfg(target_os = "macos")]
+            let _ = crate::write_private(&crate::proxy::failed(&endpoint), e.as_bytes());
         }
         #[cfg(windows)]
         controls::shutdown();
@@ -376,11 +383,12 @@ async fn serve(
     #[cfg(any(target_os = "macos", windows))]
     ready(daemon.clone(), safety, hotkey.filter(|_| local), mode);
     let ending = Arc::clone(&daemon);
-    let mut serving = Box::pin(server::serve(daemon, listener));
+    let mut serving = tokio::spawn(server::serve(daemon, listener));
     let served = tokio::select! {
-        r = &mut serving => r,
+        r = &mut serving => r.unwrap_or_else(|e| Err(format!("serve: {e}"))),
         () = shutdown() => Ok(()),
     };
+    ending.stop_answering();
     ending.end_recording().await;
     #[cfg(unix)]
     crate::kill_graced();
@@ -482,8 +490,8 @@ mod tests {
         );
         assert!(cli_args(&["nope".into()]).is_err());
         assert_eq!(
-            cli_args(&["id=21".into(), "window=2048".into()]).unwrap(),
-            serde_json::json!({"id": "21", "window": "2048"})
+            cli_args(&["id=21".into(), "window=2048".into(), "session=2".into()]).unwrap(),
+            serde_json::json!({"id": "21", "window": "2048", "session": "2"})
         );
     }
 

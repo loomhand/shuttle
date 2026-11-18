@@ -22,6 +22,7 @@ use objc2_app_kit::{NSRunningApplication, NSWorkspace};
 use objc2_foundation::NSString;
 
 use crate::ax_roles::{self, Facts, Kind};
+use crate::desk::CLOSE_UNANSWERED;
 use crate::keys::ax_combo;
 use crate::lock;
 use crate::model::{
@@ -73,6 +74,14 @@ const APP_ATTRS: [&str; 5] = [
     "AXWindows",
 ];
 const CLIMB_ATTRS: [&str; 2] = ["AXRole", "AXParent"];
+const PATH_ATTRS: [&str; 6] = [
+    "AXRole",
+    "AXSubrole",
+    "AXTitle",
+    "AXDescription",
+    "AXValue",
+    "AXParent",
+];
 const FRAME_ATTRS: [&str; 6] = [
     "AXRole",
     "AXSubrole",
@@ -376,17 +385,19 @@ impl Ax {
     }
 
     fn walk(&mut self, w: &mut Walk, el: &CFType, parent: Option<usize>, depth: usize) -> bool {
-        if w.nodes.len() >= MAX_NODES || Instant::now() >= w.deadline {
+        let asked = Instant::now();
+        if w.nodes.len() >= MAX_NODES || asked >= w.deadline {
             return true;
         }
         if depth > MAX_DEPTH || w.path.contains(el) {
             return false;
         }
         let mut a = attrs(&self.names, el);
+        let silent = a.role.is_empty() && late(asked.elapsed());
         let node = self.node_of(el, &mut a, w.extras, VALUE_CHARS, w.scale);
         let (parent, depth) = place(&mut w.nodes, node, parent, depth);
         w.path.push(el.clone());
-        let truncated = a.children.iter().any(|c| self.walk(w, c, parent, depth));
+        let truncated = silent || a.children.iter().any(|c| self.walk(w, c, parent, depth));
         w.path.pop();
         truncated
     }
@@ -656,10 +667,10 @@ impl Access for Ax {
     fn close(&mut self, frame: &Frame) -> Result<(), String> {
         let w = self.element(&frame.id)?;
         let button = attr(&w, "AXCloseButton").ok_or("the window has no close button")?;
-        if perform(&button, "AXPress") {
-            Ok(())
-        } else {
-            Err("the close button did not respond".to_owned())
+        match perform_code(&button, "AXPress") {
+            AX_SUCCESS => Ok(()),
+            AX_CANNOT_COMPLETE => Err(CLOSE_UNANSWERED.to_owned()),
+            _ => Err("the close button did not respond".to_owned()),
         }
     }
 }
@@ -846,7 +857,7 @@ unsafe extern "C" {
 
 /// What the hit test finds at desk point `(x, y)` now, with its ancestors up to its window, read before its app handles the click.
 pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
-    let names = names(ATTRS);
+    let (names, climb) = (names(ATTRS), names(PATH_ATTRS));
     let mut el = hit(&system_wide(), x, y, display_scale())?;
     let mut a = attrs(&names, &el);
     // the text of a link or button answers the hit test, and the control is what a click means
@@ -863,10 +874,22 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
     let mut up = attr(&el, "AXParent");
     for _ in 0..MAX_DEPTH {
         let Some(p) = up.take() else { break };
-        let mut pa = attrs(&names, &p);
+        let [role, subrole, title, description, value, parent] = values(&climb, &p);
+        let mut pa = Attrs {
+            role: string(role),
+            subrole: string(subrole),
+            title: string(title),
+            description: string(description),
+            value,
+            ..Attrs::default()
+        };
         if path.len() < PATH_MAX_DEPTH || pa.role == "AXWindow" {
+            let kind = Kind {
+                submenu: pa.role == "AXMenuItem",
+                ..kind_of(&pa)
+            };
             path.push((
-                ax_roles::role(kind_of(&pa)).unwrap_or("generic"),
+                ax_roles::role(kind).unwrap_or("generic"),
                 name_of(&mut pa, NAME_CHARS),
             ));
         }
@@ -876,7 +899,7 @@ pub fn seen_at(x: i32, y: i32) -> Option<Seen> {
         if pa.role == "AXWindow" {
             break;
         }
-        up = attr(&p, "AXParent");
+        up = parent;
     }
     Some(Seen {
         role: ax_roles::role(kind_of(&a)).unwrap_or("generic"),
@@ -905,13 +928,14 @@ pub fn secure_keyboard_entry(wanted: impl Fn(&str) -> bool) -> Option<&'static s
     .map(|(app, ..)| *app)
 }
 
-/// The process of the focused element, and whether typing goes to a password field.
+/// The process of the focused element, or the app in front when no element is named, and whether typing goes to a password field.
 pub fn typing() -> (Option<u32>, bool) {
     let focused = attr(&system_wide(), "AXFocusedUIElement");
     let pid = focused
         .as_ref()
         .and_then(pid)
-        .and_then(|p| u32::try_from(p).ok());
+        .and_then(|p| u32::try_from(p).ok())
+        .or_else(front_app);
     let secure = secure_input();
     let field = focused.is_some_and(|f| {
         [attr(&f, "AXSubrole"), attr(&f, "AXRole")]
@@ -987,6 +1011,17 @@ pub fn bundle_stem(pid: i32) -> Option<String> {
         .ancestors()
         .find(|a| a.extension().is_some_and(|e| e == "app"))?;
     Some(bundle.file_stem()?.to_string_lossy().into_owned())
+}
+
+pub fn front_app() -> Option<u32> {
+    objc2::rc::autoreleasepool(|_| {
+        let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+        u32::try_from(app.processIdentifier()).ok()
+    })
+}
+
+pub fn bound_waits() {
+    set_timeout(&system_wide());
 }
 
 fn main_bundle(exe: &Path) -> Option<String> {
@@ -1382,13 +1417,6 @@ fn late(waited: Duration) -> bool {
 
 fn unread<T>(read: &[Option<T>; 5], waited: Duration) -> bool {
     late(waited) && read[4].is_none()
-}
-
-fn front_app() -> Option<u32> {
-    objc2::rc::autoreleasepool(|_| {
-        let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
-        u32::try_from(app.processIdentifier()).ok()
-    })
 }
 
 fn frontmost(claims: bool, pid: u32, system: Option<u32>) -> bool {

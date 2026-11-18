@@ -25,7 +25,7 @@ use crate::desk::{
     BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, launch_name, runs_app, text_runs,
     without_protocol_tail, xtest,
 };
-use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of};
+use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
 use crate::lock;
 use crate::model::Modal;
@@ -123,6 +123,10 @@ const RETRIED: [&str; 4] = [
     "end_session",
 ];
 
+tokio::task_local! {
+    static CALLER: String;
+}
+
 /// The computer verbs' state: the element tokens of each session's latest window state and the scale of its latest screenshot.
 pub struct Computer {
     driver: Arc<Driver>,
@@ -136,8 +140,8 @@ pub struct Computer {
     titles: std::sync::Mutex<HashMap<u32, String>>,
     /// Per session, screen pixels per image pixel of the last screenshot.
     scales: std::sync::Mutex<HashMap<String, f64>>,
-    /// Screen pixels per image pixel of the latest screenshot of any session, one-shot included.
-    last_scale: std::sync::Mutex<f64>,
+    /// Per caller, screen pixels per image pixel of its latest screenshot of any session, one-shot included.
+    last_scale: std::sync::Mutex<HashMap<String, f64>>,
     backing: std::sync::Mutex<f64>,
     /// The screen blocks that change while no action runs, which the settle ignores; sampled from the first computer call.
     volatile: OnceLock<Volatile>,
@@ -159,7 +163,7 @@ impl Computer {
             grabber: std::sync::Mutex::new(None),
             titles: std::sync::Mutex::new(HashMap::new()),
             scales: std::sync::Mutex::new(HashMap::new()),
-            last_scale: std::sync::Mutex::new(1.0),
+            last_scale: std::sync::Mutex::new(HashMap::new()),
             backing: std::sync::Mutex::new(1.0),
             volatile: OnceLock::new(),
             ids: AtomicU64::new(0),
@@ -185,11 +189,28 @@ impl Computer {
         if !args.is_object() && !args.is_null() {
             return Err(format!("{tool}: args are not an object"));
         }
-        let default =
-            !matches!(tool, "desk_look" | "desk_title_at") && !args["session"].is_string();
-        if default {
-            args["session"] = Self::default_session(agent).into();
+        match &args["session"] {
+            Value::String(_) => {}
+            Value::Number(n) => args["session"] = n.to_string().into(),
+            Value::Null if !matches!(tool, "desk_look" | "desk_title_at") => {
+                args["session"] = Self::default_session(agent).into();
+            }
+            Value::Null => {}
+            _ => return Err(format!("{tool}: session takes a string; nothing was sent")),
         }
+        CALLER.scope(agent.to_owned(), self.verb(tool, args)).await
+    }
+
+    pub fn release(self: &Arc<Self>, agent: &str) {
+        lock(&self.last_scale).remove(agent);
+        let session = Self::default_session(agent);
+        if lock(&self.scales).contains_key(&session) {
+            let computer = Arc::clone(self);
+            tokio::spawn(async move { computer.end(json!({"session": session})).await });
+        }
+    }
+
+    async fn verb(&self, tool: &str, args: Value) -> Result<Output, String> {
         match tool {
             "desk_computer_state" => self.state(args).await,
             "desk_computer_act" if self.background => Err(BACKGROUND_ACT.to_owned()),
@@ -419,7 +440,7 @@ impl Computer {
                 }
                 match self.call(target, tool, req).await {
                     Ok(v) if v["isError"] == true => {
-                        let text = format!("{tool}: {}", told(&v));
+                        let text = named(tool, &text_of(&v));
                         if self.os != Os::Windows && is_hit_refusal(&v) {
                             match self.request(target, "click", pressed).await {
                                 Err(e) if e.contains(AX_UNSUPPORTED) => Err(text),
@@ -444,7 +465,7 @@ impl Computer {
             },
         };
         if let Err(e) = &result
-            && let Some(note) = own_popup_front(e)
+            && let Some(note) = own_popup_front(e, same_process)
         {
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
         }
@@ -505,14 +526,14 @@ impl Computer {
         })
     }
 
-    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, else of any session's, at full resolution unless `max_edge` is smaller.
+    /// `region` {x, y, w, h} in the pixels of `session`'s last screenshot, else of the caller's latest, at full resolution unless `max_edge` is smaller.
     async fn zoom(
         &self,
         session: Option<&str>,
         region: &Value,
         max_edge: Option<u32>,
     ) -> Result<Output, String> {
-        let k = session.map_or_else(|| *lock(&self.last_scale), |s| self.scale_of(s));
+        let k = session.map_or_else(|| self.latest_scale(), |s| self.scale_of(s));
         let area = rect_of(region)
             .ok_or("region needs x, y, w and h")?
             .map(|v| v * k);
@@ -543,7 +564,7 @@ impl Computer {
         let (ox, oy) = (f64::from(rect[0]) / k, f64::from(rect[1]) / k);
         Ok(Output {
             text: format!(
-                "region of the screen: {}; its pixel px,py is x = {ox:.0} + px*{f:.2}, y = {oy:.0} + py*{f:.2} for computer_act",
+                "region of the screen: {}; its pixel px,py is x = {ox:.0} + px*{f:.2}, y = {oy:.0} + py*{f:.2} for computer_act with scale {k:.4}",
                 weigh(&image)
             ),
             image_b64: Some(image),
@@ -775,7 +796,7 @@ impl Computer {
             match self.call(target, "type_text", req).await {
                 Ok(v) if v["isError"] == true || text_of(&v).contains(SKIPPED) => {
                     typed += landed(run, &v);
-                    failure = Some(format!("type_text: {}", told(&v)));
+                    failure = Some(named("type_text", &text_of(&v)));
                 }
                 Ok(_) => typed += run.chars().count(),
                 Err(e) => failure = Some(e),
@@ -783,7 +804,7 @@ impl Computer {
         }
         if failure.is_none() && text.len() < full.len() {
             match self.press_return(target, base).await {
-                Ok(_) => typed += 1,
+                Ok(_) => typed += full[text.len()..].chars().count(),
                 Err(e) => failure = Some(e),
             }
         }
@@ -895,7 +916,7 @@ impl Computer {
             };
             Ok((pixels, blocks, g.mapped()?, active, page, wait))
         }) {
-            let (volatile, paused) = self.volatile.get_or_init(Volatile::start).begin(&blocks);
+            let (volatile, paused) = self.volatile().begin(&blocks);
             return Some(Before {
                 probe: None,
                 paused: Some(paused),
@@ -1088,7 +1109,12 @@ impl Computer {
     }
 
     fn touch(&self) {
-        self.volatile.get_or_init(Volatile::start).touch();
+        self.volatile().touch();
+    }
+
+    fn volatile(&self) -> &Volatile {
+        self.volatile
+            .get_or_init(|| Volatile::start(Arc::clone(&self.input)))
     }
 
     /// The windows that opened, closed or moved between `before` and `after`, and a new front window.
@@ -1188,14 +1214,19 @@ impl Computer {
             lock(&self.scales).insert(session.to_owned(), scale);
         }
         if !shared {
-            *lock(&self.last_scale) = scale;
+            let _ = CALLER.try_with(|a| lock(&self.last_scale).insert(a.clone(), scale));
         }
     }
 
-    /// Screen pixels per pixel of the last screenshot of `session`, else of any session, so its x,y map to the screen.
+    /// Screen pixels per pixel of the last screenshot of `session`, else of the caller's latest, so its x,y map to the screen.
     fn scale_of(&self, session: &str) -> f64 {
         let own = lock(&self.scales).get(session).copied();
-        own.unwrap_or_else(|| *lock(&self.last_scale))
+        own.unwrap_or_else(|| self.latest_scale())
+    }
+
+    fn latest_scale(&self) -> f64 {
+        let latest = CALLER.try_with(|a| lock(&self.last_scale).get(a).copied());
+        latest.ok().flatten().unwrap_or(1.0)
     }
 
     /// Runs `read` on the MIT-SHM grabber, opening it when needed or after the screen changed size; `None` when it is unavailable or fails.
@@ -1850,7 +1881,7 @@ impl Computer {
             None => self.call(session, name, args).await,
         }?;
         if result["isError"] == true {
-            return Err(format!("{name}: {}", told(&result)));
+            return Err(named(name, &text_of(&result)));
         }
         Ok(result)
     }
@@ -1865,29 +1896,35 @@ impl Computer {
             v = self.reply(name, &args).await?;
         }
         if v["ok"] != true {
-            return Err(format!(
-                "{name}: {}",
-                v["error"].as_str().unwrap_or("cua-driver call failed")
+            return Err(named(
+                name,
+                v["error"].as_str().unwrap_or("cua-driver call failed"),
             ));
         }
         Ok(v["result"].take())
     }
 
     async fn reply(&self, name: &str, args: &Value) -> Result<Value, String> {
-        let foreground = self.driver.admit(name, args).await?;
+        let fail = |e: String| named(name, &e);
+        let foreground = self.driver.admit(name, args).await.map_err(fail)?;
         let sent = self.driver.line(name, args, REQUEST_TIMEOUT).await;
         if foreground {
             self.driver.stamp();
         }
-        let mut reply = sent?;
+        let mut reply = sent.map_err(fail)?;
         if RETRIED.contains(&name) && reply.trim().is_empty() {
             tokio::time::sleep(CONNECT_RETRY).await;
-            reply = self.driver.line(name, args, REQUEST_TIMEOUT).await?;
+            reply = self
+                .driver
+                .line(name, args, REQUEST_TIMEOUT)
+                .await
+                .map_err(fail)?;
         }
         if reply.is_empty() {
-            return Err(format!("{name}: {}", crate::driver::CLOSED));
+            return Err(named(name, crate::driver::CLOSED));
         }
-        serde_json::from_str::<Value>(&reply).map_err(|e| format!("decode cua-driver reply: {e}"))
+        serde_json::from_str::<Value>(&reply)
+            .map_err(|e| named(name, &format!("decode cua-driver reply: {e}")))
     }
 }
 
@@ -2070,7 +2107,9 @@ fn positive(scale: Option<f64>) -> Result<(), String> {
 }
 
 fn before_newline(text: &str) -> Option<&str> {
-    text.strip_suffix(['\n', '\r']).filter(|t| !t.is_empty())
+    text.strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix(['\n', '\r']))
+        .filter(|t| !t.is_empty())
 }
 
 /// How many characters of `run` a failed type_text call typed: all but the skipped ones on the virtual-keyboard route, else the count its "typed N of" error names.
@@ -2321,8 +2360,8 @@ fn rect_of(v: &Value) -> Option<[f64; 4]> {
     Some([x, y, w, h])
 }
 
-fn told(result: &Value) -> String {
-    text_of(result).replace("get_window_state", "computer_state")
+fn named(tool: &str, text: &str) -> String {
+    format!("{tool}: {}", without_name(tool, text)).replace("get_window_state", "computer_state")
 }
 
 /// Whether the driver refused a `verify_hit` click before sending it.
@@ -2614,10 +2653,10 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 }
 
 /// The note for a Windows click the driver calls `foreground_unavailable` because a window of the target's own process, such as Explorer's context-menu host, took the foreground after it.
-fn own_popup_front(e: &str) -> Option<String> {
+fn own_popup_front(e: &str, same: fn(i64, i64) -> bool) -> Option<String> {
     let (target, actual) = front_pair(e)?;
     let tool = e.split(':').next()?;
-    same_process(target, actual).then(|| format!("{tool} {OWN_POPUP}"))
+    same(target, actual).then(|| format!("{tool} {OWN_POPUP}"))
 }
 
 fn front_pair(e: &str) -> Option<(i64, i64)> {
@@ -2677,6 +2716,17 @@ mod tests {
         ] {
             assert_eq!(front_pair(pre), None, "{pre}");
         }
+    }
+
+    #[test]
+    fn a_windows_post_click_foreground_of_the_targets_own_process_reads_as_sent_and_any_other_stays_refused()
+     {
+        let e = "click: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)";
+        let pair = |target: i64, actual: i64| target == 0x100f2 && actual == 0x9029a;
+        assert_eq!(own_popup_front(e, pair), Some(format!("click {OWN_POPUP}")));
+        assert_eq!(own_popup_front(e, |_, _| false), None);
+        let pre = "click: foreground_unavailable: Windows did not activate exact target HWND 0x100f2 (actual foreground HWND 0x9029a); no mouse input was sent";
+        assert_eq!(own_popup_front(pre, |_, _| true), None);
     }
 
     #[cfg(unix)]
@@ -2844,6 +2894,179 @@ mod tests {
             out.unwrap_err(),
             format!("click: {}", crate::driver::CLOSED)
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_state_read_refused_by_the_driver_or_cut_off_names_computer_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let driver = tokio::spawn(Fake::bind(&socket).unwrap().serve(|_| {
+            json!({"ok": false, "error": "Permission denied: authorization context expired", "exit_code": 1})
+        }));
+        let out = cua(&socket)
+            .request("s", "get_window_state", json!({}))
+            .await;
+        assert_eq!(
+            out.unwrap_err(),
+            "computer_state: Permission denied: authorization context expired"
+        );
+        driver.abort();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            loop {
+                let (stream, ()) = listener.accept().await.unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).await.unwrap();
+            }
+        });
+        let out = cua(&socket)
+            .request("s", "get_window_state", json!({}))
+            .await;
+        assert_eq!(
+            out.unwrap_err(),
+            format!("computer_state: {}", crate::driver::CLOSED)
+        );
+        driver.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_driver_call_that_times_out_or_cannot_connect_names_its_tool_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            let mut held = Vec::new();
+            loop {
+                held.push(listener.accept().await.unwrap().0);
+            }
+        });
+        let held = cua(&socket);
+        let timed_out = crate::driver::TIMED_OUT;
+        for (tool, want) in [
+            (
+                "get_window_state",
+                format!("computer_state: cua-driver computer_state {timed_out}"),
+            ),
+            ("click", format!("click: cua-driver click {timed_out}")),
+        ] {
+            let err = held.request("s", tool, json!({})).await.unwrap_err();
+            assert_eq!(err, want);
+        }
+        driver.abort();
+        let dir = tempfile::tempdir().unwrap();
+        let err = cua(&endpoint(dir.path()))
+            .request("s", "get_window_state", json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("computer_state: connect cua-driver "),
+            "{err}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_whose_retry_after_an_empty_reply_fails_names_its_tool_once() {
+        for (tool, name) in [
+            ("get_window_state", "computer_state"),
+            ("list_windows", "list_windows"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let listener = Fake::bind(&socket).unwrap();
+            let driver = tokio::spawn(async move {
+                let (stream, ()) = listener.accept().await.unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).await.unwrap();
+            });
+            let err = cua(&socket)
+                .request("s", tool, json!({}))
+                .await
+                .unwrap_err();
+            assert!(
+                err.starts_with(&format!("{name}: connect cua-driver ")),
+                "{tool}: {err}"
+            );
+            driver.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_state_read_whose_reply_is_not_json_names_computer_state_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            let (stream, ()) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            reader.into_inner().write_all(b"<html>\n").await.unwrap();
+        });
+        let err = cua(&socket)
+            .request("s", "get_window_state", json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("computer_state: decode cua-driver reply: "),
+            "{err}"
+        );
+        driver.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_state_read_the_driver_marks_failed_names_computer_state_once_whether_or_not_its_text_starts_with_get_window_state()
+     {
+        let named = "get_window_state: screenshot_format must be \"png\" or \"jpeg\", got \"gif\"";
+        let plain = "Nothing to return: both include_accessibility_tree:false and include_screenshot:false. Set at least one to true, or pass screenshot_out_file to force a capture.";
+        for (text, want) in [
+            (
+                named,
+                "computer_state: screenshot_format must be \"png\" or \"jpeg\", got \"gif\"",
+            ),
+            (plain, &*format!("computer_state: {plain}")),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let reply = json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
+            let driver = tokio::spawn(Fake::bind(&socket).unwrap().serve(move |_| reply.clone()));
+            let out = cua(&socket)
+                .request("s", "get_window_state", json!({}))
+                .await;
+            assert_eq!(out.unwrap_err(), want);
+            driver.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_type_the_driver_refuses_with_its_own_tool_name_names_type_text_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let refused = "type_text: post_action_wait must be \"default\" or \"none\", got 7";
+        let driver = tokio::spawn(Fake::bind(&socket).unwrap().serve(move |req| {
+            match req["name"].as_str().unwrap_or_default() {
+                "type_text" => {
+                    json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": refused}]}})
+                }
+                "list_windows" => {
+                    json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Google-chrome", "title": "checkout", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}})
+                }
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }));
+        let out = cua(&socket)
+            .act(json!({"action": "type", "text": "hello", "x": 10, "y": 20}))
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains(&format!("stopped: {refused}")),
+            "{}",
+            out.text
+        );
+        assert!(!out.text.contains("type_text: type_text"), "{}", out.text);
         driver.abort();
     }
 
@@ -3114,6 +3337,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_launch_raises_a_running_app_starts_an_absent_one_and_says_when_raising_or_launching_failed()
+     {
+        let launch = |running: bool, raises: bool, starts: bool, shown_after: bool| async move {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let listener = Fake::bind(&socket).unwrap();
+            let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let log = std::sync::Arc::clone(&calls);
+            let mut lists = 0;
+            let driver = tokio::spawn(listener.serve(move |req| {
+                let name = req["name"].as_str().unwrap_or_default();
+                log.lock().unwrap().push(name.to_owned());
+                let refused = |text: &str| json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": text}]}});
+                match name {
+                    "list_windows" => {
+                        lists += 1;
+                        let listed = if lists == 1 { running } else { shown_after };
+                        let windows = if listed {
+                            json!([{"pid": 7, "window_id": 9, "app_name": "TextEdit", "title": "t", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}])
+                        } else {
+                            json!([])
+                        };
+                        json!({"ok": true, "result": {"structuredContent": {"windows": windows}}})
+                    }
+                    "bring_to_front" if !raises => refused("bring_to_front: focus-stealing prevention kept the window behind"),
+                    "launch_app" if !starts => refused("no app named TextEdit"),
+                    "launch_app" => {
+                        json!({"ok": true, "result": {"content": [{"type": "text", "text": "Launched TextEdit (pid 7)"}]}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                }
+            }));
+            let cua = cua_on(&socket, Os::Mac);
+            let act = json!({"action": "launch_app", "app": "TextEdit"});
+            let out = cua.act(act).await.unwrap();
+            driver.abort();
+            let sent: Vec<String> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|n| *n == "bring_to_front" || *n == "launch_app")
+                .cloned()
+                .collect();
+            ((out.is_error, out.text), sent)
+        };
+        let raised = "TextEdit is already running; brought its window 9 \"t\" (pid 7) to the front";
+        assert_eq!(
+            launch(true, true, true, true).await,
+            ((false, raised.into()), vec!["bring_to_front".into()])
+        );
+        let unraised = "TextEdit is already running as window 9 \"t\" (pid 7); raising it failed: bring_to_front: focus-stealing prevention kept the window behind";
+        assert_eq!(
+            launch(true, false, true, true).await,
+            ((false, unraised.into()), vec!["bring_to_front".into()])
+        );
+        assert_eq!(
+            launch(false, true, true, true).await,
+            (
+                (false, "Launched TextEdit (pid 7)".into()),
+                vec!["launch_app".into()]
+            )
+        );
+        let reported = "TextEdit is running as window 9 \"t\" (pid 7); the launcher reported: launch_app: no app named TextEdit";
+        assert_eq!(
+            launch(false, true, false, true).await,
+            ((false, reported.into()), vec!["launch_app".into()])
+        );
+        assert_eq!(
+            launch(false, true, false, false).await,
+            (
+                (true, "launch_app: no app named TextEdit".into()),
+                vec!["launch_app".into()]
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn a_typed_protocol_tail_reaches_neither_the_xtest_typer_nor_the_driver() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
@@ -3189,6 +3489,34 @@ mod tests {
             );
             driver.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn on_linux_a_typed_trailing_crlf_is_sent_as_one_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        for (text, line) in [("name\r\n", "name"), ("né\r\n", "né")] {
+            let act = json!({"action": "type", "text": text, "foreground": true});
+            let out = cua_on(&socket, Os::Linux).act(act).await.unwrap();
+            assert!(!out.is_error, "{text:?}: {}", out.text);
+            let mut calls = calls.lock().unwrap();
+            let typed: Vec<&Value> = calls.iter().filter(|c| c["name"] == "type_text").collect();
+            assert_eq!(typed.len(), 1, "{calls:?}");
+            assert_eq!(typed[0]["args"]["text"], line);
+            let returns = calls.iter().filter(|c| c["name"] == "press_key").count();
+            assert_eq!(returns, 1, "{calls:?}");
+            calls.clear();
+        }
+        let act = json!({"action": "type", "text": "né\r\n", "foreground": true});
+        let out = cua_on(&socket, Os::Linux).act(act).await.unwrap();
+        assert!(
+            out.text.starts_with("typed 4 of 4 characters"),
+            "{}",
+            out.text
+        );
+        driver.abort();
     }
 
     #[tokio::test]
@@ -3449,8 +3777,8 @@ mod tests {
         let err = out.unwrap_err();
         assert!(
             err.contains(
-                "focus-stealing prevention kept the window behind; nothing was clicked or typed"
-            ),
+                "bring_to_front: focus-stealing prevention kept the window behind; nothing was clicked or typed"
+            ) && !err.contains("bring_to_front: bring_to_front"),
             "{err}"
         );
         assert_eq!(raises.len(), 1);
@@ -3683,9 +4011,13 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = shot_driver(&socket, &calls);
         let cua = cua(&socket);
-        cua.look(&json!({})).await.unwrap();
         let region = json!({"region": {"x": 10, "y": 10, "w": 10, "h": 10}, "max_edge": 0});
-        let out = cua.look(&region).await.unwrap();
+        let out = CALLER
+            .scope("a".into(), async {
+                cua.look(&json!({})).await.unwrap();
+                cua.look(&region).await.unwrap()
+            })
+            .await;
         assert!(out.text.contains("20x20"), "{}", out.text);
         assert!(
             out.text.contains("x = 10 + px*0.50, y = 10 + py*0.50"),
@@ -3755,6 +4087,28 @@ mod tests {
                 (220.0, 60.0)
             ]
         );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn an_action_list_stops_at_its_first_failed_action_and_says_how_many_did_not_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 1280);
+        let cua = cua(&socket);
+        let click = |x: f64| json!({"action": "click", "x": x, "y": 30.0});
+        cua.state(json!({"max_edge": 0})).await.unwrap();
+        let typo = json!({"action": "clik", "x": 1.0, "y": 1.0});
+        let list = json!({"actions": [click(100.0), typo, click(120.0)]});
+        let out = cua.act(list).await.unwrap();
+        assert!(out.is_error, "{}", out.text);
+        assert!(
+            out.text.contains("2. clik failed: unknown action clik")
+                && out.text.contains("the remaining 1 actions did not run")
+                && !out.text.contains("3. "),
+            "{}",
+            out.text
+        );
+        assert_eq!(*clicks.lock().unwrap(), [(100.0, 30.0)]);
         driver.abort();
     }
 
@@ -3836,20 +4190,24 @@ mod tests {
         let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
-        cua.screenshot_once(None).await.unwrap();
-        cua.act(click("after-default-shot")).await.unwrap();
-        cua.screenshot_once(Some(0)).await.unwrap();
-        cua.act(click("after-full-shot")).await.unwrap();
-        cua.state(json!({"session": "ended", "max_edge": 640}))
-            .await
-            .unwrap();
-        cua.end(json!({"session": "ended"})).await.unwrap();
-        cua.act(click("rotated")).await.unwrap();
-        cua.state(json!({"session": "own", "max_edge": 1280}))
-            .await
-            .unwrap();
-        cua.screenshot_once(None).await.unwrap();
-        cua.act(click("own")).await.unwrap();
+        CALLER
+            .scope("a".into(), async {
+                cua.screenshot_once(None).await.unwrap();
+                cua.act(click("after-default-shot")).await.unwrap();
+                cua.screenshot_once(Some(0)).await.unwrap();
+                cua.act(click("after-full-shot")).await.unwrap();
+                cua.state(json!({"session": "ended", "max_edge": 640}))
+                    .await
+                    .unwrap();
+                cua.end(json!({"session": "ended"})).await.unwrap();
+                cua.act(click("rotated")).await.unwrap();
+                cua.state(json!({"session": "own", "max_edge": 1280}))
+                    .await
+                    .unwrap();
+                cua.screenshot_once(None).await.unwrap();
+                cua.act(click("own")).await.unwrap();
+            })
+            .await;
         assert_eq!(
             *clicks.lock().unwrap(),
             [(125.0, 50.0), (100.0, 40.0), (200.0, 80.0), (100.0, 40.0)]
@@ -3864,18 +4222,22 @@ mod tests {
         let cua = cua(&socket);
         let click =
             |session: &str| json!({"action": "click", "x": 100.0, "y": 40.0, "session": session});
-        cua.state(json!({"session": "owner", "max_edge": 640}))
-            .await
-            .unwrap();
-        cua.end(json!({"session": "owner"})).await.unwrap();
-        cua.look(&json!({"session": "guest", "max_edge": 128, "workspace_only": true}))
-            .await
-            .unwrap();
-        cua.state(json!({"session": "guest", "max_edge": 256, "workspace_only": true}))
-            .await
-            .unwrap();
-        cua.act(click("rotated")).await.unwrap();
-        cua.act(click("guest")).await.unwrap();
+        CALLER
+            .scope("a".into(), async {
+                cua.state(json!({"session": "owner", "max_edge": 640}))
+                    .await
+                    .unwrap();
+                cua.end(json!({"session": "owner"})).await.unwrap();
+                cua.look(&json!({"session": "guest", "max_edge": 128, "workspace_only": true}))
+                    .await
+                    .unwrap();
+                cua.state(json!({"session": "guest", "max_edge": 256, "workspace_only": true}))
+                    .await
+                    .unwrap();
+                cua.act(click("rotated")).await.unwrap();
+                cua.act(click("guest")).await.unwrap();
+            })
+            .await;
         assert_eq!(*clicks.lock().unwrap(), [(200.0, 80.0), (500.0, 200.0)]);
         driver.abort();
     }
@@ -4266,6 +4628,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_region_look_without_a_session_maps_by_the_callers_own_last_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver =
+            tokio::spawn(listener.serve(
+                move |req| match req["name"].as_str().unwrap_or_default() {
+                    "get_desktop_state" if req["args"]["session"] == "computer-a" => {
+                        full_shot(100, 100, 200)
+                    }
+                    "get_desktop_state" => full_shot(100, 100, 100),
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                },
+            ));
+        let cua = cua_on(&socket, Os::Mac);
+        cua.run("a", "desk_computer_state", json!({}))
+            .await
+            .unwrap();
+        cua.run("b", "desk_computer_state", json!({}))
+            .await
+            .unwrap();
+        let region = json!({"region": {"x": 10, "y": 10, "w": 8, "h": 8}});
+        let out = cua.run("a", "desk_look", region).await.unwrap();
+        let image = B64.decode(out.image_b64.unwrap()).unwrap();
+        let webp = image_webp::WebPDecoder::new(std::io::Cursor::new(&image)).unwrap();
+        assert_eq!(webp.dimensions(), (16, 16), "{}", out.text);
+        assert!(
+            out.text.ends_with("for computer_act with scale 2.0000"),
+            "{}",
+            out.text
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn the_settle_sampler_starts_with_the_first_computer_call() {
         let dir = tempfile::tempdir().unwrap();
         let socket = endpoint(dir.path());
@@ -4328,6 +4725,94 @@ mod tests {
         for refusal in [false, true] {
             ended_default(refusal).await;
         }
+    }
+
+    #[tokio::test]
+    async fn a_released_caller_loses_its_default_session_and_the_driver_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let log = std::sync::Arc::clone(&calls);
+        let full = full_shot(64, 40, 64);
+        let driver = tokio::spawn(listener.serve(move |req| {
+            let name = req["name"].as_str().unwrap_or_default().to_owned();
+            let session = req["args"]["session"].as_str().unwrap_or_default();
+            log.lock().unwrap().push((name.clone(), session.to_owned()));
+            match name.as_str() {
+                "list_windows" => json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Mousepad", "title": "notes", "bounds": {"x": 0, "y": 0, "width": 800, "height": 600}, "z_index": 1}]}}}),
+                "get_window_state" => json!({"ok": true, "result": {"structuredContent": {"elements": [{"element_index": 0, "element_token": "t0", "role": "push button", "label": "OK"}]}}}),
+                "get_desktop_state" => full.clone(),
+                _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+            }
+        }));
+        let cua = Arc::new(cua(&socket));
+        let state = cua.run("run-x-1", "desk_computer_state", json!({}));
+        assert!(!state.await.unwrap().is_error);
+        cua.run("run-x-2", "desk_look", json!({})).await.unwrap();
+        for agent in ["run-x-1", "run-x-2", "run-x-3"] {
+            cua.release(agent);
+        }
+        let ended = || -> Vec<String> {
+            let calls = calls.lock().unwrap();
+            let ends = calls
+                .iter()
+                .filter(|(n, s)| n == "end_session" && s.starts_with("computer"));
+            ends.map(|(_, s)| s.clone()).collect()
+        };
+        for _ in 0..300 {
+            if !ended().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(ended(), ["computer-run-x-1"]);
+        assert!(cua.last.lock().await.is_empty());
+        assert!(lock(&cua.scales).is_empty() && lock(&cua.last_scale).is_empty());
+        let act = cua.run(
+            "run-x-1",
+            "desk_computer_act",
+            json!({"action": "click", "element": 0}),
+        );
+        assert_eq!(
+            act.await.unwrap_err(),
+            "no element list yet; call computer_state first"
+        );
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_numbered_session_is_that_session_and_a_session_of_another_type_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = shot_driver(&socket, &calls);
+        let cua = cua(&socket);
+        let end = |args| cua.run("a", "desk_computer_end", args);
+        assert_eq!(
+            end(json!({"session": 2})).await.unwrap().text,
+            "ended session 2"
+        );
+        assert_eq!(
+            end(json!({})).await.unwrap().text,
+            "ended session computer-a"
+        );
+        for (tool, session) in [("desk_computer_end", json!({})), ("desk_look", json!([2]))] {
+            let out = cua.run("a", tool, json!({"session": session})).await;
+            assert_eq!(
+                out.unwrap_err(),
+                format!("{tool}: session takes a string; nothing was sent")
+            );
+        }
+        let ends: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(n, _)| n == "end_session")
+            .map(|(_, s)| s.clone())
+            .collect();
+        assert_eq!(ends, ["2", "computer-a"]);
+        driver.abort();
     }
 
     async fn ended_default(refusal: bool) {
@@ -4900,6 +5385,7 @@ mod tests {
     fn only_a_newline_after_other_text_is_split_off() {
         assert_eq!(before_newline("/tmp/name.txt\n"), Some("/tmp/name.txt"));
         assert_eq!(before_newline("a\nb\r"), Some("a\nb"));
+        assert_eq!(before_newline("report.txt\r\n"), Some("report.txt"));
         for kept in ["\n", "plain", "a\nb"] {
             assert_eq!(before_newline(kept), None);
         }
@@ -5101,7 +5587,7 @@ mod tests {
                 };
                 let reply = match name {
                     "bring_to_front" if hit == "refuses" => {
-                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "focus-stealing prevention kept the window behind"}]}})
+                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": "bring_to_front: focus-stealing prevention kept the window behind"}]}})
                     }
                     "bring_to_front" if hit == "raises" || hit == "late" => {
                         lists.store(1, std::sync::atomic::Ordering::SeqCst);

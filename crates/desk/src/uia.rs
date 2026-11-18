@@ -1,9 +1,10 @@
-//! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids.
+//! The Windows desk backend: Win32 top-level windows and window trees from one cached UIA request; ids are runtime ids, or `uN` for an element whose runtime id is empty.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use desk_core::text::clip;
@@ -24,9 +25,9 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GetForegroundWindow, GetWindow, GetWindowTextW,
+    EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetForegroundWindow, GetWindow, GetWindowTextW,
     GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG,
-    SMTO_BLOCK, SendMessageTimeoutW, WM_CLOSE, WM_NULL,
+    SMTO_BLOCK, SendMessageTimeoutW, WM_CLOSE, WM_NULL, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 
@@ -80,6 +81,7 @@ const TOP_PROPS: [UIA_PROPERTY_ID; 4] = [
 ];
 
 static LAST: Mutex<BTreeMap<isize, Frame>> = Mutex::new(BTreeMap::new());
+static MINTED: AtomicU64 = AtomicU64::new(0);
 
 /// The UIA backend of this thread.
 pub struct Uia {
@@ -90,6 +92,8 @@ pub struct Uia {
     top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
+    unnamed: HashMap<String, Vec<Walked>>,
+    walking: Vec<Walked>,
     tops: HashMap<isize, Top>,
     walked: isize,
     shown: Vec<Shown>,
@@ -123,6 +127,8 @@ impl Uia {
             top,
             root,
             ids: HashMap::new(),
+            unnamed: HashMap::new(),
+            walking: Vec::new(),
             tops: HashMap::new(),
             walked: 0,
             shown: Vec::new(),
@@ -134,9 +140,89 @@ impl Uia {
     }
 
     fn id_of(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
-        let id = runtime_id(el)?;
+        let runtime = runtime_id(el)?;
+        let unnamed = runtime.is_empty();
+        let id = own_id(runtime);
+        if unnamed && let Some((_, _, list)) = self.walking.last_mut() {
+            list.push((id.clone(), key(el)));
+        }
         self.ids.entry(id.clone()).or_insert_with(|| el.clone());
         Ok(id)
+    }
+
+    fn found_id(
+        &mut self,
+        el: &IUIAutomationElement,
+        point: Option<(i32, i32)>,
+    ) -> Result<String, String> {
+        let runtime = runtime_id(el)?;
+        if !runtime.is_empty() {
+            self.ids
+                .entry(runtime.clone())
+                .or_insert_with(|| el.clone());
+            return Ok(runtime);
+        }
+        let seen = key(&self.cached(el, &self.single)?);
+        let [x, y, w, h] = seen.2;
+        let top = match point {
+            Some((px, py)) => top_at(px, py),
+            None if w > 0 && h > 0 => top_at(x + w / 2, y + h / 2),
+            None => None,
+        };
+        let owners = top.map(owners_of).unwrap_or_default();
+        let now = |id: &str| Some(key(&self.cached(self.ids.get(id)?, &self.single).ok()?));
+        let walked = self.unnamed.values().flatten();
+        match uia_roles::walked_id(walked, top, &owners, &seen, now) {
+            Some(id) => Ok(id),
+            None => self.id_of(el),
+        }
+    }
+
+    fn native_root(&self, id: &str, chain: &[String]) -> Result<Option<isize>, String> {
+        let held = std::iter::once(id).chain(chain.iter().rev().map(String::as_str));
+        let handles = held.map(|held| {
+            let el = self.element(held)?;
+            // SAFETY: `el` is a live UIA element of this thread; a stale one answers an error.
+            unsafe { el.CurrentNativeWindowHandle() }
+                .map(|h| h.0 as isize)
+                .map_err(|e| format!("UIA window handle: {e}"))
+        });
+        let Some(hwnd) = uia_roles::first_window(handles)? else {
+            return Ok(None);
+        };
+        // SAFETY: GetAncestor takes any handle; a stale one answers a null handle.
+        let root = unsafe { GetAncestor(HWND(hwnd as *mut core::ffi::c_void), GA_ROOT) };
+        Ok((!root.is_invalid()).then_some(root.0 as isize))
+    }
+
+    fn menu_in(&self, at: isize, x: i32, y: i32) -> bool {
+        let _bounded = Bounded::new(&self.auto);
+        // SAFETY: `self.auto` is a live IUIAutomation of this thread.
+        let Ok(walker) = (unsafe { self.auto.ControlViewWalker() }) else {
+            return false;
+        };
+        let mut hit = element_at(&self.auto, x, y).ok();
+        let mut last: Option<IUIAutomationElement> = None;
+        let steps = std::iter::from_fn(|| {
+            let el = match hit.take() {
+                Some(el) => el,
+                // SAFETY: `walker` and the last element are live UIA objects of this thread.
+                None => unsafe { walker.GetParentElement(last.as_ref()?) }.ok()?,
+            };
+            // SAFETY: `el` is a live UIA element of this thread; a stale one answers an error.
+            let hwnd = unsafe { el.CurrentNativeWindowHandle() }.ok()?;
+            // SAFETY: as above.
+            let kind = unsafe { el.CurrentControlType() }.ok()?;
+            // SAFETY: GetAncestor takes any handle; a null or stale one answers a null handle.
+            let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+            last = Some(el);
+            Some((
+                uia_roles::menu_family(kind.0),
+                hwnd.0 as isize,
+                root.0 as isize,
+            ))
+        });
+        uia_roles::menu_up_to_root(steps.take(MAX_DEPTH), at)
     }
 
     fn cached(
@@ -151,6 +237,7 @@ impl Uia {
     fn node_of(
         &mut self,
         el: &IUIAutomationElement,
+        id: String,
         extras: Extras,
         chars: usize,
     ) -> Result<Node, String> {
@@ -181,7 +268,7 @@ impl Uia {
             .or_else(|| r.range.map(format_number))
             .map(|v| clip(v, chars, extras.tail));
         Ok(Node {
-            id: self.id_of(el)?,
+            id,
             role,
             native_role: mapped
                 .is_none()
@@ -215,7 +302,8 @@ impl Uia {
         if out.len() >= MAX_NODES {
             return Ok(true);
         }
-        let node = self.node_of(el, extras, VALUE_CHARS)?;
+        let id = self.id_of(el)?;
+        let node = self.node_of(el, id, extras, VALUE_CHARS)?;
         let (parent, depth) = place(out, node, parent, depth);
         if depth > MAX_DEPTH {
             return Ok(false);
@@ -252,7 +340,10 @@ impl Uia {
     fn roots(&mut self, shown: &[Shown]) -> Vec<usize> {
         let listed = |h: &isize| shown.iter().any(|s| s.hwnd.0 as isize == *h);
         self.tops.retain(|h, _| listed(h));
-        lock(&LAST).retain(|h, _| listed(h));
+        let mut last = lock(&LAST);
+        last.retain(|h, _| listed(h));
+        uia_roles::forget_closed(&mut self.unnamed, &last);
+        drop(last);
         (0..shown.len())
             .filter(|&i| {
                 let owner = shown[i].owner;
@@ -294,6 +385,7 @@ impl Uia {
                     pid: Some(s.pid),
                     active: s.hwnd == foreground,
                     app,
+                    number: u32::try_from(key).ok(),
                     ..Frame::default()
                 };
                 lock(&LAST).insert(key, frame.clone());
@@ -349,7 +441,9 @@ impl Access for Uia {
     }
 
     fn evict(&mut self) {
-        evict_ids(&mut self.ids, lock(&LAST).values());
+        if evict_ids(&mut self.ids, lock(&LAST).values()) {
+            self.unnamed.clear();
+        }
     }
 
     fn hint(&mut self) -> Option<u64> {
@@ -387,6 +481,7 @@ impl Access for Uia {
         }
         let fetched = started.elapsed().as_micros();
         let mut nodes = Vec::new();
+        self.walking = vec![(self.walked, false, Vec::new())];
         let mut truncated = self.walk(&cached, &kids, None, 0, extras, &mut nodes)?;
         let walked = started.elapsed().as_micros() - fetched;
         if !truncated {
@@ -398,14 +493,26 @@ impl Access for Uia {
                 .filter_map(|i| {
                     let t = self.top_of(&shown[i])?;
                     let el = (t.control_type == UIA_MenuControlTypeId.0).then(|| t.el.clone())?;
-                    self.cached(&el, &self.subtree).ok()
+                    Some((
+                        shown[i].hwnd.0 as isize,
+                        self.cached(&el, &self.subtree).ok()?,
+                    ))
                 })
                 .collect();
-            for menu in menus {
-                let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
-                if truncated || listed {
+            for (popup, menu) in menus {
+                let listed = runtime_id(&menu)
+                    .ok()
+                    .and_then(|id| nodes.iter().position(|n| n.id == id));
+                if let Some(root) = listed
+                    && let Some((_, _, frame)) = self.walking.first_mut()
+                {
+                    let entries = uia_roles::popup_entries(&nodes, root, frame);
+                    self.walking.push((popup, false, entries));
+                }
+                if truncated || listed.is_some() {
                     continue;
                 }
+                self.walking.push((popup, false, Vec::new()));
                 truncated = self.walk(
                     &menu,
                     &children(&menu),
@@ -417,6 +524,12 @@ impl Access for Uia {
             }
         }
         let menus = started.elapsed().as_micros() - fetched - walked;
+        if let Some((_, _, frame)) = self.walking.first_mut() {
+            let owned = uia_roles::owned_entries(&nodes, frame);
+            self.walking.push((self.walked, true, owned));
+        }
+        let unnamed = std::mem::take(&mut self.walking);
+        self.unnamed.insert(frame.id.clone(), unnamed);
         Ok(Tree {
             frame: frame.clone(),
             nodes,
@@ -428,7 +541,7 @@ impl Access for Uia {
     fn node(&mut self, id: &str, extras: Extras, chars: usize) -> Result<Node, String> {
         let el = self.element(id)?;
         let fresh = self.cached(&el, &self.single)?;
-        let mut node = self.node_of(&fresh, extras, chars)?;
+        let mut node = self.node_of(&fresh, id.to_owned(), extras, chars)?;
         if extras.values
             && node.value.is_none()
             && node.url.is_none()
@@ -455,7 +568,7 @@ impl Access for Uia {
             if unsafe { self.auto.CompareElements(&parent, &self.root) }.is_ok_and(BOOL::as_bool) {
                 break;
             }
-            chain.push(self.id_of(&parent)?);
+            chain.push(self.found_id(&parent, None)?);
             at = parent;
         }
         chain.reverse();
@@ -464,6 +577,30 @@ impl Access for Uia {
 
     fn pid_of(&mut self, id: &str) -> Result<Option<u32>, String> {
         Ok(process_id(&self.element(id)?))
+    }
+
+    fn menu_cover(
+        &mut self,
+        id: &str,
+        chain: &[String],
+        x: i32,
+        y: i32,
+    ) -> Result<Option<(String, Option<u32>)>, String> {
+        let own = self
+            .native_root(id, chain)?
+            .ok_or("the menu entry's own window could not be read")?;
+        let at = top_at(x, y);
+        let menu_at = || at.is_some_and(|w| self.menu_in(w, x, y));
+        if uia_roles::menu_click_reaches(at, Some(own), owners_of, menu_at) {
+            return Ok(None);
+        }
+        Ok(Some(at.map_or((String::new(), None), |w| {
+            let hwnd = HWND(w as *mut core::ffi::c_void);
+            let mut pid = 0u32;
+            // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
+            (title(hwnd).trim().to_owned(), (pid != 0).then_some(pid))
+        })))
     }
 
     fn pid_at(&mut self, x: i32, y: i32) -> Result<Option<u32>, String> {
@@ -477,7 +614,7 @@ impl Access for Uia {
     fn at(&mut self, _: &str, x: i32, y: i32) -> Result<Option<String>, String> {
         let _bounded = Bounded::new(&self.auto);
         let hit = element_at(&self.auto, x, y)?;
-        self.id_of(&hit).map(Some)
+        self.found_id(&hit, Some((x, y))).map(Some)
     }
 
     fn act(&mut self, id: &str, act: Act) -> Result<bool, String> {
@@ -621,6 +758,9 @@ enum Val {
     Text(String),
     Other,
 }
+
+type Key = (i32, String, [i32; 4]);
+type Walked = (isize, bool, Vec<(String, Key)>);
 
 /// Whether the windows `a` and `b` belong to one process.
 pub(crate) fn same_process(a: i64, b: i64) -> bool {
@@ -1048,6 +1188,37 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
     }
 }
 
+fn own_id(runtime: String) -> String {
+    if !runtime.is_empty() {
+        return runtime;
+    }
+    format!("u{}", MINTED.fetch_add(1, Ordering::Relaxed) + 1)
+}
+
+fn key(el: &IUIAutomationElement) -> Key {
+    let r = raw(el, Extras::default());
+    (r.control_type, r.name, r.bounds)
+}
+
+fn top_at(x: i32, y: i32) -> Option<isize> {
+    // SAFETY: WindowFromPoint takes a point and GetAncestor a handle; neither writes through a pointer.
+    let top = unsafe { GetAncestor(WindowFromPoint(POINT { x, y }), GA_ROOT) };
+    (!top.is_invalid()).then_some(top.0 as isize)
+}
+
+fn owners_of(top: isize) -> Vec<isize> {
+    let owner = |at: &HWND| {
+        // SAFETY: GetWindow takes any handle; a stale or unowned one answers an error or a null handle.
+        unsafe { GetWindow(*at, GW_OWNER) }
+            .ok()
+            .filter(|o| !o.is_invalid())
+    };
+    std::iter::successors(owner(&HWND(top as *mut core::ffi::c_void)), owner)
+        .take(MAX_DEPTH)
+        .map(|h| h.0 as isize)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,6 +1248,16 @@ mod tests {
         assert_eq!(head_units(65_537), 131_075);
         assert_eq!(head_units(80), 161);
         assert_eq!(head_units(usize::MAX), i32::MAX);
+    }
+
+    #[test]
+    fn an_element_with_an_empty_runtime_id_gets_an_id_no_other_element_shares_across_backends() {
+        assert_eq!(own_id("42-656186".into()), "42-656186");
+        let walk = || (0..10).map(|_| own_id(String::new())).collect::<Vec<_>>();
+        let (first, reopened) = (walk(), walk());
+        let all: std::collections::HashSet<_> = first.iter().chain(&reopened).collect();
+        assert_eq!(all.len(), 20);
+        assert!(all.iter().all(|id| id.starts_with('u') && id.len() > 1));
     }
 
     #[test]

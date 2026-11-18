@@ -28,9 +28,9 @@ use crate::services;
 use crate::{NAME, STOPPED, lock};
 
 const BUSY: &str = "desk busy: another run or action is still going";
-const SCRIPT_RUN_OFF: &str =
-    "script_run is turned off: set script_run = true under [tools] in config.toml";
+const SCRIPT_RUN_OFF: &str = "script_run is off in the user's configuration ([tools] script_run in config.toml), which the daemon reads when it starts: a change takes effect once the daemon restarts";
 const DECLINED: &str = "declined by the user";
+const ENDING: &str = "the daemon is stopping, so nothing ran: call again in a few seconds";
 #[cfg(target_os = "linux")]
 const PLAN_BACKGROUND: &str = "background gui_plan is not measured on Linux: set [desk] input = \"foreground\" for plans, or use the desk verbs with a window";
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
@@ -73,8 +73,8 @@ pub trait Controls: Send + Sync {
     /// Whether a run or a desk action is in flight.
     fn acting(&self) -> bool;
     fn recording(&self) -> bool;
-    /// Starts or ends a recording of the user's input.
-    fn record(&self, on: bool) -> Result<(), String>;
+    /// Starts or ends a recording of the user's input; a start answers its note, if it has one.
+    fn record(&self, on: bool) -> Result<Option<String>, String>;
     fn hotkey(&self, code: u32);
 }
 
@@ -101,6 +101,7 @@ pub struct Daemon<H> {
     halted: watch::Sender<bool>,
     actions: Arc<AtomicUsize>,
     asking: AtomicBool,
+    ending: AtomicBool,
     turn: tokio::sync::Mutex<()>,
     running: Mutex<Option<String>>,
     nonce: u64,
@@ -124,6 +125,7 @@ impl<H: Handler> Daemon<H> {
             recorder: Recorder::new(PathBuf::new(), Arc::clone(&actions)),
             actions,
             asking: AtomicBool::new(false),
+            ending: AtomicBool::new(false),
             turn: tokio::sync::Mutex::new(()),
             running: Mutex::new(None),
             nonce: RandomState::new().hash_one(std::process::id()),
@@ -151,6 +153,10 @@ impl<H: Handler> Daemon<H> {
 
     pub async fn end_recording(&self) {
         self.recorder.finish().await;
+    }
+
+    pub fn stop_answering(&self) {
+        self.ending.store(true, Ordering::Relaxed);
     }
 
     /// Adds the plugin tools, which run only while `script_run` is on.
@@ -197,8 +203,8 @@ impl<H: Handler> Daemon<H> {
                     Value::Null => Vec::new(),
                     v => parse(v)?,
                 };
-                r.start(apps)
-                    .map(|id| json!({"ok": true, "id": id}).to_string())
+                r.start(apps, || *self.halted.borrow())
+                    .map(|reply| reply.to_string())
             }
             "record_note" => {
                 let Value::String(text) = args.get_mut("text").map(Value::take).unwrap_or_default()
@@ -228,7 +234,7 @@ impl<H: Handler> Daemon<H> {
         self.plugins.iter().find(|p| p.name == tool)
     }
 
-    async fn run(&self, tool: &str, args: Value) -> Result<String, String> {
+    async fn run(&self, tool: &str, args: Value, caller: &str) -> Result<String, String> {
         let plugin = self.plugin(tool);
         if (tool == "script_run" || plugin.is_some()) && !self.guard.script_run {
             return Err(SCRIPT_RUN_OFF.to_owned());
@@ -254,7 +260,7 @@ impl<H: Handler> Daemon<H> {
         let _held = Defer(|| self.desk.release(&agent));
         let report = match plugin {
             Some(p) => self.runner.plugin(&p.bin, args, &agent).await,
-            None if tool == "gui_plan" => self.runner.plan(args, &agent).await,
+            None if tool == "gui_plan" => self.runner.plan(args, &agent, caller).await,
             None => self.runner.script(args, &agent).await,
         }?;
         if report["error"].is_null() {
@@ -363,6 +369,9 @@ impl<H: Handler> Handler for Daemon<H> {
             "safety_resume" => return self.stop(false),
             _ => {}
         }
+        if self.ending.load(Ordering::Relaxed) {
+            return Output::error(ENDING);
+        }
         if *self.halted.borrow() {
             return Output::error(STOPPED);
         }
@@ -382,7 +391,7 @@ impl<H: Handler> Handler for Daemon<H> {
         }
         if tool == "gui_plan" || tool == "script_run" || self.plugin(tool).is_some() {
             return self
-                .run(tool, call.args)
+                .run(tool, call.args, &call.agent_id)
                 .await
                 .map_or_else(Output::error, Output::text);
         }
@@ -416,7 +425,9 @@ impl<H: Handler> Handler for Daemon<H> {
             return;
         };
         let mut halted = self.halted.subscribe();
-        let refused = if *self.halted.borrow() {
+        let refused = if self.ending.load(Ordering::Relaxed) {
+            Some(ENDING.to_owned())
+        } else if *self.halted.borrow() {
             Some(STOPPED.to_owned())
         } else {
             tokio::select! {
@@ -456,14 +467,16 @@ impl<H: Handler> Controls for Daemon<H> {
         self.recorder.recording()
     }
 
-    fn record(&self, on: bool) -> Result<(), String> {
+    fn record(&self, on: bool) -> Result<Option<String>, String> {
         if on && self.halted() {
             Err(STOPPED.to_owned())
         } else if on {
-            self.recorder.start(Vec::new()).map(drop)
+            self.recorder
+                .start(Vec::new(), || self.halted())
+                .map(|reply| reply["note"].as_str().map(str::to_owned))
         } else {
             self.recorder.end();
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -1011,6 +1024,13 @@ mod tests {
         assert!(!none.acting() && !none.halted());
     }
 
+    #[tokio::test]
+    async fn a_stop_that_lands_as_a_confirm_is_allowed_runs_nothing() {
+        let d = halted_on_yes(Confirm::Every);
+        let out = d.answer(call("desk_key", json!({"keys": "a"}))).await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, STOPPED));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_confirm_dialog_opens_only_once_the_actions_queued_before_it_are_done() {
         let (asker, pending) = held();
@@ -1143,6 +1163,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_start_answers_stopped_for_a_stop_after_its_check_and_ends_one_during_its_start()
+    {
+        let (d, listened, halter) = halts_while_starting(true);
+        let out = d.answer(call("record_start", json!({}))).await;
+        halter.join().unwrap();
+        assert_eq!((out.is_error, out.text.as_str()), (true, STOPPED));
+        assert!(!listened.load(Ordering::Relaxed) && !d.recording());
+        let (d, dropped, halter) = halts_while_starting(false);
+        let out = d.answer(call("record_start", json!({}))).await;
+        halter.join().unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert!(dropped.load(Ordering::Relaxed) && !d.recording());
+    }
+
+    #[test]
+    fn a_stop_puts_its_flag_up_before_it_ends_the_recording() {
+        struct Witness(tokio::sync::watch::Receiver<bool>, Arc<AtomicBool>);
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                self.1.store(*self.0.borrow(), Ordering::Relaxed);
+            }
+        }
+        let mut d = daemon(Echo, Guard::default());
+        let up = Arc::new(AtomicBool::new(false));
+        let tap = Mutex::new(Some(Witness(d.halted.subscribe(), Arc::clone(&up))));
+        let listen = move |_, _, _: &[String], _| -> Result<(Box<dyn Send>, bool), String> {
+            Ok((Box::new(tap.lock().unwrap().take()), false))
+        };
+        d.recorder = Recorder::new(std::env::temp_dir(), Arc::default()).tapped(Vec::new, listen);
+        assert_eq!(d.record(true), Ok(None));
+        d.halt(true);
+        assert!(
+            up.load(Ordering::Relaxed),
+            "the recording ended before the stop flag was up"
+        );
+        assert!(!d.recording());
+    }
+
+    #[test]
+    fn the_menu_answers_stopped_for_a_stop_after_its_check_and_ends_one_during_its_start() {
+        let (d, listened, halter) = halts_while_starting(true);
+        let out = d.record(true);
+        halter.join().unwrap();
+        assert_eq!(out, Err(STOPPED.to_owned()));
+        assert!(!listened.load(Ordering::Relaxed) && !d.recording());
+        let (d, dropped, halter) = halts_while_starting(false);
+        let out = d.record(true);
+        halter.join().unwrap();
+        assert_eq!(out, Ok(None));
+        assert!(dropped.load(Ordering::Relaxed) && !d.recording());
+    }
+
+    #[tokio::test]
     async fn record_start_asks_under_confirm_and_a_no_starts_nothing() {
         let asked = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&asked);
@@ -1258,6 +1331,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stop_that_lands_as_record_start_is_allowed_starts_no_recording() {
+        let d = halted_on_yes(Confirm::Coordinate);
+        let out = d.answer(call("record_start", json!({}))).await;
+        assert_eq!((out.is_error, out.text.as_str()), (true, STOPPED));
+        assert!(!d.recording());
+    }
+
+    #[tokio::test]
     async fn record_start_refuses_apps_that_are_not_a_list_of_names() {
         let d = daemon(Echo, Guard::default()).with_recordings(std::env::temp_dir());
         for apps in [json!("Notes"), json!(["Notes", 5])] {
@@ -1280,7 +1361,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn script_run_turned_off_answers_how_to_turn_it_on() {
+    async fn a_call_while_the_daemon_ends_reaches_nothing_but_a_stop_still_works() {
+        let d = daemon(Echo, Guard::default());
+        d.stop_answering();
+        for tool in ["desk_click", "desk_windows", "script_run", "model_ask"] {
+            let out = d.answer(call(tool, json!({}))).await;
+            assert_eq!((out.is_error, out.text.as_str()), (true, ENDING), "{tool}");
+        }
+        assert!(!d.answer(call("safety_stop", json!({}))).await.is_error);
+        assert!(d.halted());
+    }
+
+    #[tokio::test]
+    async fn script_run_turned_off_says_the_users_configuration_holds_it_off_until_a_restart() {
         let d = daemon(
             Echo,
             Guard {
@@ -1294,7 +1387,13 @@ mod tests {
                 json!({"code": "export function main() { return 1 }"}),
             ))
             .await;
-        assert_eq!((out.is_error, out.text.as_str()), (true, SCRIPT_RUN_OFF));
+        assert_eq!(
+            (out.is_error, out.text.as_str()),
+            (
+                true,
+                "script_run is off in the user's configuration ([tools] script_run in config.toml), which the daemon reads when it starts: a change takes effect once the daemon restarts"
+            )
+        );
     }
 
     #[tokio::test]
@@ -1356,6 +1455,40 @@ mod tests {
             .await;
         let report: Value = serde_json::from_str(&out.text).unwrap();
         assert_eq!(report["result"], 42, "{report}");
+    }
+
+    #[tokio::test]
+    async fn a_plan_runs_with_the_agent_of_its_call_as_its_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../runtime/lib");
+        std::fs::copy(lib.join("entry.mts"), dir.path().join("entry.mts")).unwrap();
+        std::fs::write(dir.path().join("desk.mts"), "export const here = true\n").unwrap();
+        std::fs::write(
+            dir.path().join("gui_plan.mts"),
+            "export function main() { return process.env.SHUTTLE_CALLER }\n",
+        )
+        .unwrap();
+        let runner = Runner::new(
+            "node".into(),
+            dir.path().to_path_buf(),
+            "unused".into(),
+            dir.path().join("flows"),
+            Vec::new(),
+        );
+        let d = Daemon::new(
+            Echo,
+            Ok(Models::new(Config::default())),
+            runner,
+            Guard::default(),
+        );
+        let out = d
+            .answer(Call {
+                agent_id: "mcp-a1b2".into(),
+                tool: "gui_plan".into(),
+                args: json!({"steps": []}),
+            })
+            .await;
+        assert_eq!(out.text, "\"mcp-a1b2\"", "{}", out.text);
     }
 
     #[tokio::test]
@@ -1531,7 +1664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_script_run_off_a_plugin_answers_how_to_turn_it_on() {
+    async fn with_script_run_off_a_plugin_is_refused_like_script_run() {
         let d = daemon(
             Echo,
             Guard {
@@ -1678,6 +1811,54 @@ mod tests {
         Daemon::new(desk, Ok(Models::new(Config::default())), runner(), guard)
     }
 
+    struct Flag(Arc<AtomicBool>);
+
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn halts_while_starting(
+        before_lock: bool,
+    ) -> (
+        Arc<Daemon<Echo>>,
+        Arc<AtomicBool>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let (go, halt) = std::sync::mpsc::channel::<()>();
+        let (halted, done) = std::sync::mpsc::channel::<()>();
+        let done = Mutex::new(done);
+        let seen = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&seen);
+        let early = go.clone();
+        let keyboard = move || {
+            if before_lock {
+                early.send(()).unwrap();
+                done.lock().unwrap().recv().unwrap();
+            }
+            Vec::new()
+        };
+        let listen = move |_, _, _: &[String], _| -> Result<(Box<dyn Send>, bool), String> {
+            if before_lock {
+                flag.store(true, Ordering::Relaxed);
+                return Ok((Box::new(()), false));
+            }
+            go.send(()).unwrap();
+            Ok((Box::new(Flag(Arc::clone(&flag))), false))
+        };
+        let mut d = daemon(Echo, Guard::default());
+        d.recorder = Recorder::new(std::env::temp_dir(), Arc::default()).tapped(keyboard, listen);
+        let d = Arc::new(d);
+        let stopper = Arc::clone(&d);
+        let halter = std::thread::spawn(move || {
+            halt.recv().unwrap();
+            stopper.halt(true);
+            let _ = halted.send(());
+        });
+        (d, seen, halter)
+    }
+
     fn held() -> (Asker, Arc<Mutex<Option<oneshot::Sender<bool>>>>) {
         let pending = Arc::new(Mutex::new(None));
         let held = pending.clone();
@@ -1687,6 +1868,26 @@ mod tests {
             rx
         });
         (asker, pending)
+    }
+
+    fn halted_on_yes(confirm: Confirm) -> Arc<Daemon<Echo>> {
+        Arc::new_cyclic(|d: &std::sync::Weak<Daemon<Echo>>| {
+            let d = d.clone();
+            let asker: Asker = Arc::new(move |_| {
+                if let Some(d) = d.upgrade() {
+                    d.halt(true);
+                }
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(true);
+                rx
+            });
+            let guard = Guard {
+                confirm,
+                asker: Some(asker),
+                ..Guard::default()
+            };
+            daemon(Echo, guard).with_recordings(std::env::temp_dir())
+        })
     }
 
     fn demo(bin: PathBuf) -> Plugin {

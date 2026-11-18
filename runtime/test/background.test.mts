@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { test, type TestContext } from 'node:test'
 
 import { daemon, gray, notepad, root, user } from './daemon.mts'
@@ -23,6 +25,9 @@ function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefin
 }
 
 const sent = (calls: Call[], tool: string) => calls.filter((c) => c.tool === tool).map((c) => c.args)
+
+const TEXT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id), or close it with {close: true} when it has a Cancel button; nothing was sent'
+const SEVERAL = '2 untitled dialogs of "R89Kit" are open, and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
 
 test('a background plan types into its app window behind the front one, names it on every input and fronts nothing', async (t) => {
   const d = desktop([user(), notepad()])
@@ -260,6 +265,50 @@ test('two new macOS dialogs of the app with no owner make background input refus
   assert.ok(!d.calls.some((c) => c.tool === 'desk_type'))
 })
 
+test('a macOS background step, named for its window or not, stops with nothing sent while an untitled alert of the app is in front of it', { skip: process.platform !== 'darwin' }, async (t) => {
+  const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
+  const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: false, app: 'R89Kit' }
+  for (const step of [{ click: 'Tool', window: 'r89aN3' }, { click: 'Tool' }]) {
+    const ws = [user(), doc]
+    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/1', parent: 0, depth: 1, role: 'button', name: 'Alert now', states: ['showing'] }, { ref: 2, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }]
+    const d = desktop(ws, ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify(args.id === alert.id ? { window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }], truncated: false } : { window: doc, nodes, truncated: false })
+      if (tool === 'desk_press') { if (args.id === '198/1') ws.push(alert); return '{"ok":true,"how":"click"}' }
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ app: 'R89Kit' }, { click: 'Alert now' }, step] })
+    assert.equal(r.escalate?.step, 2, JSON.stringify(r))
+    assert.equal(r.escalate?.reason, TEXT)
+    assert.deepEqual(sent(d.calls, 'desk_press'), [{ id: '198/1' }])
+  }
+})
+
+test('a macOS background alert of the app open before the plan stops every input step, named or not, with nothing sent, an unnamed close closes it, and an unnamed close among two such dialogs stops', { skip: process.platform !== 'darwin' }, async (t) => {
+  for (const [step, want, variant] of [[{ click: 'Tool', window: 'r89aN3' }, TEXT, ''], [{ click: 'Tool' }, TEXT, ''], [{ click: 'OK' }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'menu'], [{ click: 'Delete', fp: { role: 'button', name: 'Tool', parent: 'r89aN3', nth: 0 } }, TEXT, ''], [{ click: 'Delete' }, TEXT, 'hidden'], [{ click: 'Delete' }, TEXT, 'unbounded'], [{ click: 'Delete' }, TEXT, 'static'], [{ check: 'Wrap', on: true }, TEXT, ''], [{ set: 'Name', value: 'x' }, TEXT, ''], [{ menu: 'Edit > Delete' }, TEXT, 'menu'], [{ type: 'x' }, TEXT, ''], [{ key: 'return' }, TEXT, ''], [{ close: true, window: 'r89aN3' }, TEXT, ''], [{ close: true }, '', ''], [{ close: true }, SEVERAL, 'two dialogs'], [{ type: 'x' }, TEXT, 'front'], [{ key: 'return' }, TEXT, 'front'], [{ click: 'OK' }, TEXT, 'front'], [{ close: true }, '', 'front'], [{ close: true }, SEVERAL, 'two front'], [{ close: true }, SEVERAL, 'two second front'], [{ click: 'Tool' }, TEXT, 'wait'], [{ key: 'return' }, TEXT, 'wait'], [{ type: 'x' }, TEXT, 'wait']] as const) {
+    rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+    const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
+    const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: variant === 'front' || variant === 'two front' || variant === 'wait', app: 'R89Kit' }
+    const second: W = { id: '202', title: '', role: 'dialog', pid: 4, active: variant === 'two second front', app: 'R89Kit' }
+    const at = variant === 'unbounded' ? { bounds: [10, 10, 40, 20] } : {}
+    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'], ...at }, { ref: 2, id: '198/3', parent: 0, depth: 1, role: variant === 'static' ? 'text' : 'button', name: variant === 'menu' ? 'Wrap' : 'Delete', states: variant === 'hidden' ? [] : ['showing'] }, { ref: 3, id: '198/4', parent: 0, depth: 1, role: 'checkbox', name: 'Wrap', states: ['showing'] }, { ref: 4, id: '198/5', parent: 0, depth: 1, role: 'textbox', name: 'Name', states: ['showing'] }, { ref: 5, id: '198/6', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] }, { ref: 6, id: '198/7', parent: 5, depth: 2, role: 'menu', name: 'Edit', states: ['showing'] }, { ref: 7, id: '198/8', parent: 6, depth: 3, role: 'menuitem', name: 'Delete', states: [] }]
+    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }, { ref: 2, id: '201/2', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }, { ref: 3, id: '201/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]
+    const ws = [{ ...user(), active: !alert.active && !second.active }, doc, alert, ...(variant.startsWith('two') ? [second] : [])].sort((a, b) => +b.active - +a.active)
+    const d = desktop(ws, ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify(args.id === doc.id ? { window: doc, nodes, truncated: false } : { window: alert, nodes: own, truncated: false })
+      if (tool === 'desk_key' && args.keys === 'Escape') ws.splice(ws.indexOf(alert), 1)
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [variant === 'wait' ? { wait: 'r89aN3' } : { app: 'R89Kit' }, step] })
+    const input = d.calls.filter((c) => ['desk_press', 'desk_type', 'desk_key', 'desk_click', 'desk_close'].includes(c.tool)).map((c) => c.tool)
+    if (!want) { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, ['desk_key']); continue }
+    assert.equal(r.escalate?.step, 1, `${JSON.stringify(step)} ${JSON.stringify(r)}`)
+    assert.equal(r.escalate?.reason, want, JSON.stringify(step))
+    assert.deepEqual(input, [], JSON.stringify(step))
+  }
+})
+
 test('an untitled macOS popup of the app, such as AutoFill, is never taken for the plan\'s window', { skip: process.platform !== 'darwin' }, async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {
@@ -289,6 +338,111 @@ async function masks(t: TestContext, type: string) {
   assert.equal(r.ok, true, `${JSON.stringify(type)} ${JSON.stringify(r)}`)
   assert.ok(!JSON.stringify(r).includes('hunter2'), JSON.stringify(r))
 }
+
+test('a plain background type into a field its own read shows as a focused password field is sealed before it goes out and makes the desk calls of a secret step', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const tools: string[][] = []
+  for (const step of [{ type: 'hunter13', secret: true }, { type: 'hunter13' }, { type: 'hunter13', secret: true }]) {
+    let value = ''; const shown: string[] = []
+    const d = desktop([user(), notepad()], ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'focused', 'protected'], value }] })
+      if (tool === 'desk_type') { shown.push(readFileSync(`${run}/result.json`, 'utf8')); value += '•'.repeat(String(args.text).length); return JSON.stringify({ ok: true, chars: 8, unverified: 'unverifiable: Posted via CGEvent.' }) }
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await partial({ steps: [{ app: 'Notepad' }, step] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    for (const text of [JSON.stringify(r), disk, ...shown]) assert.ok(!text.includes('hunter13'), `${JSON.stringify(step)} ${text}`)
+    tools.push(d.calls.map((c) => c.tool))
+  }
+  assert.deepEqual(tools[1], tools[2])
+})
+
+test('a plain background type right after a press, a double or right click, or a set on a password field is sealed though the field reads as not focused, as UIA reads a window behind', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], bounds: [10, 10, 100, 20] }
+  const win = { ...notepad(), bounds: [0, 0, 800, 600] }
+  for (const step of [{ click: 'Password' }, { click: 'Password', count: 2 }, { click: 'Password', button: 'right' }, ...(process.platform === 'win32' ? [] : [{ set: 'Password', value: 'pin' }])]) {
+    const shown: string[] = []
+    const d = desktop([user(), win], ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: win.title, states: [] }, field] })
+      if (tool === 'desk_read') return JSON.stringify(field)
+      if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', x: 60, y: 20 })
+      if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(800, 600).toString('base64') }
+      if (tool === 'desk_type') { shown.push(readFileSync(`${run}/result.json`, 'utf8')); return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await partial({ steps: [{ app: 'Notepad' }, step, { type: 'hunter2' }] })
+    assert.ok(d.calls.some((c) => c.tool === 'desk_type' && c.args.text === 'hunter2'), `${JSON.stringify(step)} ${JSON.stringify(r)}`)
+    const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    for (const text of [JSON.stringify(r), disk, ...shown, readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter2'), `${JSON.stringify(step)} ${text}`)
+  }
+})
+
+test('a pressed password field stays the field a background type goes to across a step that sends nothing, and a press on another element or a key drops it', async (t) => {
+  const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'] }
+  const button = { ref: 2, id: 's', parent: 0, depth: 1, role: 'button', name: 'Sign in', states: ['showing'] }
+  for (const [between, sealed] of [[{ verify: 'Sign in' }, true], [{ click: 'Sign in' }, false], [{ key: 'tab' }, false]] as const) {
+    const d = desktop([user(), notepad()], ({ tool, args }) => {
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: notepad().title, states: [] }, field, button] })
+      if (tool === 'desk_read') return JSON.stringify(args.id === 's' ? button : field)
+      if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', x: 60, y: 20 })
+      if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` })
+      return undefined
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ app: 'Notepad' }, { click: 'Password' }, between, { type: 'hunter2' }] })
+    assert.ok(d.calls.some((c) => c.tool === 'desk_type' && c.args.text === 'hunter2'), `${JSON.stringify(between)} ${JSON.stringify(r)}`)
+    const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+    assert.equal([JSON.stringify(r), disk].some((x) => x.includes('hunter2')), !sealed, `${JSON.stringify(between)} ${JSON.stringify(r)}`)
+  }
+})
+
+test('a macOS background plan with no app step after another app\'s plan left its chain at that app\'s untitled alert works in that alert by the chain, never in the alert of the other app, and with no chain has no window at all', { skip: process.platform !== 'darwin' }, async (t) => {
+  const other: W = { id: '301', title: '', role: 'dialog', pid: 3000, active: false, app: 'Other' }
+  const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: false, app: 'R89Kit' }
+  const d = desktop([user(), other, alert], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: args.id === alert.id ? alert : other, nodes: [{ ref: 0, id: `${String(args.id)}/0`, parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: `${String(args.id)}/1`, parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }], truncated: false })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  assert.equal((await main({ steps: [{ app: 'Other' }] })).ok, true)
+  const r = await main({ steps: [{ click: 'OK' }] })
+  assert.equal(r.escalate?.reason, TEXT.replace('"R89Kit" is in front of "r89aN3" and', '"Other"'), JSON.stringify(r))
+  const chain = JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { pid: number; steps: unknown[] }>
+  assert.deepEqual([chain['']?.pid, chain['']?.steps], [3000, [{ app: 'Other' }]])
+  rmSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, { force: true })
+  const fresh = await main({ steps: [{ click: 'OK' }] })
+  assert.match(String(fresh.escalate?.reason), /^background gui_plan has no target window/, JSON.stringify(fresh))
+  assert.ok(!d.calls.some((c) => ['desk_press', 'desk_click', 'desk_key', 'desk_type'].includes(c.tool)), JSON.stringify(d.calls.map((c) => c.tool)))
+})
+
+test('a macOS background call that continues the chain of an app step that failed at its first step sends nothing to an untitled dialog of the app', { skip: process.platform !== 'darwin' }, async (t) => {
+  const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: true, app: 'R89Kit' }
+  const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
+  let stale = true
+  const d = desktop([alert, doc], ({ tool }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ ...alert, ...(stale ? { stale: true } : {}) }, { ...doc, ...(stale ? { stale: true } : {}) }, { ...user(), active: false }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: alert, nodes: [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }], truncated: false })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const failed = await main({ steps: [{ app: 'R89Kit' }] })
+  assert.equal(failed.escalate?.step, 0, JSON.stringify(failed))
+  stale = false
+  const next = await main({ steps: [{ key: 'return' }] })
+  assert.equal(next.ok, false, JSON.stringify(next))
+  assert.ok(!d.calls.some((c) => c.tool === 'desk_key' || c.tool === 'desk_type'), JSON.stringify(next))
+})
 
 test('when the plan window is gone a window of the app with the same title never takes its place', async (t) => {
   const ws = [user(), notepad()]
@@ -403,6 +557,31 @@ test('a Windows menu toggle that needs pixels refuses in the background and clos
   const r = await main({ steps: [{ app: 'Notepad' }, { menu: 'View > Status Bar', on: false }] })
   assert.equal(r.ok, false)
   assert.match(String(r.escalate?.reason), /needs a look at the screen/)
+  assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/3'])
+  assert.equal(state.open, false)
+})
+
+test('a Windows menu toggle read as already on passes with no note of the unconfirmed click that opened its menu', { skip: process.platform !== 'win32' }, async (t) => {
+  const state = { open: false }
+  const item = { ref: 4, id: 'p/2', parent: 3, depth: 2, role: 'menuitemcheckbox', name: 'Status bar', states: ['showing', 'checked'], bounds: [100, 20, 140, 22] }
+  const nodes = () => [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menubar', name: 'Application', states: ['showing'] },
+    { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 0, 40, 20] },
+    ...(state.open ? [{ ref: 3, id: 'p/1', parent: 0, depth: 1, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 20, 140, 44] }, item] : []),
+  ]
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: nodes(), truncated: false })
+    if (tool === 'desk_read') return JSON.stringify(item)
+    if (tool === 'desk_press' && args.id === '1/3') { state.open = true; return JSON.stringify({ ok: true, how: 'click', unverified: 'unverifiable: Sent, effect not verified: Performed UIA Invoke at (129,49) for pid 4.' }) }
+    if (tool === 'desk_key' && args.keys === 'Escape') state.open = false
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { menu: 'View > Status bar', on: true }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(r.unverified, undefined, JSON.stringify(r))
+  assert.deepEqual([r.trace?.[1]?.was, r.trace?.[1]?.noop], ['on', true], JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/3'])
   assert.equal(state.open, false)
 })
@@ -556,4 +735,105 @@ test('a background wait takes the one window whose title is exactly the text ove
   const r = await main({ steps: [{ wait: 'Viewer', timeout_ms: 400 }, { type: 'x' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'x', window: 'Viewer', pid: 7 }])
+})
+
+test('a plan stopped for a step sent but not confirmed or for a theft counts as done every step that ran, and its chain record ends before the step to check', async (t) => {
+  for (const [steps, done] of [
+    [[{ app: 'Notepad' }, { key: 'ctrl+a' }, { type: 'hello' }], 3],
+    [[{ app: 'Notepad' }, { key: 'alt' }, { type: 'x' }], 2],
+    [[{ app: 'Notepad' }, { key: 'alt' }], 2],
+  ] as const) {
+    const ws = [user(), notepad()]
+    const d = desktop(ws, ({ tool, args }) => {
+      if (tool !== 'desk_key') return undefined
+      if (args.keys === 'alt') { ws[0] = { ...user(), active: false }; ws[1] = { ...notepad(), active: true } }
+      return JSON.stringify({ ok: true, ...(args.keys === 'ctrl+a' ? { unverified: 'unverifiable: posted' } : {}) })
+    })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [...steps] })
+    assert.equal(r.ok, false, JSON.stringify(r))
+    assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+    assert.equal(r.done, done, JSON.stringify(r))
+    const chain = (JSON.parse(readFileSync(`${process.env.SHUTTLE_FLOWS}/.pending.json`, 'utf8')) as Record<string, { steps: unknown[] }>)['']
+    assert.deepEqual(chain?.steps, [{ app: 'Notepad' }], JSON.stringify(chain))
+  }
+})
+
+test('a background locate that presses its element carries the note of a press the driver could not confirm', async (t) => {
+  const nodes = [
+    { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Calculator', states: [] },
+    { ref: 1, id: 'b', parent: 0, depth: 1, role: 'button', name: 'Bold', states: ['showing'], bounds: [10, 10, 20, 20] },
+  ]
+  const d = desktop([user(), notepad()], ({ tool }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: user(), nodes, truncated: false })
+    if (tool === 'desk_press') return JSON.stringify({ ok: true, how: 'click', unverified: 'unverifiable: posted a click' })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const query = 'locate'
+  const fresh = ((await import(`../lib/gui_plan.mts?${query}`)) as typeof import('../lib/gui_plan.mts')).main
+  const r = await fresh({ locate: { target: 'Bold', press: true } })
+  assert.equal(r.found, true, JSON.stringify(r))
+  assert.equal(r.via, 'click', JSON.stringify(r))
+  assert.equal(r.unverified, 'unverifiable: posted a click', JSON.stringify(r))
+})
+
+test('a background app step whose launch raised the running app\'s window takes that window in front as the plan\'s own', async (t) => {
+  const term = (): W => ({ id: 't', title: 'Windows PowerShell', role: 'window', pid: 12, active: false, app: 'WindowsTerminal' })
+  const ws = [user(), term()]
+  const d = desktop(ws, ({ tool }) => {
+    if (tool !== 'desk_launch') return undefined
+    ws[0] = { ...user(), active: false }; ws[1] = { ...term(), active: true }
+    return JSON.stringify({ ok: true, launched: 'raised', running: true, title: 'Windows PowerShell', pid: 12 })
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Windows Terminal' }, { type: 'dir' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: 'dir', window: 'Windows PowerShell', pid: 12 }])
+})
+
+test('a background terminal line into a window no read reaches waits for no settled read after its Return', async (t) => {
+  const term: W = { id: '1', title: 'Terminal', role: 'window', pid: 4, active: false }
+  const note = 'unverifiable: "Terminal" is on another Space'
+  const d = desktop([user(), term], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return { text: '"Terminal" is on another Space', error: true }
+    if (tool === 'desk_type') return JSON.stringify({ ok: true, chars: String(args.text).length, terminal: true, unverified: note })
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Terminal' }, { type: 'a\nb' }] })
+  assert.deepEqual(r.unverified, [{ step: 1, note }], JSON.stringify(r))
+  assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['a', 'b'])
+  assert.ok(sent(d.calls, 'desk_snapshot').length < 10, String(sent(d.calls, 'desk_snapshot').length))
+})
+
+const STALE = { text: 'window list is stale: "Terminal" did not answer in time, so its app is busy or hung; wait and retry, or close the app', error: true }
+
+test('a background terminal line reads its window again after one stale read that follows its Return', async (t) => {
+  const term: W = { id: '1', title: 'Terminal', role: 'window', pid: 4, active: false }
+  let value = ''; let fail = false
+  const d = desktop([user(), term], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') { if (fail) { fail = false; return STALE } return JSON.stringify({ window: term, truncated: false, nodes: [root('window', 'Terminal'), { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'terminal', name: '', states: ['showing'], value }] }) }
+    if (tool === 'desk_type') { value += String(args.text); return JSON.stringify({ ok: true, chars: String(args.text).length, terminal: true, unverified: 'unverifiable: Typed (terminal emulator: pty/XTest key events)' }) }
+    if (tool === 'desk_key' && args.keys === 'Return') { value += '\n'; fail = true }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Terminal' }, { type: 'a\nb' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(value, 'a\nb')
+})
+
+test('a background password line whose first read after typing is stale is still read for its echo before its Return', async (t) => {
+  let value = ''; let fail = false
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') { if (fail) { fail = false; return STALE } return JSON.stringify({ window: notepad(), truncated: false, nodes: [root('window', notepad().title), { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused'], value }] }) }
+    if (tool === 'desk_type') { value += String(args.text); fail = !String(args.text).includes('\n'); return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: 'unverifiable: Posted via CGEvent.' }) }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: '{{pw}}\n', secret: true }], params: { pw: 'hunter2' } })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^the password showed in "Untitled - Notepad", so it was not submitted/)
+  assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['hunter2'])
 })

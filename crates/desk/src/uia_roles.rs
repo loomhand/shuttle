@@ -1,5 +1,7 @@
 //! UIA control types as ARIA roles after W3C Core-AAM, and UIA properties as desk state names.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use crate::model::{self, States};
 
 /// The UIA facts that decide an element's role.
@@ -104,6 +106,103 @@ pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
     })
 }
 
+pub fn forget_closed<T>(unnamed: &mut HashMap<String, T>, last: &BTreeMap<isize, model::Frame>) {
+    unnamed.retain(|id, _| last.values().any(|f| f.id == *id));
+}
+
+pub fn popup_entries<K>(
+    nodes: &[model::Node],
+    root: usize,
+    frame: &mut Vec<(String, K)>,
+) -> Vec<(String, K)> {
+    let depth = nodes[root].depth;
+    let inside: HashSet<&str> = nodes[root..]
+        .iter()
+        .enumerate()
+        .take_while(|(i, n)| *i == 0 || n.depth > depth)
+        .map(|(_, n)| n.id.as_str())
+        .collect();
+    let (popup, rest) = std::mem::take(frame)
+        .into_iter()
+        .partition(|(id, _)| inside.contains(id.as_str()));
+    *frame = rest;
+    popup
+}
+
+pub fn owned_entries<K>(nodes: &[model::Node], frame: &mut Vec<(String, K)>) -> Vec<(String, K)> {
+    let mut owned = Vec::new();
+    for root in (0..nodes.len()).filter(|&i| nodes[i].role == "menu") {
+        owned.extend(popup_entries(nodes, root, frame));
+    }
+    owned
+}
+
+pub fn menu_click_reaches(
+    at: Option<isize>,
+    own: Option<isize>,
+    owners: impl FnOnce(isize) -> Vec<isize>,
+    menu_at: impl FnOnce() -> bool,
+) -> bool {
+    let (Some(at), Some(own)) = (at, own) else {
+        return false;
+    };
+    at != 0 && own != 0 && (at == own || owners(at).contains(&own) && menu_at())
+}
+
+pub fn first_window(
+    handles: impl IntoIterator<Item = Result<isize, String>>,
+) -> Result<Option<isize>, String> {
+    handles.into_iter().find(|h| *h != Ok(0)).transpose()
+}
+
+pub fn menu_family(control_type: i32) -> bool {
+    matches!(control_type, 50009..=50011)
+}
+
+pub fn menu_up_to_root(steps: impl IntoIterator<Item = (bool, isize, isize)>, at: isize) -> bool {
+    let mut menu_seen = false;
+    for (menu, hwnd, root) in steps {
+        menu_seen |= menu;
+        if hwnd == 0 {
+            continue;
+        }
+        if root != at {
+            return false;
+        }
+        if menu_seen {
+            return true;
+        }
+        if hwnd == at {
+            return false;
+        }
+    }
+    false
+}
+
+pub fn walked_id<'a, K: PartialEq + 'a>(
+    lists: impl IntoIterator<Item = &'a (isize, bool, Vec<(String, K)>)>,
+    top: Option<isize>,
+    owners: &[isize],
+    seen: &K,
+    now: impl FnOnce(&str) -> Option<K>,
+) -> Option<String> {
+    let top = top.filter(|&t| t != 0)?;
+    let mut found = None;
+    for (id, key) in lists
+        .into_iter()
+        .filter(|(walked, popups, _)| *walked == top || *popups && owners.contains(walked))
+        .flat_map(|(_, _, list)| list)
+    {
+        if key == seen {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(id);
+        }
+    }
+    found.filter(|id| now(id).as_ref() == Some(seen)).cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +274,364 @@ mod tests {
             ..Facts::default()
         };
         assert_eq!(states("textbox", pw), ["protected"]);
+    }
+
+    #[test]
+    fn the_walked_elements_of_a_window_no_longer_listed_are_dropped() {
+        let frame = |id: &str| model::Frame {
+            id: id.into(),
+            ..model::Frame::default()
+        };
+        let last = BTreeMap::from([(7, frame("open"))]);
+        let mut unnamed = HashMap::from([("open".to_owned(), 1), ("closed".to_owned(), 2)]);
+        forget_closed(&mut unnamed, &last);
+        assert_eq!(unnamed, HashMap::from([("open".to_owned(), 1)]));
+    }
+
+    #[test]
+    fn an_element_without_a_runtime_id_takes_a_walked_id_only_from_its_own_top_level_window() {
+        let item = |name: &str, y: i32| (name.to_owned(), [90, y, 296, 13]);
+        let lists = [
+            (7, false, vec![("u1".to_owned(), item("item 5", 145))]),
+            (9, false, vec![("u2".to_owned(), item("Yes", 300))]),
+            (
+                11,
+                false,
+                vec![
+                    ("u3".to_owned(), item("No", 330)),
+                    ("u4".to_owned(), item("No", 330)),
+                ],
+            ),
+        ];
+        let found = |top, seen: (String, [i32; 4])| {
+            walked_id(&lists, top, &[], &seen, |_| Some(seen.clone()))
+        };
+        assert_eq!(found(Some(7), item("item 5", 145)).as_deref(), Some("u1"));
+        assert_eq!(found(Some(8), item("item 5", 145)), None);
+        assert_eq!(found(Some(9), item("item 5", 145)), None);
+        assert_eq!(found(Some(9), item("Yes", 300)).as_deref(), Some("u2"));
+        assert_eq!(found(Some(7), item("Yes", 300)), None);
+        assert_eq!(found(None, item("item 5", 145)), None);
+        assert_eq!(found(Some(11), item("No", 330)), None);
+        assert_eq!(found(Some(7), item("item 5", 158)), None);
+    }
+
+    #[test]
+    fn an_entry_of_a_popup_menu_walked_with_its_frame_resolves_only_under_the_popup() {
+        let entry = |name: &str| (name.to_owned(), [100, 60, 120, 22]);
+        let frame = [
+            (7, false, vec![("u1".to_owned(), entry("View"))]),
+            (12, false, vec![("u2".to_owned(), entry("Status Bar"))]),
+        ];
+        let found = |top, seen: (String, [i32; 4])| {
+            walked_id(&frame, top, &[], &seen, |_| Some(seen.clone()))
+        };
+        assert_eq!(found(Some(12), entry("Status Bar")).as_deref(), Some("u2"));
+        assert_eq!(found(Some(7), entry("Status Bar")), None);
+        assert_eq!(found(Some(7), entry("View")).as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn a_popup_listed_inside_its_frames_tree_takes_the_entries_of_its_own_subtree() {
+        let node = |id: &str, depth| model::Node {
+            id: id.into(),
+            depth,
+            ..model::Node::default()
+        };
+        let nodes = [
+            node("w", 0),
+            node("u1", 1),
+            node("m", 1),
+            node("u2", 2),
+            node("u3", 3),
+            node("u4", 1),
+            node("u5", 2),
+        ];
+        let mut frame: Vec<(String, i32)> = ["u1", "u2", "u3", "u4", "u5"]
+            .iter()
+            .map(|id| ((*id).to_owned(), 0))
+            .collect();
+        let popup = popup_entries(&nodes, 2, &mut frame);
+        let ids = |l: &[(String, i32)]| l.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&popup), ["u2", "u3"]);
+        assert_eq!(ids(&frame), ["u1", "u4", "u5"]);
+    }
+
+    #[test]
+    fn an_entrys_own_window_is_its_first_handle_and_a_failed_read_before_it_is_an_error() {
+        let gone = || Err("element not available".to_owned());
+        assert_eq!(first_window([Ok(0), Ok(0), Ok(1179760)]), Ok(Some(1179760)));
+        assert_eq!(
+            first_window([Ok(0), Ok(1376446), gone()]),
+            Ok(Some(1376446))
+        );
+        assert_eq!(first_window([Ok(0), Ok(0)]), Ok(None));
+        assert_eq!(
+            first_window([Ok(0), gone(), Ok(7)]),
+            Err("element not available".to_owned()),
+            "the popup vanished: its entry has no window and the popup's own read fails"
+        );
+        assert_eq!(
+            first_window([gone()]),
+            Err("element not available".to_owned())
+        );
+        assert_eq!(
+            first_window([gone(), Ok(0x0012_0070)]),
+            Err("element not available".to_owned()),
+            "a WinForms context entry: the read on its popup fails, and the form beyond it, whose root is not the popup's, has a handle"
+        );
+    }
+
+    #[test]
+    fn a_window_the_entrys_window_owns_passes_only_while_a_menu_is_at_the_point() {
+        let (form, dropdown, palette, toast) = (7, 13, 15, 30);
+        let owners = |w: isize| {
+            if w == dropdown || w == palette {
+                vec![form]
+            } else {
+                Vec::new()
+            }
+        };
+        assert!(
+            menu_click_reaches(Some(dropdown), Some(form), owners, || true),
+            "a WinForms dropdown entry, the hit element its menu \"ViewDropDown\""
+        );
+        assert!(
+            !menu_click_reaches(Some(palette), Some(form), owners, || false),
+            "a topmost tool window the form owns, no menu at the point"
+        );
+        let mut asked = 0;
+        let mut menu = |answer| {
+            asked += 1;
+            answer
+        };
+        assert!(menu_click_reaches(Some(form), Some(form), owners, || menu(
+            false
+        )));
+        assert!(!menu_click_reaches(Some(toast), Some(form), owners, || {
+            menu(true)
+        }));
+        assert!(!menu_click_reaches(None, Some(form), owners, || menu(true)));
+        assert_eq!(asked, 0);
+        assert!([50009, 50010, 50011].into_iter().all(menu_family));
+        assert!(
+            ![50000, 50008, 50012, 50021, 50032]
+                .into_iter()
+                .any(menu_family)
+        );
+    }
+
+    #[test]
+    fn a_menu_counts_only_once_the_climb_reaches_a_window_whose_root_is_the_one_at_the_point() {
+        let (form, palette, child, dropdown, other) = (7, 15, 16, 13, 50);
+        let rows = [
+            (
+                vec![(true, dropdown, dropdown)],
+                dropdown,
+                true,
+                "the measured dropdown: the hit element is its menu \"ViewDropDown\", handle the window at the point",
+            ),
+            (
+                vec![(true, 0, 0), (false, dropdown, dropdown)],
+                dropdown,
+                true,
+                "a menu entry with no window of its own under the popup at the point",
+            ),
+            (
+                vec![(true, other, other), (false, palette, palette)],
+                palette,
+                false,
+                "the hit element is a menu in another window than the one at the point",
+            ),
+            (
+                vec![(true, 0, 0), (false, form, form)],
+                palette,
+                false,
+                "a menu entry with no window whose first windowed ancestor has another root",
+            ),
+            (
+                vec![(false, 0, 0), (false, palette, palette), (true, form, form)],
+                palette,
+                false,
+                "a tool window with no menu up to its own root, though the form above it has a menu bar",
+            ),
+            (
+                vec![
+                    (false, 0, 0),
+                    (false, child, palette),
+                    (true, 0, 0),
+                    (false, palette, palette),
+                ],
+                palette,
+                true,
+                "the residual: a menu inside the owned window, above a child window of it",
+            ),
+            (
+                Vec::new(),
+                palette,
+                false,
+                "no hit element or a failed read",
+            ),
+        ];
+        for (steps, at, passes, row) in rows {
+            assert_eq!(menu_up_to_root(steps, at), passes, "{row}");
+        }
+    }
+
+    #[test]
+    fn a_menu_click_goes_out_only_to_the_entrys_own_window_or_a_window_it_owns() {
+        let (form, context, dropdown, submenu) = (7, 12, 13, 14);
+        let (notepad, popup_host, copy_b, copy_b_popup, toast) = (40, 41, 20, 21, 30);
+        let owners = |w: isize| match w {
+            12 | 13 => vec![form],
+            14 => vec![dropdown, form],
+            41 => vec![notepad],
+            21 => vec![copy_b],
+            _ => Vec::new(),
+        };
+        let reaches = |at, own| menu_click_reaches(at, own, owners, || true);
+        let passes = [
+            (
+                context,
+                context,
+                "a WinForms context menu entry (own = its popup)",
+            ),
+            (
+                dropdown,
+                form,
+                "a WinForms dropdown entry (own = the form, the popup owned by it)",
+            ),
+            (
+                popup_host,
+                popup_host,
+                "a Notepad popup entry (own = its PopupHost)",
+            ),
+            (
+                form,
+                form,
+                "a menu bar item (own = the app window at the point)",
+            ),
+            (
+                submenu,
+                form,
+                "a submenu entry of the app window's tree, two owner levels",
+            ),
+            (
+                submenu,
+                dropdown,
+                "a parent entry under its own open submenu, the accepted price",
+            ),
+        ];
+        for (at, own, row) in passes {
+            assert!(reaches(Some(at), Some(own)), "{row}");
+        }
+        let refusals = [
+            (
+                copy_b_popup,
+                context,
+                "copy B's popup over copy A's context menu entry",
+            ),
+            (
+                copy_b_popup,
+                form,
+                "copy B's popup over copy A's dropdown entry",
+            ),
+            (
+                toast,
+                context,
+                "a foreign top-most window over a context menu entry",
+            ),
+            (
+                toast,
+                form,
+                "a foreign top-most window over a dropdown entry",
+            ),
+            (form, context, "the owner form where the popup was"),
+            (0, 0, "a zero handle"),
+        ];
+        for (at, own, row) in refusals {
+            assert!(!reaches(Some(at), Some(own)), "{row}");
+        }
+        assert!(!reaches(None, Some(context)), "no window at the point");
+        assert!(!reaches(Some(context), None), "no own window");
+    }
+
+    #[test]
+    fn a_walked_element_that_no_longer_has_its_recorded_type_name_and_bounds_gives_no_id() {
+        let row = |y: i32| ("row".to_owned(), [90, y, 296, 13]);
+        let lists = [(
+            7,
+            false,
+            vec![("u1".to_owned(), row(93)), ("u2".to_owned(), row(106))],
+        )];
+        let at = |now: Option<(String, [i32; 4])>| {
+            walked_id(&lists, Some(7), &[], &row(106), move |id| {
+                assert_eq!(id, "u2");
+                now
+            })
+        };
+        assert_eq!(at(Some(row(106))).as_deref(), Some("u2"));
+        assert_eq!(at(Some(row(93))), None);
+        assert_eq!(at(None), None);
+    }
+
+    #[test]
+    fn an_entry_of_a_popup_owned_by_a_walked_window_resolves_through_the_owner() {
+        let entry = |name: &str, y: i32| (name.to_owned(), [100, y, 120, 22]);
+        let lists = [
+            (7, false, vec![("u1".to_owned(), entry("Status Bar", 60))]),
+            (7, true, vec![("u2".to_owned(), entry("Bravo", 80))]),
+            (9, true, vec![("u3".to_owned(), entry("Bravo", 80))]),
+            (
+                11,
+                true,
+                vec![
+                    ("u4".to_owned(), entry("Alpha", 60)),
+                    ("u5".to_owned(), entry("Alpha", 60)),
+                ],
+            ),
+        ];
+        let found = |top, owners: &[isize], seen: (String, [i32; 4])| {
+            walked_id(&lists, top, owners, &seen, |_| Some(seen.clone()))
+        };
+        assert_eq!(
+            found(Some(12), &[7], entry("Bravo", 80)).as_deref(),
+            Some("u2")
+        );
+        assert_eq!(found(Some(12), &[8], entry("Bravo", 80)), None);
+        assert_eq!(found(Some(12), &[], entry("Bravo", 80)), None);
+        assert_eq!(found(Some(12), &[7], entry("Status Bar", 60)), None);
+        assert_eq!(
+            found(Some(7), &[], entry("Bravo", 80)).as_deref(),
+            Some("u2")
+        );
+        assert_eq!(found(Some(12), &[11], entry("Alpha", 60)), None);
+    }
+
+    #[test]
+    fn the_entries_under_every_menu_node_leave_the_frame_for_its_popup_segment() {
+        let node = |id: &str, depth, role| model::Node {
+            id: id.into(),
+            depth,
+            role,
+            ..model::Node::default()
+        };
+        let nodes = [
+            node("w", 0, "window"),
+            node("u1", 1, "button"),
+            node("v", 1, "menu"),
+            node("u2", 2, "menuitem"),
+            node("d", 1, "menu"),
+            node("u3", 2, "menuitem"),
+            node("u4", 1, "listitem"),
+        ];
+        let mut frame: Vec<(String, i32)> = ["u1", "u2", "u3", "u4"]
+            .iter()
+            .map(|id| ((*id).to_owned(), 0))
+            .collect();
+        let owned = owned_entries(&nodes, &mut frame);
+        let ids = |l: &[(String, i32)]| l.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&owned), ["u2", "u3"]);
+        assert_eq!(ids(&frame), ["u1", "u4"]);
     }
 }

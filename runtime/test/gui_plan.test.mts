@@ -95,7 +95,7 @@ test('an untitled start window that is no alert is read once for the start check
 
 test('an untitled popup a step read before it acts is not read again to leave the step in the plan\'s window', async (t) => {
   const editor = { id: '1', title: 'Editor', role: 'window', pid: 5 }
-  const popup = { id: '2', title: '', role: 'dialog', pid: 5 }
+  const popup = { id: '2', title: '', role: 'dialog', pid: 5, owner: '1' }
   const reads: string[] = []
   let open = false
   await daemon(t, ({ tool, args }) => {

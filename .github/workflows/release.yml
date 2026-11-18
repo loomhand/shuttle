@@ -207,7 +207,7 @@ jobs:
     steps:
       - name: Prerequisites
         if: matrix.container
-        run: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+        run: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libx11-6 libxi6 libxkbcommon0
 
       - name: Install
         if: runner.os != 'Windows'
@@ -252,6 +252,18 @@ jobs:
           SHUTTLE_SCRIPT="$run/script.mjs" SHUTTLE_RUN="$run" "$node" "$runtime/entry.mjs"
           cat "$run/result.json"
           grep -qF '{"n":42,"desk":"function"}' "$run/result.json"
+
+      - name: Bundled cua-driver starts and is built for this machine
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+          Linux) driver=$HOME/.local/lib/loomhand/shuttle/cua-driver ;;
+          macOS) driver=$HOME/Applications/Loomhand/Shuttle.app/Contents/MacOS/cua-driver ;;
+          Windows) driver=$LOCALAPPDATA/Programs/loomhand/shuttle/cua-driver.exe ;;
+          esac
+          "$driver" --version | tee driver.txt
+          grep -q '^cua-driver [0-9]' driver.txt
+          [ "$RUNNER_OS" != macOS ] || lipo -archs "$driver" | grep -qx "$(uname -m)"
 
   promote:
     needs: install

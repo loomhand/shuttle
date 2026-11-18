@@ -21,6 +21,7 @@ const RESERVED: [&str; 3] = ["desk_", "model_", "safety_"];
 pub struct Plugins {
     pub runs: Vec<Plugin>,
     pub services: Vec<Service>,
+    pub script_run_off: bool,
 }
 
 impl Plugins {

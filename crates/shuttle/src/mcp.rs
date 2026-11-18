@@ -17,6 +17,7 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const AGENT_PART: usize = 32;
+const SCRIPT_CLAUSE: &str = " a loop or logic a plan cannot hold goes to one script_run;";
 const INSTRUCTIONS: &str = "These tools act on the user's own desktop. GUI work in a desktop app goes to gui_plan, the whole plan in one call; a loop or logic a plan cannot hold goes to one script_run; one look or one click goes to desk or screenshot. To learn a task by watching the user, record_start, let them do it, then record_stop and run its draft with gui_plan. A desk result that says declined by the user, a confirm dialog is open or desk busy sent nothing for that call. A result that says stopped by the user, has unverified, counts the lines a type sent before its error, or counts the presses a key sent before its error may have taken effect, and a gui_plan error that says what it left, or a result with caveats, names steps that ran; the same input sent again can act twice.";
 
 pub(crate) type Message = Result<Map<String, Value>, String>;
@@ -179,11 +180,16 @@ fn initialize(params: &Value, plugins: &Plugins) -> Value {
         .into_iter()
         .find(|v| *v == asked)
         .unwrap_or(PROTOCOL_VERSIONS[0]);
+    let instructions = if plugins.script_run_off {
+        INSTRUCTIONS.replace(SCRIPT_CLAUSE, "")
+    } else {
+        INSTRUCTIONS.to_owned()
+    };
     let mut out = json!({
         "protocolVersion": version,
         "capabilities": {"tools": {}},
         "serverInfo": {"name": NAME, "version": VERSION},
-        "instructions": INSTRUCTIONS,
+        "instructions": instructions,
     });
     if plugins.runs.iter().any(|p| !p.resources.is_empty()) {
         out["capabilities"]["resources"] = json!({});
@@ -270,6 +276,23 @@ mod tests {
         let status: Value =
             serde_json::from_str(out[2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(status["version"], VERSION);
+    }
+
+    #[test]
+    fn with_script_run_off_the_instructions_do_not_name_it() {
+        let off = Plugins {
+            script_run_off: true,
+            ..Plugins::default()
+        };
+        let hidden = initialize(&json!({}), &off)["instructions"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            !hidden.contains("script_run")
+                && hidden.contains("in one call; one look or one click goes to desk"),
+            "{hidden}"
+        );
     }
 
     #[tokio::test]
@@ -434,7 +457,7 @@ mod tests {
         ];
         let plugins = Plugins {
             runs: vec![plugin],
-            services: Vec::new(),
+            ..Plugins::default()
         };
         let out = session_with(&lines, &endpoint, &plugins).await;
         let without = session(&lines[..3], &endpoint).await;

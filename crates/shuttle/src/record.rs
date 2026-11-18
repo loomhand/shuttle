@@ -1,6 +1,5 @@
 //! Recordings of what the user does: each click and key with what the desk saw then, for a draft of replayable steps.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
@@ -17,9 +16,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
-use crate::lock;
 #[cfg(target_os = "macos")]
 use crate::tap::{self, Tap};
+use crate::{STOPPED, lock, write_private};
 
 const SETTLE: Duration = Duration::from_millis(700);
 const CROP_PT: [f64; 2] = [200.0, 100.0];
@@ -44,11 +43,19 @@ const OTHER_OS: &str = "recording runs only on macOS";
 const RECORDING: &str = "a recording is already running: stop it first";
 const NOTHING: &str = "no recording is running, and none was made since the daemon started";
 const GONE: &str = "the recording worker is gone";
+const SECURE_INPUT: &str = "secure input is on, so macOS hides every key from the recorder until it ends: the recording keeps your clicks but no keys until then. An app holds it while it shows a password field or prompt or has Secure Keyboard Entry on, and it can be an app that is not in front: close that field, prompt or app to record typing";
 
-#[cfg(target_os = "macos")]
-type Listening = Tap;
-#[cfg(not(target_os = "macos"))]
-type Listening = std::convert::Infallible;
+type Keyboard = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
+type Listen = Box<
+    dyn Fn(
+            UnboundedSender<Input>,
+            Arc<AtomicUsize>,
+            &[String],
+            Vec<u32>,
+        ) -> Result<(Box<dyn Send>, bool), String>
+        + Send
+        + Sync,
+>;
 
 /// One thing the user did, in desk coordinates, or a note.
 #[derive(Debug)]
@@ -117,6 +124,8 @@ pub struct Recorder {
     sessions: Mutex<Option<UnboundedReceiver<Session>>>,
     live: Mutex<Option<Live>>,
     ended: Mutex<Option<Ended>>,
+    keyboard: Keyboard,
+    listen: Listen,
 }
 
 impl Recorder {
@@ -130,6 +139,8 @@ impl Recorder {
             sessions: Mutex::new(Some(sessions)),
             live: Mutex::new(None),
             ended: Mutex::new(None),
+            keyboard: Box::new(keyboard),
+            listen: Box::new(listen),
         }
     }
 
@@ -142,34 +153,9 @@ impl Recorder {
         lock(&self.live).is_some()
     }
 
-    /// Starts recording the user's input, in `apps` alone when it names any; answers the recording's id.
-    pub fn start(&self, apps: Vec<String>) -> Result<String, String> {
-        let mut live = lock(&self.live);
-        if live.is_some() {
-            return Err(RECORDING.to_owned());
-        }
-        let (notes, inputs) = unbounded_channel();
-        let tap = listen(notes.clone(), Arc::clone(&self.acting), &apps)?;
-        let id = format!("rec-{}", now_ms());
-        let path = self.path(&id);
-        let (done, made) = oneshot::channel();
-        self.queue
-            .send(Session {
-                id: id.clone(),
-                apps,
-                per_point: per_point(),
-                path: path.clone(),
-                inputs,
-                done,
-            })
-            .map_err(|_| GONE.to_owned())?;
-        *live = Some(Live {
-            path,
-            notes,
-            made,
-            _tap: tap,
-        });
-        Ok(id)
+    /// Starts recording the user's input, in `apps` alone when it names any, unless `halted`; answers the recording's id, and a note while secure input hides the keys.
+    pub fn start(&self, apps: Vec<String>, halted: impl Fn() -> bool) -> Result<Value, String> {
+        self.start_with(apps, halted, &self.keyboard, &self.listen)
     }
 
     /// Adds the user's note to the running recording, where it is now.
@@ -227,6 +213,50 @@ impl Recorder {
                 .map_err(|e| format!("read {}: {e}", path.display())),
         }
     }
+
+    pub(crate) fn start_with<T: Send + 'static>(
+        &self,
+        apps: Vec<String>,
+        halted: impl Fn() -> bool,
+        keyboard: impl FnOnce() -> Vec<u32>,
+        listen: impl FnOnce(
+            UnboundedSender<Input>,
+            Arc<AtomicUsize>,
+            &[String],
+            Vec<u32>,
+        ) -> Result<(T, bool), String>,
+    ) -> Result<Value, String> {
+        let layout = keyboard();
+        let mut live = lock(&self.live);
+        if live.is_some() {
+            return Err(RECORDING.to_owned());
+        }
+        if halted() {
+            return Err(STOPPED.to_owned());
+        }
+        let (notes, inputs) = unbounded_channel();
+        let (tap, held) = listen(notes.clone(), Arc::clone(&self.acting), &apps, layout)?;
+        let id = format!("rec-{}", now_ms());
+        let path = self.path(&id);
+        let (done, made) = oneshot::channel();
+        self.queue
+            .send(Session {
+                id: id.clone(),
+                apps,
+                per_point: per_point(),
+                path: path.clone(),
+                inputs,
+                done,
+            })
+            .map_err(|_| GONE.to_owned())?;
+        *live = Some(Live {
+            path,
+            notes,
+            made,
+            _tap: Box::new(tap),
+        });
+        Ok(started(id, held))
+    }
 }
 
 /// A recording for the worker: its inputs until they end, where to save it and where to send it.
@@ -243,7 +273,7 @@ struct Live {
     path: PathBuf,
     notes: UnboundedSender<Input>,
     made: oneshot::Receiver<Value>,
-    _tap: Listening,
+    _tap: Box<dyn Send>,
 }
 
 struct Ended {
@@ -323,10 +353,10 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         }
                         windows = list(desk).await;
                         light(desk, &windows, &apps, &mut asked).await;
-                        let win = window_of(&windows, &at);
+                        let win = window_of(&windows, &at, x, y);
                         let named = win.filter(|w| w["app"].is_string()).or_else(|| of_pid(&windows, pid));
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
-                        if (app.is_some() || pid.is_none()) && kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
+                        if !at.is_null() && (app.is_some() || pid.is_none()) && kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
                             let late = frame.as_ref().is_none_or(|f| f.at < acted || win.is_none_or(|w| w["id"] != f.window.as_str()));
                             if late {
                                 frame = framed(desk, &windows, win, &apps).await;
@@ -380,7 +410,8 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                         }
                         let named = match pid {
                             Some(_) => of_pid(&windows, pid),
-                            None => front.as_ref(),
+                            None if apps.is_empty() => front.as_ref(),
+                            None => None,
                         };
                         let app = named.and_then(|w| w["app"].as_str()).map(str::to_owned);
                         if (app.is_none() && pid.is_some()) || pid == Some(u64::from(std::process::id())) || !kept(app.as_deref(), named.and_then(|w| w["bundle"].as_str()), pid, &apps) {
@@ -439,7 +470,8 @@ fn listen(
     tx: UnboundedSender<Input>,
     acting: Arc<AtomicUsize>,
     apps: &[String],
-) -> Result<Listening, String> {
+    layout: Vec<u32>,
+) -> Result<(Box<dyn Send>, bool), String> {
     if !tap::allowed() {
         tap::ask();
         return Err(INPUT_MONITORING.to_owned());
@@ -447,7 +479,7 @@ fn listen(
     if let Some(app) = shuttle_desk::ax::secure_keyboard_entry(|a| covers(apps, a)) {
         return Err(hidden(app));
     }
-    Tap::start(tx, acting)
+    Tap::start(tx, acting, layout).map(|(tap, held)| (Box::new(tap) as Box<dyn Send>, held))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -455,8 +487,27 @@ fn listen(
     _: UnboundedSender<Input>,
     _: Arc<AtomicUsize>,
     _: &[String],
-) -> Result<Listening, String> {
+    _: Vec<u32>,
+) -> Result<(Box<dyn Send>, bool), String> {
     Err(OTHER_OS.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn keyboard() -> Vec<u32> {
+    dispatch2::run_on_main(|_| tap::layout())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn keyboard() -> Vec<u32> {
+    Vec::new()
+}
+
+fn started(id: String, held: bool) -> Value {
+    let mut reply = json!({"ok": true, "id": id});
+    if held {
+        reply["note"] = SECURE_INPUT.into();
+    }
+    reply
 }
 
 fn covers(apps: &[String], app: &str) -> bool {
@@ -543,14 +594,24 @@ fn bundle(_pid: u64) -> Option<String> {
 }
 
 // a path from the tap names its window by role and title, one from desk_at by id
-fn window_of<'a>(windows: &'a [Value], at: &Value) -> Option<&'a Value> {
+fn window_of<'a>(windows: &'a [Value], at: &Value, x: f64, y: f64) -> Option<&'a Value> {
     let path = at["path"].as_array()?;
     let pid = at["pid"].as_u64();
-    path.iter().find_map(|n| {
-        windows.iter().find(|w| match n["id"].as_str() {
-            Some(id) => w["id"].as_str() == Some(id),
-            None => n["role"] == "window" && w["title"] == n["name"] && w["pid"].as_u64() == pid,
+    let under = |w: &&Value| {
+        <[f64; 4]>::deserialize(&w["bounds"]).is_ok_and(|[left, top, width, height]| {
+            (left..left + width).contains(&x) && (top..top + height).contains(&y)
         })
+    };
+    path.iter().find_map(|n| {
+        let mut named = windows.iter().filter(|w| match n["id"].as_str() {
+            Some(id) => w["id"].as_str() == Some(id),
+            None => {
+                (n["role"] == "window" || (n["role"] == "dialog" && w["role"] == "dialog"))
+                    && w["title"] == n["name"]
+                    && w["pid"].as_u64() == pid
+            }
+        });
+        named.clone().find(under).or_else(|| named.next())
     })
 }
 
@@ -607,7 +668,10 @@ async fn framed<H: Handler>(
         };
         w = windows.iter().find(|x| x["id"].as_str() == Some(owner))?;
     }
-    if !window_kept(w, apps) {
+    let twin = windows
+        .iter()
+        .any(|o| o["id"] != w["id"] && o["pid"] == w["pid"] && o["title"] == w["title"]);
+    if twin || !window_kept(w, apps) {
         return None;
     }
     let bounds = <[f64; 4]>::deserialize(&w["bounds"]).ok()?;
@@ -656,14 +720,6 @@ fn save(path: &Path, recording: &Value) -> Result<(), String> {
     write_private(path, &body).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    let mut open = std::fs::OpenOptions::new();
-    open.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
-    open.open(path)?.write_all(body)
-}
-
 fn now_ms() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -675,6 +731,26 @@ mod tests {
     use desk_core::wire::Output;
 
     use super::*;
+
+    impl Recorder {
+        pub(crate) fn tapped(
+            mut self,
+            keyboard: impl Fn() -> Vec<u32> + Send + Sync + 'static,
+            listen: impl Fn(
+                UnboundedSender<Input>,
+                Arc<AtomicUsize>,
+                &[String],
+                Vec<u32>,
+            ) -> Result<(Box<dyn Send>, bool), String>
+            + Send
+            + Sync
+            + 'static,
+        ) -> Self {
+            self.keyboard = Box::new(keyboard);
+            self.listen = Box::new(listen);
+            self
+        }
+    }
 
     #[tokio::test]
     async fn a_click_keeps_the_element_under_it_its_window_and_a_crop_around_it() {
@@ -902,6 +978,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_click_in_a_dialog_window_keeps_that_window_and_a_crop_of_it() {
+        let desk = Desk {
+            more: vec![
+                json!({"id": "7/3", "title": "Confirm", "role": "dialog", "pid": 7, "active": false, "app": "TextEdit", "bounds": [40, 50, 150, 100]}),
+            ],
+            ..Desk::new(Value::Null)
+        };
+        let ok = Input::Click {
+            x: 100.0,
+            y: 80.0,
+            right: false,
+            count: 1,
+            mods: Vec::new(),
+            found: Some(Hit {
+                role: "button",
+                pid: Some(7),
+                path: vec![("dialog", "Confirm".into())],
+                ..Hit::default()
+            }),
+        };
+        let r = run(&desk, &[], vec![ok]).await;
+        let e = &r["events"][0];
+        assert_eq!(
+            e["window"],
+            json!({"title": "Confirm", "bounds": [40, 50, 150, 100]}),
+            "{e}"
+        );
+        assert!(e["crop"].is_string(), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_click_in_one_of_two_windows_of_one_title_keeps_the_window_under_it_and_no_crop() {
+        let desk = Desk {
+            more: vec![
+                json!({"id": "7/2", "title": "Untitled", "role": "window", "pid": 7, "active": false, "app": "TextEdit", "bounds": [400, 20, 300, 200]}),
+            ],
+            ..Desk::new(Value::Null)
+        };
+        let at = |x| Input::Click {
+            x,
+            y: 80.0,
+            right: false,
+            count: 1,
+            mods: Vec::new(),
+            found: Some(Hit {
+                role: "textbox",
+                pid: Some(7),
+                path: vec![("window", "Untitled".into())],
+                ..Hit::default()
+            }),
+        };
+        let r = run(&desk, &[], vec![at(500.0), at(100.0)]).await;
+        let e = &r["events"];
+        assert_eq!(
+            (&e[0]["window"]["bounds"], &e[1]["window"]["bounds"]),
+            (&json!([400, 20, 300, 200]), &json!([10, 20, 300, 200])),
+            "{e}"
+        );
+        assert!(each(&r, "crop").iter().all(|c| c.is_null()), "{e}");
+    }
+
+    #[tokio::test]
     async fn a_click_on_a_document_root_is_marked_root() {
         let desk = Desk::new(
             json!({"found": {"role": "document", "name": ""}, "path": [{"id": "7/1", "role": "window", "name": "Untitled"}], "pid": 7}),
@@ -1002,6 +1140,18 @@ mod tests {
         assert_eq!(r["events"][0]["kind"], "key", "{r}");
     }
 
+    #[tokio::test]
+    async fn a_key_that_no_app_can_be_named_for_is_skipped_under_an_app_list() {
+        let desk = Desk::new(json!({}));
+        let listed = run(&desk, &["TextEdit"], vec![key("x", false)]).await;
+        assert_eq!(
+            listed["events"][0],
+            json!({"t": listed["events"][0]["t"], "kind": "skipped"})
+        );
+        let open = run(&desk, &[], vec![key("x", false)]).await;
+        assert_eq!(open["events"][0]["app"], "TextEdit", "{open}");
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn a_recording_covers_every_app_when_it_names_none_and_otherwise_only_the_apps_it_names() {
@@ -1009,6 +1159,136 @@ mod tests {
         assert!(covers(&["terminal".to_owned()], "Terminal"));
         assert!(!covers(&["Safari".to_owned()], "Terminal"));
         assert!(hidden("Terminal").starts_with("Terminal's Secure Keyboard Entry is on"));
+    }
+
+    #[test]
+    fn a_stopped_daemon_starts_no_recording_and_no_tap() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let mut listened = false;
+        let out = r.start_with(
+            Vec::new(),
+            || true,
+            Vec::new,
+            |_, _, _, _| {
+                listened = true;
+                Ok(((), false))
+            },
+        );
+        assert_eq!(out, Err(STOPPED.to_owned()));
+        assert!(!listened && !r.recording());
+    }
+
+    #[test]
+    fn the_layout_is_read_with_the_lock_free_and_the_tap_starts_under_it() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let out = r.start_with(
+            Vec::new(),
+            || false,
+            || {
+                assert!(
+                    r.live.try_lock().is_ok(),
+                    "the layout is read under the lock"
+                );
+                Vec::new()
+            },
+            |_, _, _, _| {
+                assert!(
+                    r.live.try_lock().is_err(),
+                    "the tap starts outside the lock"
+                );
+                Err::<((), bool), _>("no tap".to_owned())
+            },
+        );
+        assert_eq!(out, Err("no tap".to_owned()));
+    }
+
+    #[test]
+    fn a_stop_while_the_tap_starts_ends_the_recording_once_it_is_published() {
+        struct Fake(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Fake {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let r = Arc::new(Recorder::new(std::env::temp_dir(), Arc::default()));
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (listening, stopping) = std::sync::mpsc::channel();
+        let (issued, stop_issued) = std::sync::mpsc::channel();
+        let stopper = {
+            let r = Arc::clone(&r);
+            std::thread::spawn(move || {
+                stopping.recv().unwrap();
+                issued.send(()).unwrap();
+                r.end();
+            })
+        };
+        let out = r.start_with(
+            Vec::new(),
+            || false,
+            Vec::new,
+            |_, _, _, _| {
+                listening.send(()).unwrap();
+                stop_issued.recv().unwrap();
+                Ok((Fake(Arc::clone(&dropped)), false))
+            },
+        );
+        stopper.join().unwrap();
+        assert!(out.is_ok(), "{out:?}");
+        assert!(!r.recording());
+        assert!(dropped.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_start_whose_tap_fails_leaves_the_next_start_free_to_try() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let failed = r.start_with(
+            Vec::new(),
+            || false,
+            Vec::new,
+            |_, _, _, _| Err::<((), bool), _>("no event tap".to_owned()),
+        );
+        assert_eq!(failed, Err("no event tap".to_owned()));
+        assert!(!r.recording());
+        let mut tried = false;
+        let next = r.start_with(
+            Vec::new(),
+            || false,
+            Vec::new,
+            |_, _, _, _| {
+                tried = true;
+                Ok(((), false))
+            },
+        );
+        assert!(tried && next.is_ok(), "{next:?}");
+        r.end();
+    }
+
+    #[test]
+    fn a_second_start_while_one_is_live_is_refused() {
+        let r = Recorder::new(std::env::temp_dir(), Arc::default());
+        let first = r.start_with(Vec::new(), || false, Vec::new, |_, _, _, _| Ok(((), false)));
+        assert!(first.is_ok(), "{first:?}");
+        let second = r.start_with(Vec::new(), || false, Vec::new, |_, _, _, _| Ok(((), false)));
+        assert_eq!(second, Err(RECORDING.to_owned()));
+        assert!(r.recording());
+        r.end();
+    }
+
+    #[test]
+    fn a_start_while_secure_input_hides_the_keys_says_so_and_a_plain_start_does_not() {
+        assert_eq!(
+            started("rec-1".into(), false),
+            json!({"ok": true, "id": "rec-1"})
+        );
+        let held = started("rec-2".into(), true);
+        let note = held["note"].as_str().unwrap();
+        assert_eq!((&held["ok"], &held["id"]), (&json!(true), &json!("rec-2")));
+        assert!(
+            note.starts_with(
+                "secure input is on, so macOS hides every key from the recorder until it ends"
+            ) && note.contains("keeps your clicks but no keys"),
+            "{note}"
+        );
     }
 
     #[tokio::test]
@@ -1076,6 +1356,18 @@ mod tests {
                 (&json!("key"), &json!("TextEdit")),
             ],
             "{r}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_click_the_desk_refuses_to_look_under_is_skipped_without_its_point() {
+        let desk = Desk::new(json!(
+            "the app allowlist leaves out the app under the point"
+        ));
+        let r = run(&desk, &[], vec![click(5.0, 5.0)]).await;
+        assert_eq!(
+            r["events"][0],
+            json!({"t": r["events"][0]["t"], "kind": "skipped"})
         );
     }
 
@@ -1173,6 +1465,7 @@ mod tests {
     struct Desk {
         front: Mutex<&'static str>,
         hit: Value,
+        more: Vec<Value>,
         shots: Mutex<Vec<Value>>,
         webs: Mutex<Vec<Value>>,
         released: Mutex<Vec<String>>,
@@ -1183,6 +1476,7 @@ mod tests {
             Self {
                 front: Mutex::new("Untitled"),
                 hit,
+                more: Vec::new(),
                 shots: Mutex::default(),
                 webs: Mutex::default(),
                 released: Mutex::default(),
@@ -1194,16 +1488,24 @@ mod tests {
         async fn answer(&self, call: Call) -> Output {
             let front = *lock(&self.front);
             match call.tool.as_str() {
-                "desk_windows" => Output::text(
-                    json!([
+                "desk_windows" => {
+                    let mut listed = json!([
                         {"id": "7/1", "title": front, "role": "window", "pid": 7, "active": true, "app": "TextEdit", "bounds": [10, 20, 300, 200]},
                         {"id": "9/1", "title": "Vault", "role": "window", "pid": 9, "active": false, "app": "1Password"},
                         {"id": "5/1", "title": "未命名", "role": "window", "pid": 5, "active": false, "app": "文本编辑", "bundle": "TextEdit"},
-                    ])
-                    .to_string(),
-                ),
+                    ]);
+                    listed
+                        .as_array_mut()
+                        .unwrap()
+                        .extend(self.more.iter().cloned());
+                    Output::text(listed.to_string())
+                }
                 "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
-                    Output::text(self.hit.to_string())
+                    match &self.hit {
+                        Value::String(refused) => Output::error(refused.clone()),
+                        Value::Null => Output::text(json!({"found": null}).to_string()),
+                        hit => Output::text(hit.to_string()),
+                    }
                 }
                 "desk_web" if call.args["pid"] == 7 => {
                     lock(&self.webs).push(call.args);

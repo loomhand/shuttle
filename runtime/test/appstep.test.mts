@@ -24,6 +24,23 @@ test('an app step finds a running app by the app its windows name, whatever thei
   assert.ok(!calls.includes('desk_launch'), calls.join(' '))
 })
 
+test('an app step fronts the window it read by its id when another window of the process has its title, and a named window step whose title is its own fronts it by title alone', async (t) => {
+  const docs = [{ id: '41', title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }, { id: '42', title: 'Untitled', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }, { id: '43', title: 'Report', role: 'window', pid: process.pid, active: false, app: 'TextEdit' }]
+  const focused: unknown[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ id: 'c', title: 'Calculator', role: 'window', pid: 9, active: !docs.some((d) => d.active) }, ...docs])
+    if (tool === 'desk_focus') { focused.push(args.id); for (const d of docs) d.active = args.id === undefined ? d.title === args.window : d.id === args.id; return JSON.stringify({ ok: true, title: args.window, pid: args.pid }) }
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: docs[0], nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'TextEdit' }, { key: 'ctrl+b' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  for (const d of docs) d.active = false
+  const named = await main({ steps: [{ wait: 'Report' }] })
+  assert.equal(named.ok, true, JSON.stringify(named))
+  assert.deepEqual(focused, ['41', undefined])
+})
+
 test('an app step finds a running app by the bundle its localized windows come from', async (t) => {
   const doc = { id: '1', title: '未命名', role: 'window', pid: process.pid, active: false, app: '文本编辑', bundle: 'TextEdit' }
   const calls: string[] = []
@@ -325,4 +342,20 @@ test('an app step with a title takes the titled window of its own app, the exact
   const own = await main({ steps: [{ app: 'TextEdit', title: 'Untitled' }] })
   assert.equal(own.ok, true, JSON.stringify(own))
   assert.deepEqual(focused, [['Untitled 2', 8]])
+})
+
+test('an app step whose launch shows no window says that the launch went out, so a retry waits instead of launching again', async (t) => {
+  const other = { id: '1', title: 'Calculator', role: 'window', pid: 7, active: true, app: 'Calculator' }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([other])
+    if (tool === 'desk_launch') return JSON.stringify({ ok: true, launched: 'Slowpad' })
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: other, nodes: [], truncated: false })
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ app: 'Slowpad' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(String(r.escalate?.reason), /^app "Slowpad" was launched and showed no window within 8 s; it may still open/, JSON.stringify(r))
+  assert.equal(calls.filter((c) => c === 'desk_launch').length, 1, calls.join(' '))
 })

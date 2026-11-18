@@ -37,11 +37,11 @@ type Rec = {
   i: number; op?: string; ms?: number; served?: unknown[]; how?: string; via?: string; window?: string; seen?: string; submit?: boolean; waited?: boolean
   blank?: Fp; fp?: Fp; was?: boolean | 'mixed' | null; now?: boolean; noop?: boolean; state?: string; opened?: number; path?: string[]; pick?: number[]
   focused?: string; p?: number; p_zoom?: number | null; p_full?: number | null; verdict?: Vision; ground_hit?: string; checked?: string; value?: string; ref?: string; unsaved?: boolean
-  unverified?: string; caveat?: string; confirmed?: boolean; fg?: boolean
+  unverified?: string; caveat?: string; confirmed?: boolean; fg?: boolean; secret?: boolean
 }
 type Vision = { on?: boolean; ok?: boolean; why?: string }
 type Seen = { window?: string | null; windows?: string[]; outline?: string }
-type Text = { value?: string; field: boolean; cut?: boolean }
+type Text = { value?: string; field: boolean; cut?: boolean; secret?: boolean }
 type Bare = Omit<Step, 'recorded' | 'fp' | 'blank'>
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Bare }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
@@ -105,6 +105,9 @@ const RUN_S = 90
 const RUN_MAX_S = 110
 const RUN_SPARE = 3000
 const BUSY_MS = 3000
+const INTO_PASSWORD = ' (into a password field)'
+const ALERT_DESK = 'press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id)'
+const ALERT_WAYS = `${ALERT_DESK}, or close it with {close: true} when it has a Cancel button`
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -122,6 +125,8 @@ const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
 const NOOP = 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect'
 const UNCHECKED = 'the text was sent, and the device did not check that it showed, as for a web view, a field that changes what is typed, or a first line pasted where no field reports the input focus; no later step read it back'
+const UNREAD_SECRET = 'the value was sent to the password field, and the field reads back nothing, so it was not checked: do not set it again; no later step read what it unlocks'
+const OFF_SPACE = 'is on another Space'
 const MAY_HAVE_RUN = ['input_delivery_stalled:', 'closed the connection without an answer', 'timed out']
 const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
 const SHORTCUT_VERBS: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
@@ -135,6 +140,8 @@ let recording = false
 let typed = false
 let pressed: { title: string; at: number } | null = null
 let acted: { id: string; at: number } | null = null
+let pressedId: string | undefined
+let lastPress: string | undefined
 let target: Win | null = null
 let listed: Win[] = []
 let targetSince = new Set<string>()
@@ -149,7 +156,11 @@ let T: Record<string, number> = {}
 let stepWs: { ws: Win[]; at: number } | null = null
 let prior = new Set<string>()
 let settleWs: { ws: Win[]; at: number; calls: number } | null = null
+let picked: Win[] = []
+let atStart = new Set<string>()
+let aimed = false
 let deadline = 0
+let sealStep = (): void => {}
 
 export async function main(p: Params): Promise<Result> {
   return { ...(await perform(p)), usage: desk.usage }
@@ -172,7 +183,7 @@ async function perform(p: Params): Promise<Result> {
   const plan: Step[] = flow ? flow.steps : p.steps ?? []
   if (!plan.length) return { ok: false, error: 'pass steps, flow or find' }
   recording = !flow && !!plan[0]?.app && !p.start
-  lastSeen = ''
+  lastSeen = ''; lastPress = undefined
   const trace: Trace[] = []; const log: Record<string, unknown>[] = []
   const limit = Math.min(p.timeout_s ?? RUN_S, RUN_MAX_S) * 1000
   deadline = performance.timeOrigin + limit - RUN_SPARE
@@ -184,7 +195,7 @@ async function perform(p: Params): Promise<Result> {
   if (p.save && !flow && !p.start && !idempotent(plan)) {
     const c = pending()
     const was = c?.steps.filter((s) => !s.close) ?? []; const now = plan.filter((s) => !s.close)
-    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i] ?? {}, params))) {
+    if (c && was.length === now.length && was.every((s, i) => bare(s, c.params) === bare(now[i] ?? {}, params, secure(s)))) {
       const r = await promote(p.save, p.params, true)
       if (r.ok) return { ...r, ran: false, why: 'these steps passed in the last plan, so they were saved without running them again; call without save to run them' }
     }
@@ -195,11 +206,12 @@ async function perform(p: Params): Promise<Result> {
   if (gapStep) return { ok: false, done: 0, ms: 0, trace, escalate: { step: gap, plan_step: unrecorded(gapStep), reason: `no value for {{${unfilled(gapStep)}}}: pass it in params; nothing ran` } }
   BG = BEHIND
   const held = pending()
-  const ws0 = await desk.windows(); const at0 = Date.now(); for (const w of ws0) known.add(w.title)
+  const ws0 = await desk.windows(); const at0 = Date.now(); for (const w of ws0) known.add(w.title); atStart = new Set(ws0.map((w) => w.id))
   if (BG) { target = null; adopted = new Set(); doubt = null; fronted = false; userFront = desk.front(ws0); rejoin(held, ws0) }
   const vetted = new Set<string>()
   const startTitles = new Set(known)
   const start = frontOf(ws0); const startWindow = start?.title ?? null; const startPid = start ? start.pid : null
+  const chained = !flow && follows(held, startWindow, startPid)
   const startRead = start && !start.title.trim() ? await look(start) : null
   const startAlert = !!startRead && isAlert(startRead.text)
   const startKept = start && startRead?.snap && startRead.nodes ? { id: start.id, snap: startRead.snap, nodes: startRead.nodes } : undefined
@@ -208,7 +220,7 @@ async function perform(p: Params): Promise<Result> {
   if (held && !held.dirty) putPending({ ...held, dirty: true })
   const left = () => {
     const at = (p.start ?? 0) + trace.length
-    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at] && unrecorded(plan[at]), reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` } })) } catch {}
+    try { if (RUN) writeFileSync(`${RUN}/result.json`, JSON.stringify({ ok: false, done: at, trace, escalate: { step: at, plan_step: plan[at] && unrecorded(plan[at]), reason: `the run ended during step ${at}: the steps before it ran, and step ${at} may have acted in part` }, ...noted(recs) })) } catch {}
   }
   left()
   for (const [i, planned] of plan.entries()) {
@@ -236,8 +248,9 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined; actioned = false
+      unheard = undefined; actioned = false; picked = []; aimed = chained || plan.slice(0, i).some((x) => !!x.app || !!x.wait); if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
       const runs = desk.foreground.runs + foreground.steps
+      sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
         const late = (x: unknown) => x instanceof Surprise && x.late
         if (!late(e) || !(prev?.menu || prev?.click || prev?.key)) throw e
@@ -252,6 +265,7 @@ async function perform(p: Params): Promise<Result> {
       const before = recs[i - 1]
       if (before && (s.expect || (s.verify && ((s.value ?? s.on ?? s.enabled) !== undefined || rec.waited)) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
     } catch (e: unknown) {
+      if (s.type !== undefined && String(e instanceof Error ? e.message : e).endsWith(INTO_PASSWORD)) sealStep()
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       if ((sp.late || sp.seen.window === undefined) && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
       if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const u = await desk.unanswered().catch(() => null); const why = u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : NO_FRONT; if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }
@@ -260,7 +274,7 @@ async function perform(p: Params): Promise<Result> {
       const theft = BG && !(e instanceof Stolen) ? taken(await desk.windows()) : null
       const reason = `${sp.reason}${note ? ` (the step before was sent but not confirmed: ${note})` : ''}${theft ? `; meanwhile ${theft}` : ''}`
       const { outline, ...shown } = sp.seen
-      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = step
+      escalate = { step, plan_step: unrecorded(plan[step] ?? planned), reason, ...shown, ...(secure(plan[step] ?? planned) ? {} : { outline }) }; done = i
       diverged = e instanceof Diverged
     }
     stepWs = null
@@ -286,33 +300,34 @@ async function perform(p: Params): Promise<Result> {
     const left = f && !startTitles.has(f.title) && isDialog(o) && !(last.wait || last.app || (last.window && norm(f.title).includes(norm(last.window))))
     const theft = BG ? taken(ws) : null
     const open = recs.find((r) => r?.unverified && !r.confirmed)
-    if (theft) { escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }; done = plan.length - 1 }
-    else if (open) { const { outline, ...shown } = await seen(); escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...shown, ...(secure(plan[open.i] ?? {}) ? {} : { outline }) }; done = open.i }
-    else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') { escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }; done = plan.length }
-    else if (f && (isAlert(o) || left)) { escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }; done = plan.length }
+    if (theft) escalate = { step: plan.length - 1, reason: theft, ...(await seen()) }
+    else if (open) { const { outline, ...shown } = await seen(); escalate = { step: open.i, reason: `step ${open.i} (${open.op}) was sent but not confirmed, and no later step read its effect, so the plan cannot say it landed: ${open.unverified}`, ...shown, ...(secure(plan[open.i] ?? {}) ? {} : { outline }) } }
+    else if (f && blocked(o) && recs.at(-1)?.how !== 'wm') escalate = { step: plan.length, reason: unanswered(f.title), ...(await seen()) }
+    else if (f && (isAlert(o) || left)) escalate = { step: plan.length, reason: `the plan ended with "${f.title || o.split('\n')[0]}" still in front`, ...(await seen()) }
     opened = !!f && !startTitles.has(f.title) && isDialog(o)
   }
   let saved: string | undefined
+  const upto = escalate?.step ?? plan.length
   const jevs = recs.filter((r) => r?.pick).length
   const settled = !escalate && !opened
   if (flow) {
     const front = escalate ? await focused() : null
-    putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, done), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null, plan)
+    putPending(escalate ? { at: Date.now(), window: front?.title ?? null, pid: front && !isShell(front) ? front.pid : null, name: flow.name, named: true, params, steps: plan.slice(0, upto), dirty: recs.some((r) => r?.unsaved), escalated: true, saved: false, usage: plus({}, desk.usage) } : null, plan)
     if (settled && recs.every((r) => !r?.unsaved)) {
       const rewrites = recs.filter((r, i) => r?.fp && flow.steps[i] && pinned(flow.steps[i]) && !isDeepStrictEqual(r.fp, flow.steps[i].fp))
       if (rewrites.length) {
         recs.forEach((r, i) => { const st = flow.steps[i]; if (!st || !pinned(st)) return; if (r?.fp) st.fp = r.fp; if (r?.seen) st.seen = r.seen })
-        flow.saved_at = new Date().toISOString(); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
+        flow.saved_at = new Date().toISOString(); flow.params = unsecret(flow.steps, flow.params); saveFlow(flow, `replay re-resolved ${rewrites.length} step(s)`)
       }
       saved = flow.name
     }
   } else {
     // a chain spans calls: it starts at an app step, and later calls extend it from the window it left
-    const ran = plan.slice(p.start ?? 0, done).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp && pinned(s)) o.fp = r.fp; if (r?.seen && !s.app && pinned(s)) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
+    const ran = plan.slice(p.start ?? 0, upto).map((s, k) => { const r = recs[(p.start ?? 0) + k]; const o: Step = { ...s }; if (r?.fp && pinned(s)) o.fp = r.fp; if (r?.seen && !s.app && pinned(s)) o.seen = r.seen; if (r?.blank) o.blank = r.blank; return o })
     const dirty = recs.some((r) => r?.unsaved)
     let chain: Chain | null = null; const prev = held
     if (plan[0]?.app && !(p.start ?? 0)) chain = { at: Date.now(), window: null, pid: null, params: { ...(p.params ?? {}) }, steps: ran, dirty, usage: plus({}, desk.usage) }
-    else if (prev && Date.now() - prev.at < CHAIN_AGE && (prev.window === startWindow || (prev.pid !== null && prev.pid === startPid))) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
+    else if (follows(prev, startWindow, startPid)) chain = { ...prev, at: Date.now(), params: { ...prev.params, ...(p.params ?? {}) }, steps: [...prev.steps, ...ran], dirty: prev.dirty || dirty, usage: plus(prev.usage, desk.usage) }
     if (chain) {
       if (p.save) { chain.name = slug(p.save); chain.named = true }
       const changes = chain.steps.some((s) => s.check || s.set || s.type !== undefined || (s.menu && s.on !== undefined))
@@ -334,16 +349,18 @@ async function perform(p: Params): Promise<Result> {
   else out.window = end?.title ?? null
   if (escalate && (diverged || escalate.reason.startsWith(SPENT))) out.error = escalate.reason
   if (escalate && diverged) out.stopped = stopped(plan, escalate)
-  const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
-  if (notes.length) out.unverified = notes
-  const caveats = recs.filter((r) => r?.caveat && !r.confirmed).map((r) => ({ step: r.i, note: r.caveat }))
-  if (caveats.length) out.caveats = caveats
-  return out
+  return Object.assign(out, noted(recs))
 }
 
-function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return literal(s) ? { ...unsaid(s), type: 'the password' } : s }
+function noted(recs: Rec[]) {
+  const notes = recs.filter((r) => r?.unverified && !r.confirmed).map((r) => ({ step: r.i, note: r.unverified }))
+  const caveats = recs.filter((r) => r?.caveat && !r.confirmed).map((r) => ({ step: r.i, note: r.caveat }))
+  return { ...(notes.length ? { unverified: notes } : {}), ...(caveats.length ? { caveats } : {}) }
+}
 
-function literal(s: Step) { return (secure(s) || (s.secret !== undefined && s.secret !== false)) && typeof s.type === 'string' && !!s.type.replace(/\{\{\w+(?::base)?\}\}|\n/g, '') }
+function unrecorded({ recorded: _, fp: __, blank: ___, ...s }: Step): Bare { return literal(s, s.type) ? { ...unsaid(s), type: 'the password' } : literal(s, s.value) ? { ...unsaid(s), value: 'the password' } : s }
+
+function literal(s: Step, v: string | undefined) { return (secure(s) || (s.secret !== undefined && s.secret !== false)) && typeof v === 'string' && !!v.replace(/\{\{\w+(?::base)?\}\}|\n/g, '') }
 
 function unsaid<T extends Step>({ intent: _, ...s }: T) { return s }
 
@@ -458,6 +475,7 @@ async function front(w: Win | null) {
   BG = false; fronted = true; foreground.steps += 1
 }
 function follow(w: Win, ws: Win[]) { target = w; doubt = null; targetSince = new Set(ws.map((x) => x.id)) }
+function follows(c: Chain | null, title: string | null, pid: number | null): c is Chain { return !!c && Date.now() - c.at < CHAIN_AGE && ((!!title && c.window === title) || (c.pid !== null && c.pid === pid)) }
 function rejoin(c: Chain | null, ws: Win[]) { const was = c && Date.now() - c.at < CHAIN_AGE ? ws.find((w) => w.title === c.window && w.pid === c.pid) : undefined; if (was) follow(was, ws) }
 // a macOS sheet has no window of its own, so its input goes to the window it hangs on
 function at(w: Win | null): desk.Target {
@@ -490,7 +508,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -503,7 +521,8 @@ async function current(bound = SETTLE) {
   tick('settle', t0); return ws
 }
 function isShell(w: Win) { return !!w.shell || (OS === 'win32' && w.title === 'Program Manager') }
-function titledIn(ws: Win[], title: string, pid: number | null) { return pid !== null && ws.some((x) => x.title === title && x.pid === pid) }
+function titledIn(ws: Win[], title: string, pid: number | null, id?: string) { return pid !== null && ws.some((x) => x.title === title && x.pid === pid && (id === undefined || x.id === id)) }
+function twinId(w: Win, ws: Win[]) { return ws.some((x) => x.id !== w.id && x.pid === w.pid && x.title === w.title) ? w.id : undefined }
 async function snapOf(w: Win, r: Reads = {}): Promise<desk.Snap> {
   return BG ? desk.snapshot(undefined, { id: w.id, ...r }) : desk.snapshot(w.title, { pid: w.pid, ...r })
 }
@@ -560,7 +579,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
   await sleep(200)
   return of(await desk.windows()) ?? null
 }
-function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
+function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or ${m.title.trim() ? `close it with {close: true, window: "${m.title}"}` : OS === 'darwin' ? ALERT_WAYS : `close it with {close: true}, or ${ALERT_DESK}`}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
 async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
@@ -597,8 +616,8 @@ function isAlert(o: string) { return /^- alert/.test(o) }
 function isDialog(o: string) { return /^- (alert|dialog|file chooser)/.test(o) }
 // AT-SPI can map a dialog before its children, so a first read holds its root alone
 async function filled(w: Win, kept?: Kept) {
-  let o = await outline(w, {}, kept, Infinity)
-  for (let i = 0; i < 20 && isDialog(o) && !o.trim().includes('\n'); i++) { await sleep(50); o = await outline(w, {}, undefined, Infinity) }
+  let o = await look(w, {}, kept, Infinity)
+  for (let i = 0; i < 20 && isDialog(o.text) && !o.text.trim().includes('\n'); i++) { await sleep(50); o = await look(w, {}, undefined, Infinity) }
   return o
 }
 
@@ -682,17 +701,17 @@ function gtkToggle(pid: number, label: string): boolean | null {
 async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept?: Kept): Promise<Win> {
   const t0 = Date.now()
   if (!want) {
-    const ws = await current(); let w = frontOf(ws)
+    const ws = picked = await current(); let w = frontOf(ws)
     if (BG && !w) { tick('wait', t0); throw new Surprise('background gui_plan has no target window: start the plan with an app step, or name the window with a wait step') }
     const [plan, ...twins] = !w && lastSeen ? ws.filter((x) => x.title === lastSeen) : []
-    if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid) }
+    if (plan && !twins.length) { w = plan; await desk.focus(w.title, w.pid, twinId(w, ws)) }
     // an untitled focused window that is no alert (a completion popup) leaves the step in the window the plan was in
-    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; w = ws.find((x) => x.title === lastSeen && x.pid === pid) ?? w }
+    if (w && !w.title.trim() && lastSeen && (kept?.id === w.id || !isAlert(await outline(w)))) { const pid = w.pid; const under = ws.find((x) => x.title === lastSeen && x.pid === pid); if (under && alertIn(w, under)) throw new Surprise(alertText(w, under)); w = under ?? w }
     tick('wait', t0); if (!w) throw new Surprise(NO_FRONT, {}, true); return w
   }
   const end = Date.now() + ms; let asked: string | null = null; let many = 0
   for (;;) {
-    const ws = await desk.windows(); const w = frontOf(ws)
+    const ws = picked = await desk.windows(); const w = frontOf(ws)
     if (w && awaited(w.title, want, saw)) return found(w, t0)
     if (BG) {
       const t = target
@@ -703,7 +722,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
-      if (bg && !other) { await desk.focus(bg.title, bg.pid); return found(bg, t0) }
+      if (bg && !other) { if (!w || !alertIn(w, bg)) await desk.focus(bg.title, bg.pid, twinId(bg, ws)); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && !prior.has(w.id) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
@@ -718,6 +737,13 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     await sleep(30)
   }
 }
+function behindAlert(w: Win, ws: Win[], named = aimed) {
+  for (const x of ws) if (alertIn(x, w)) throw new Surprise(alertText(x, w))
+  if (named && atStart.has(w.id) && lone(w)) throw new Surprise(alertText(w, lastSeen ? ws.find((x) => x.title === lastSeen && x.pid === w.pid) : undefined))
+}
+function alertText(w: Win, under?: Win) { return `an untitled dialog of "${w.app ?? under?.title ?? 'its app'}" ${under ? `is in front of "${under.title}" and ` : ''}takes all of its app's input until it closes, and a plan never presses a button of such a dialog: ${ALERT_WAYS}; nothing was sent` }
+function lone(w: Win) { return OS === 'darwin' && w.role === 'dialog' && !w.title.trim() && w.owner === undefined }
+function alertIn(w: Win, under: Win) { return lone(w) && w.pid === under.pid && w.id !== under.id }
 function awaited(title: string, want: string, saw?: string) { return norm(title).includes(norm(want)) || (!!saw && title === saw) }
 function found(w: Win, t0: number): Win { known.add(w.title); tick('wait', t0); return w }
 
@@ -911,7 +937,7 @@ async function openPage(app: string, url: string, rec: Rec) {
       if (!samePage(at, url)) continue
       tick('launch', t0); known.add(w.title); rec.window = lastSeen = w.title
       if (BG) { follow(w, ws); return }
-      if (!w.active) await desk.focus(w.title, w.pid)
+      if (!w.active) await desk.focus(w.title, w.pid, twinId(w, ws))
       await windowFor(w.title); return
     }
     if (Date.now() > end) throw new Surprise(`${app} shows no window at ${url}`, await seen())
@@ -1048,7 +1074,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
 
 async function act(n: Node) {
   return timed('act', async () => {
-    const r = await desk.press(n.id)
+    const r = await desk.press(n.id); pressedId = n.id
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
     if (OS === 'linux' && (r.how === 'action' || r.how === 'select')) actioned = true
@@ -1058,14 +1084,12 @@ async function act(n: Node) {
 
 // a menu entry with a shortcut takes the shortcut, since an AT-SPI action can open a modal dialog that deadlocks the app on the first key
 async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = false, w: Win | null = null) {
-  return timed('act', async () => {
-    const mods = n.shortcut.split('+').slice(0, -1)
-    if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
-      if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
-      try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e }
-    }
-    rec.via = await act(n)
-  })
+  const mods = n.shortcut.split('+').slice(0, -1)
+  if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut)) && await timed('act', async () => {
+    if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
+    try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return true } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e; return false }
+  })) return
+  rec.via = await act(n)
 }
 
 async function settle(before: string | undefined) {
@@ -1108,12 +1132,12 @@ async function submit(w: Win, chooser = false) {
   if (titledIn(ws, title, pid) && frontOf(ws)?.title === title) throw new Surprise(`"${title}" is still open after Return`, await seen())
 }
 
-async function closed(title: string, pid: number | null) {
+async function closed(title: string, pid: number | null, id?: string) {
   const t0 = Date.now()
   const landed = (ws: Win[]) => { const f = frontOf(ws); return !!f && f.title !== title && f.pid !== null }
-  const gone = await until((ws) => !titledIn(ws, title, pid), 1000)
-  const ws = await until((ws) => titledIn(ws, title, pid) || landed(ws), 500, gone)
-  tick('settle', t0); return !titledIn(ws, title, pid)
+  const gone = await until((ws) => !titledIn(ws, title, pid, id), 1000)
+  const ws = await until((ws) => titledIn(ws, title, pid, id) || landed(ws), 500, gone)
+  tick('settle', t0); return !titledIn(ws, title, pid, id)
 }
 
 function shownFields(nodes: Node[], fp: Pick<Fp, 'role' | 'name' | 'label'>) {
@@ -1132,23 +1156,24 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
     return { fp, kept }
   } catch { return {} } finally { tick('blank', t0) }
 }
-async function texts(w: Win): Promise<Map<string, Text> | null> {
-  try {
-    const slot = pool(READS_AT_ONCE)
-    const nodes = parse(await snapOf(w)); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
-    const all = await Promise.all(nodes.map(async (n): Promise<[string, Text][]> => {
-      const field = textual(n)
-      if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
-      if (!field && !(bare && n.role === 'text' && n.focused)) return []
-      const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
-      return [[n.id, { value: r?.value, field, cut: r?.truncated }]]
-    }))
-    return new Map(all.flat())
-  } catch { return null }
+async function texts(w: Win): Promise<Map<string, Text> | null> { return readTexts(w).catch(() => null) }
+async function readTexts(w: Win): Promise<Map<string, Text>> {
+  const slot = pool(READS_AT_ONCE)
+  const snap = await snapOf(w); const nodes = parse(snap); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
+  const all = await Promise.all(nodes.map(async (n, i): Promise<[string, Text][]> => {
+    const field = textual(n)
+    if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field, secret: hidden(snap.nodes[i]) || undefined }]]
+    if (!field && !(bare && n.role === 'text' && n.focused)) return []
+    const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
+    return [[n.id, { value: r?.value, field, cut: r?.truncated, secret: hidden(snap.nodes[i]) || undefined }]]
+  }))
+  return new Map(all.flat())
 }
 async function hides(w: Win, read: Map<string, Text> | null) {
-  try { return !!read && (await snapOf(w)).nodes.some((n) => n.states.includes('protected') && n.states.includes('focused') && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
+  try { return !!read && (await snapOf(w)).nodes.some((n) => hidden(n) && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
 }
+function secretIn(t: Map<string, Text> | null) { for (const x of t?.values() ?? []) if (x.secret) return true; return false }
+function hidden(n: desk.El | undefined) { return !!n?.states.includes('protected') && (n.states.includes('focused') || n.id === lastPress) }
 function whole(t: Map<string, Text> | null) { return !!t && [...t.values()].every((x) => !x.cut) }
 async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | null, rec: Rec) {
   const raw = text.split('\n'); const lines = raw.map((l) => l.replace(/\r$/, '')); const k = lines.findIndex(Boolean)
@@ -1190,12 +1215,15 @@ async function byLine(s: Step, text: string, w: Win, was: Map<string, Text> | nu
 function cutShort(e: unknown, n: number, done: number, ret: boolean, from: number) {
   const m = e instanceof Error ? e.message : String(e)
   const d = /^(\d+) of \d+ lines( and the Return after line \d+)? were typed, then (?:this stopped the rest: ([^]*)|([^]+, so the rest were not sent))$/.exec(m)
-  const [i, r, then] = d ? [from + Number(d[1]), !!d[2], d[4] ?? `this stopped the rest: ${d[3]}`] : [done, ret, `this stopped the rest: ${m}`]
+  const [i, r] = d ? [from + Number(d[1]), !!d[2]] : [done, ret]
+  const then = d?.[4] ?? `${r ? `line ${i + 1}` : `the Return after line ${i}`} failed: ${d ? d[3] ?? '' : m}`
   return i ? new Error(`${i} of ${n} lines${r ? ` and the Return after line ${i}` : ''} were typed, then ${then}`) : e
 }
 async function settled(w: Win) {
-  let a = await texts(w)
-  for (const end = Date.now() + BASE_SETTLE; Date.now() < end;) { const b = await texts(w); if (unchanged(a, b)) return b; a = b }
+  let away = false
+  const read = () => readTexts(w).catch((e: unknown) => { away = String(e).includes(OFF_SPACE); return null })
+  let a = await read()
+  for (const end = Date.now() + BASE_SETTLE; !away && Date.now() < end;) { const b = await read(); if (unchanged(a, b)) return b; a = b }
   return a
 }
 function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
@@ -1275,10 +1303,10 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
   if (!o) throw new Surprise(`"${target}" has no option "${value}"; its options: ${opts.map((n) => `"${n.name}"`).join(', ')}`, await seen())
   rec.value = o.name
   if (norm(combo.name) === norm(o.name)) { rec.noop = true; return }
-  const t0 = Date.now()
   await act(combo)
+  const t0 = Date.now()
   for (let i = 0; i < 25 && !(await desk.read(o.id)).states.includes('showing'); i++) await sleep(20)
-  await act(o); tick('act', t0)
+  tick('settle', t0); await act(o)
   let got = ''
   for (let i = 0; i < 10; i++) { got = (await desk.read(combo.id)).name; if (norm(got) === norm(o.name)) { rec.confirmed = true; return } await sleep(40) }
   throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
@@ -1307,8 +1335,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const own = (w: Win) => titled(w) || (word && (ownedBy(w.pid, name) || entries.some((e) => worded(w.title, e))))
     const rank = (w: Win) => { const of = [w.app, w.bundle].filter((a): a is string => !!a); return (of.some((a) => norm(a) === app) ? 0 : of.some((a) => worded(a, app)) ? 2 : 4) + (norm(w.title) === name ? 0 : 1) }
     const mine = (ws: Win[]) => s.title ? ws.filter(titled).sort((a, b) => rank(a) - rank(b)) : [...ws.filter(named), ...ws.filter(own)]
-    let started: Awaited<ReturnType<typeof desk.launch>> | undefined
-    const has = async () => { const ws = await desk.windows(); return mine(ws)[0] ?? (s.title ? undefined : started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
+    let started: Awaited<ReturnType<typeof desk.launch>> | undefined; let read = ws
+    const has = async () => { const ws = read = await desk.windows(); return mine(ws)[0] ?? (s.title ? undefined : started?.running ? ws.find((w) => w.title === started?.title && w.pid === started?.pid) : launched ? ws.find((w) => w.title && !before.has(w.id) && (!pids.has(w.pid) || (!!w.app && terms(w.app).some((x) => terms(app).includes(x))))) : undefined) }
     const owned = mine(ws); let w = (BG ? owned.find((x) => !!x.title.trim()) : undefined) ?? owned[0] ?? (s.url ? ws.find((x) => x.stale && [x.app, x.bundle].some((a) => !!a && ` ${words(app)}`.endsWith(` ${words(a)}`))) : undefined)
     const hung = w ? (w.stale ? w : null) : await desk.unanswered().catch(() => null)
     if (hung && (hung === w || own(hung) || named(hung))) throw new Surprise(unresponsive(s.app, hung), { window: hung.title, windows: titles(ws) })
@@ -1320,27 +1348,30 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       const t0 = Date.now(); launched = true
       started = await desk.launch(s.app); background = started.background === true
       for (const end = Date.now() + 8000; !(w = await has()); await sleep(50)) {
-        if (Date.now() > end) throw new Surprise(`app "${s.app}" has no window`, await seen())
+        if (Date.now() > end) throw new Surprise(`app "${s.app}" was launched and showed no window within 8 s; it may still open: wait for it before launching it again`, await seen())
       }
       tick('launch', t0)
     }
-    if (BG) { follow(w, await desk.windows()); known.add(w.title); rec.window = lastSeen = w.title; return }
-    if (background || !w.active) { const t1 = Date.now(); const f = await desk.focus(w.title, w.pid); tick('focus', t1); if (f.path) rec.focused = `${f.path} front ${f.front ?? '-'}` }
+    if (BG) { if (started?.running) userFront = w; follow(w, await desk.windows()); known.add(w.title); rec.window = lastSeen = w.title; return }
+    if (background || !w.active) { const t1 = Date.now(); const f = await desk.focus(w.title, w.pid, twinId(w, read)); tick('focus', t1); if (f.path) rec.focused = `${f.path} front ${f.front ?? '-'}` }
     known.add(w.title); rec.window = lastSeen = w.title; await windowFor(w.title); return
   }
   if (s.type !== undefined) {
     await refocused()
     const nl = s.type.endsWith('\n'); const ws = await current(nl ? OPENING : SETTLE); const w = frontOf(ws); const t0 = Date.now()
+    if (w) behindAlert(w, ws, aimed || !!s.window)
     if (BG && !w) throw new Surprise('background gui_plan has no target window to type into: start the plan with an app step, or name the window with a wait step')
     if (s.web && w) await onPage(s.web, w)
     if (s.focus && s.focus !== 'unverified') await typingInto(s.focus, w)
     const dialog = !s.type.includes('\n') && !!w && ws.some((x) => x.title !== w.title && x.pid === w.pid)
-    const o = (nl || dialog) && w ? await filled(w, kept) : ''
+    const pre = (nl || dialog) && w ? await filled(w, kept) : null; const o = pre?.text ?? ''
+    if (pre?.snap?.nodes.some(hidden)) sealStep()
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     const chooser = isChooser(o); const sub = chooser && nl
     const first = !typed; typed = true
     const held = !BG && !sub && nl && secure(s)
     const was = (BG || held) && w ? await texts(w) : null
+    if (secretIn(was)) sealStep()
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
@@ -1358,7 +1389,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
       const sealed = OS === 'win32' && !shown && !tty && secure(s) && !!was && !!now && [...now].every(([id, t]) => t.value === was.get(id)?.value) && await hides(w, now)
       if (AUTO && !tty && !secure(s) && !shown && unchanged(was, now) && whole(was) && whole(now) && !taken(await desk.windows())) {
-        await desk.focus(w.title, w.pid)
+        await desk.focus(w.title, w.pid, twinId(w, ws))
         const again = await desk.typeText(s.type, FG)
         rec.how = 'foreground'; rec.unverified = undefined; fronted = true; BG = false
         heard(again, rec, s)
@@ -1381,9 +1412,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   if (s.key) {
     await refocused()
-    const w = frontOf(await listNow())
+    const ws = await listNow(); const w = frontOf(ws)
+    if (w) behindAlert(w, ws, aimed || !!s.window)
     if (BG && !w) throw new Surprise('background gui_plan has no target window for the key: start the plan with an app step, or name the window with a wait step')
-    const o = /^(enter|return)$/i.test(s.key) && w ? await filled(w, kept) : ''
+    const o = /^(enter|return)$/i.test(s.key) && w ? (await filled(w, kept)).text : ''
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && isChooser(o)) { rec.submit = true; await submit(w, true); return }
     const t0 = Date.now(); heard(await desk.key(s.key, at(w)), rec, s); tick('act', t0)
@@ -1395,24 +1427,30 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.close) {
     // close never shuts an app's main window unless the step names it
     const t0 = Date.now(); const ws = s.window ? [] : await listNow(); let w: Win | null = s.window ? await windowFor(s.window, 3000, s.seen) : frontOf(ws)
+    if (w && s.window) behindAlert(w, picked)
+    const many = w && !s.window ? ws.filter((x) => lone(x) && x.pid === w?.pid) : []
+    if (w && many.length > 1) throw new Surprise(`${many.length} untitled dialogs of "${w.app ?? w.title}" are open, and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog's id from desk windows, then press with the button's id); nothing was sent`)
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
-    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid); await settle(w.title); tick('act', t0); return }
+    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid, twinId(w, ws)); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
-      let d: Win | null = null; for (const x of others) if (isDialog(await outline(x))) { d = x; break }
+      let d: Win | null = many.find((x) => x.id !== self?.id) ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
       const pid = w.pid
       if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
       w = d
     }
+    const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))
+    if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
-    const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid); await desk.key('Escape', at(w))
-    if (titledIn(await settle(w.title), title, pid)) { unique(w); await desk.close(title, pid) }
-    tick('act', t0); if (!await closed(title, pid)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
+    const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
+    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e }) }
+    tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }
   const w = await windowFor(s.window, 3000, s.seen, kept)
+  if (s.click || s.check || s.set || s.menu) behindAlert(w, picked)
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let tree: Tree
   const r = reads(s)
@@ -1491,7 +1529,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     }
     if ((hit.n.role === 'menuitemcheckbox' || hit.n.role === 'menuitemradio') && OS !== 'darwin') {
       const now = await checked(hit.n); rec.was = now; rec.state = 'atspi'
-      if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await desk.key('Escape', at(w)); rec.noop = true; return }
+      if (now === s.on) { for (let k = 0; k < (rec.opened ?? 0); k++) await desk.key('Escape', at(w)); rec.noop = true; unheard = undefined; return }
       if (now !== null) {
         const got = await flip(hit.n, s.on); await settle(w.title)
         if (got === null) { rec.caveat = TOGGLE_UNREAD; return }
@@ -1572,7 +1610,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const [x, y, into] = await inWindow(w, b[0] + b[2] / 2, b[1] + b[3] / 2)
     const c = into === FG && !hit.n.role.startsWith('menu') ? await placed(x, y, w) : null
     if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
-    t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); tick('act', t0)
+    t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); pressedId = hit.n.id; tick('act', t0)
     if (BG && sent.unverified) unheard ??= sent.unverified
     await settle(w.title); return
   }
@@ -1589,6 +1627,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (s.check) { await setState(s, hit, rec); return }
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
+  const guarded = !!tree.snap.nodes[hit.i]?.states.includes('protected')
+  if (guarded || secure(s)) sealStep()
   const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   const same = (v: string | undefined) => v !== undefined && holds(hit.n.role, v, value)
   const f = hit.n.role === 'combobox' ? nodes.find((x) => x.parent === hit.i && x.role === 'textbox') ?? hit.n : hit.n
@@ -1598,13 +1638,16 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (hit.how.startsWith('jev') && lines) throw new Surprise(`"${target}" is closest to a multi-line text (${hit.how}), and set would replace all of it: wait for the window with that field, or name it exactly`, await seen())
   t0 = Date.now()
   if (!(await desk.act(f.id, 'focus')).ok) throw new Surprise(`"${target}" takes no focus, and set would type into another field`, await seen())
+  pressedId = f.id
   if (f.role === 'textbox' && !lines) await selectLine(w); else await desk.key(SELECT_ALL, at(w)); if (value) await desk.typeText(value, at(w)); else await desk.key('delete', at(w)); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab', at(w)); await desk.key('shift+tab', at(w)) }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
-  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (same(got)) break; await sleep(40) }
-  tick('verify', t0); rec.value = got
-  if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
-  rec.confirmed = true
+  const back = (v: string | undefined) => same(v) || (!!rec.secret && !!v && /^[•●*]+$/u.test(v) && [...v].length === [...value].length)
+  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (back(got)) break; await sleep(40) }
+  tick('verify', t0); if (!rec.secret) rec.value = got
+  if (back(got)) rec.confirmed = true
+  else if (guarded && !got) rec.caveat = UNREAD_SECRET
+  else throw new Surprise(rec.secret ? `"${target}" does not read back the value after set` : `"${target}" reads "${got}" after set`, await seen())
   if (raw.endsWith('\n')) { rec.submit = true; await submit(w, isChooser(render(nodes, 100, false))) }
 }
 
@@ -1696,7 +1739,7 @@ function templated(steps: Step[], params: Record<string, string>) {
 
 function unsecret(steps: Step[], params: Record<string, string>) {
   const out = { ...params }
-  for (const s of steps) if (secure(s) && s.type) for (const [, n] of s.type.matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
+  for (const s of steps) if (secure(s)) for (const v of [s.type, s.value]) for (const [, n] of (v ?? '').matchAll(/\{\{(\w+)/g)) if (n) delete out[n]
   return out
 }
 
@@ -1706,7 +1749,7 @@ function typedText(s: Step) { return secure(s) ? 'the password' : `"${s.type}"` 
 
 function sealed(c: Chain, plan: Step[]): Chain {
   const named = templated(c.steps, c.params).steps
-  const steps = c.steps.map((s, i) => secure(s) ? { ...unsaid(s), type: named[i]?.type ?? s.type } : s)
+  const steps = c.steps.map((s, i) => secure(s) ? { ...unsaid(s), type: named[i]?.type ?? s.type, value: named[i]?.value ?? s.value } : s)
   return { ...c, steps, params: unsecret([...steps, ...plan], c.params) }
 }
 
@@ -1747,7 +1790,7 @@ function summary(steps: Step[]) {
 }
 
 function idempotent(steps: Step[]) { return steps.every((s) => s.type === undefined && (!s.key || /^(esc|escape|tab|shift\+tab)$/i.test(s.key))) }
-function bare(s: Step, p: Record<string, string>) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank').map(([k, v]) => k === 'type' && secure(s) && typeof v === 'string' ? [k, v.endsWith('\n')] : [k, v]).sort()) }
+function bare(s: Step, p: Record<string, string>, hide = secure(s)) { return JSON.stringify(Object.entries(fill(s, p)).filter(([k]) => k !== 'fp' && k !== 'seen' && k !== 'blank' && !(k === 'secret' && hide)).map(([k, v]) => (k === 'type' || k === 'value') && hide && typeof v === 'string' ? [k, v.endsWith('\n')] : [k, v]).sort()) }
 
 function store(chain: Chain) {
   const tpl = templated(chain.steps, chain.params)
@@ -1782,13 +1825,19 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }
 }
 
-function pending(): Chain | null {
-  try { return JSON.parse(readFileSync(PENDING, 'utf8')) as Chain | null } catch { return null }
-}
+function pending(): Chain | null { return chains()[caller()] ?? null }
 
 function putPending(c: Chain | null, plan: Step[] = []) {
-  try { writeFileSync(PENDING, JSON.stringify(c && sealed(c, plan)), PRIVATE) } catch {}
+  const all = Object.fromEntries(Object.entries(chains()).filter(([k, x]) => k !== caller() && Date.now() - x.at < CHAIN_AGE))
+  if (c) all[caller()] = sealed(c, plan)
+  try { writeFileSync(PENDING, JSON.stringify(all), PRIVATE) } catch {}
 }
+
+function chains(): Record<string, Chain> {
+  try { const v = JSON.parse(readFileSync(PENDING, 'utf8')) as Record<string, Chain> | Chain | null; return !v ? {} : Array.isArray(v.steps) ? { '': v as Chain } : v as Record<string, Chain> } catch { return {} }
+}
+
+function caller() { return process.env.SHUTTLE_CALLER ?? '' }
 
 function loadFlow(name: string): Flow {
   const path = `${FLOWS}/${slug(name)}.json`
@@ -1845,7 +1894,9 @@ async function located(target: string, press: boolean) {
   if (!hit) return { found: false, why: `no element of "${w.title}" matches`, window: w.title, ms: Date.now() - t0 }
   const out: Record<string, unknown> = { found: true, how: hit.how, role: hit.n.role, name: hit.n.name, bounds: hit.n.bounds ?? null, shown: hit.n.shown, shift: drawnShift(nodes, hit.i), window: at.title, pid: at.pid }
   if (press) {
+    unheard = undefined
     if (hit.n.role === 'menuitem') await choose(nodes, hit.n, out, true, w); else out.via = await act(hit.n)
+    if (unheard) out.unverified = unheard
     await settle(w.title)
   }
   return { ...out, ms: Date.now() - t0 }

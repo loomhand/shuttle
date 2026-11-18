@@ -160,6 +160,7 @@ pub struct StillArgs {
 pub struct WindowArgs {
     pub window: String,
     pub pid: Option<u32>,
+    pub id: Option<String>,
 }
 
 #[derive(Deserialize)]

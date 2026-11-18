@@ -44,10 +44,11 @@ pub struct Volatile {
 
 impl Volatile {
     /// Starts the sampler thread where MIT-SHM exists, which samples only within [`IDLE`] of a [`Volatile::touch`].
-    pub fn start() -> Self {
+    pub fn start(turn: Arc<tokio::sync::Mutex<()>>) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
+            turn,
         });
         let sampler = Arc::clone(&shared);
         if cfg!(target_os = "linux")
@@ -122,6 +123,7 @@ struct State {
     /// Counts actions begun, so a sample grabbed across a begin is dropped.
     actions: u64,
     acting: bool,
+    held: bool,
     /// Block hashes sampled since the last action ended, oldest first.
     samples: VecDeque<(Instant, Vec<u64>)>,
     /// The samples of the pauses before earlier actions, newest first, kept while the newer ones span less than [`WINDOW`] by more than [`SAMPLE_EVERY`].
@@ -131,6 +133,7 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     wake: Condvar,
+    turn: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Shared {
@@ -160,18 +163,7 @@ impl Shared {
             match grabber.as_ref().map(Grabber::blocks) {
                 Some(Ok(hashes)) => {
                     failing = false;
-                    let mut s = self.lock();
-                    if !s.acting && s.actions == actions {
-                        let at = Instant::now();
-                        s.samples.push_back((at, hashes));
-                        while s
-                            .samples
-                            .front()
-                            .is_some_and(|(t, _)| at.duration_since(*t) > WINDOW + SAMPLE_EVERY)
-                        {
-                            s.samples.pop_front();
-                        }
-                    }
+                    self.record(actions, hashes);
                 }
                 Some(Err(e)) if !failing => {
                     eprintln!("desk: settle sampler: {e}");
@@ -180,6 +172,21 @@ impl Shared {
                 _ => grabber = None,
             }
             std::thread::sleep(SAMPLE_EVERY);
+        }
+    }
+
+    fn record(&self, actions: u64, hashes: Vec<u64>) {
+        let mut s = self.lock();
+        if self.turn.try_lock().is_err() {
+            s.held = true;
+        } else if !s.acting && s.actions == actions {
+            if std::mem::take(&mut s.held) {
+                s.samples.clear();
+            }
+            let at = Instant::now();
+            s.samples.push_back((at, hashes));
+            s.samples
+                .retain(|(t, _)| at.duration_since(*t) <= WINDOW + SAMPLE_EVERY);
         }
     }
 }
@@ -205,7 +212,7 @@ mod tests {
 
     #[test]
     fn two_contents_toggle_more_churn_one_stays_quiet_and_all_last_while_newer_pauses_are_short() {
-        let volatile = Volatile::start();
+        let volatile = Volatile::start(Arc::default());
         let at = Instant::now();
         volatile.shared.lock().samples.extend([
             (at, vec![1, 1, 1, 1]),
@@ -243,8 +250,27 @@ mod tests {
     }
 
     #[test]
+    fn samples_taken_while_another_input_holds_the_turn_drop_with_the_ones_before() {
+        let turn = Arc::new(tokio::sync::Mutex::new(()));
+        let volatile = Volatile::start(Arc::clone(&turn));
+        for h in [1, 2, 1] {
+            volatile.shared.record(0, vec![h]);
+        }
+        let held = turn.try_lock().unwrap();
+        for h in [3, 4] {
+            volatile.shared.record(0, vec![h]);
+        }
+        drop(held);
+        for h in [5, 5] {
+            volatile.shared.record(0, vec![h]);
+        }
+        let (blocks, _paused) = volatile.begin(&[5]);
+        assert_eq!(blocks, [Block::Quiet]);
+    }
+
+    #[test]
     fn an_action_dropped_before_its_settle_lets_the_sampler_run_again() {
-        let volatile = Volatile::start();
+        let volatile = Volatile::start(Arc::default());
         let (_, paused) = volatile.begin(&[1]);
         assert!(volatile.shared.lock().acting);
         drop(paused);

@@ -227,7 +227,7 @@ struct Entry {
 /// A desk with the computer verbs: the desk verbs and, with no app allowlist, the computer verbs.
 struct Native<B> {
     desk: Desk<B, Arc<Driver>>,
-    computer: Computer,
+    computer: Arc<Computer>,
     driver: Arc<Driver>,
     open: bool,
 }
@@ -249,6 +249,7 @@ impl<B: Access + 'static> Handler for Native<B> {
 
     fn release(&self, holder: &str) {
         self.desk.release(holder);
+        self.computer.release(holder);
     }
 
     fn allowed(&self) {
@@ -376,7 +377,12 @@ pub async fn connect(endpoint: &str) -> std::io::Result<Conn> {
 /// Sends `call` on `conn` and reads its output.
 pub async fn exchange(mut conn: Conn, call: &Call) -> Result<Output, String> {
     write_frame(&mut conn, call).await?;
-    read_frame(&mut conn).await
+    read_frame(&mut conn).await.map_err(|e| {
+        format!(
+            "no answer to {} could be read, so whether it ran is not known: check its effect before sending it again ({e})",
+            call.tool
+        )
+    })
 }
 
 /// This OS's desk with the computer verbs, its input through the cua-driver at `driver`, limited to the windows of `apps` unless empty.
@@ -397,9 +403,11 @@ pub fn native(
         .auto(auto)
         .locked_input(locked_input);
     Native {
-        computer: Computer::new(Arc::clone(&driver), HOST)
-            .turn(desk.turn())
-            .background(background),
+        computer: Arc::new(
+            Computer::new(Arc::clone(&driver), HOST)
+                .turn(desk.turn())
+                .background(background),
+        ),
         desk,
         driver,
         open: apps.is_empty(),

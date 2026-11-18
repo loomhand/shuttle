@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use crate::adb::{Android, is_package};
 
 const APPLICATION: i64 = 1;
+const INPUT_METHOD: i64 = 2;
 const PID_BASE: u32 = 1 << 22;
 const FOCUS_WAIT: Duration = Duration::from_secs(5);
 const FOCUS_POLL: Duration = Duration::from_millis(100);
@@ -33,6 +34,9 @@ const MIN_SPAN: i32 = 8;
 const MIN_SWIPE: i32 = 48;
 const WAIT_MAX: Duration = Duration::from_secs(5);
 const WAIT_POLL: Duration = Duration::from_millis(10);
+const UNSETTLED: &str = "the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles";
+const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
+const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
 
 /// One element of a window as the desk and computer_state show it.
 #[derive(Debug)]
@@ -133,14 +137,27 @@ pub(crate) struct Frame {
     dialog: bool,
     pid: u32,
     active: bool,
+    guessed: bool,
     bounds: [i32; 4],
     covers: Vec<[i32; 4]>,
     screen: (i32, i32),
+    keyboard: bool,
 }
 
 impl Frame {
     pub(crate) fn window(&self) -> &str {
         &self.id
+    }
+
+    pub(crate) fn screen(&self) -> (i32, i32) {
+        self.screen
+    }
+
+    pub(crate) fn settled(&self) -> Result<(), String> {
+        match self.guessed {
+            true => Err(UNSETTLED.to_owned()),
+            false => Ok(()),
+        }
     }
 
     /// Whether a window above this one covers screen point `(x, y)`.
@@ -321,7 +338,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_type" => {
             let a: TypeArgs = parse(args)?;
             let pin = std::sync::Mutex::new(None);
-            let typed = android
+            let (typed, protected) = android
                 .type_text(&a.text, None, || async {
                     let pinned = pin.lock().ok().and_then(|p| *p);
                     let id = in_front(android, a.window.as_deref(), a.pid, pinned).await?;
@@ -331,20 +348,32 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                     Ok(id)
                 })
                 .await?;
-            json!({"ok": true, "chars": a.text.chars().count(), "typed": typed}).to_string()
+            let mut out = json!({"ok": true, "chars": a.text.chars().count(), "typed": typed});
+            if protected {
+                out["protected"] = true.into();
+            }
+            out.to_string()
         }
         "desk_click" => click(android, parse(args)?).await?,
         "desk_focus" => focus(android, parse(args)?).await?,
         "desk_close" => {
             let a: WindowArgs = parse(args)?;
-            let frame = window::pick(frames(android).await?, Some(&a.window), a.pid)?;
+            let frame = named(frames(android).await?, &a)?;
             if !frame.active {
                 return Err(format!(
                     "{} is not in front, and back closes only the front window",
                     frame.title
                 ));
             }
-            android.keys("back").await?;
+            if !frame.keyboard || hide_keyboard(android, &frame).await? {
+                android
+                    .keys("back")
+                    .await
+                    .map_err(|e| match frame.keyboard {
+                        true => format!("{e}; a back key had hidden the keyboard before it"),
+                        false => e,
+                    })?;
+            }
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
             out.to_string()
@@ -443,6 +472,8 @@ fn turned((w, h): (i32, i32), list: &[WindowInfo]) -> (i32, i32) {
 
 fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
     let layers: Vec<(i64, [i32; 4])> = list.iter().map(|w| (w.layer, w.bounds)).collect();
+    let keyboard = list.iter().any(|w| w.kind == INPUT_METHOD);
+    let guessed = !list.iter().any(|w| w.active);
     let shown = listed(list);
     let alone = shown.len() == 1;
     shown
@@ -455,6 +486,8 @@ fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
                 .collect();
             Frame {
                 covers,
+                keyboard,
+                guessed,
                 ..frame(w, alone, screen)
             }
         })
@@ -490,8 +523,8 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         dialog: !full,
         active: w.active,
         bounds: [l, t, r - l, b - t],
-        covers: Vec::new(),
         screen,
+        ..Frame::default()
     }
 }
 
@@ -916,15 +949,26 @@ fn read_out(mut node: Node, app: &str, text: bool, tail: bool) -> Value {
 /// Taps an element, after scrolling its list until it shows.
 async fn press(android: &Android, id: &str) -> Result<String, String> {
     let (mut frame, mut node) = node(android, id).await?;
+    frame.settled()?;
     if node.states.contains(&"covered") {
         return Err(format!(
             "element {id} is behind an open drawer; close it first"
         ));
     }
+    let mut sent = None;
+    let stopped = |sent: Option<&str>, e: String| match sent {
+        Some(what) => {
+            format!("the list of element {id} was {what}, then this stopped the tap: {e}")
+        }
+        None => e,
+    };
     let mut ask = true;
     for _ in 0..SCROLL_TRIES {
         if let Some((x, y)) = frame.tap_at(&node) {
-            android.tap((x, y)).await?;
+            android.tap((x, y)).await.map_err(|e| match sent {
+                Some(what) => format!("{e}; the list of element {id} was {what} before it"),
+                None => e,
+            })?;
             return Ok(json!({"ok": true, "how": "click", "x": x, "y": y}).to_string());
         }
         let Some([sx, sy, sw, sh]) = node.scroller else {
@@ -933,7 +977,11 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         if ask {
             ask = false;
             if android.show(&frame.id, &node.path).await {
-                let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
+                sent = Some("asked to scroll it into view");
+                let (refreshed, mut nodes) = app_tree(android, &frame.package)
+                    .await
+                    .map_err(|e| stopped(sent, e))?;
+                refreshed.settled().map_err(|e| stopped(sent, e))?;
                 frame = refreshed;
                 if let Some(i) = unique(&nodes, node.role, &node.name) {
                     let next = nodes.swap_remove(i);
@@ -947,13 +995,28 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
         }
         let (cx, from, to) = frame
             .swipe([sx, sy, sw, sh], node.bounds[1])
-            .ok_or_else(|| format!("element {id} is off the screen, and its list is covered"))?;
-        android.swipe((cx, from), (cx, to), SCROLL_MS).await?;
+            .ok_or_else(|| {
+                stopped(
+                    sent,
+                    format!("element {id} is off the screen, and its list is covered"),
+                )
+            })?;
+        android
+            .swipe((cx, from), (cx, to), SCROLL_MS)
+            .await
+            .map_err(|e| stopped(sent, e))?;
+        sent = Some("scrolled");
         tokio::time::sleep(SCROLL_SETTLE).await;
-        let (refreshed, mut nodes) = app_tree(android, &frame.package).await?;
+        let (refreshed, mut nodes) = app_tree(android, &frame.package)
+            .await
+            .map_err(|e| stopped(sent, e))?;
+        refreshed.settled().map_err(|e| stopped(sent, e))?;
         frame = refreshed;
         let i = unique(&nodes, node.role, &node.name).ok_or_else(|| {
-            format!("element {id} is gone or not unique after a scroll; read the window again")
+            stopped(
+                sent,
+                format!("element {id} is gone or not unique after a scroll; read the window again"),
+            )
         })?;
         node = nodes.swap_remove(i);
     }
@@ -962,7 +1025,7 @@ async fn press(android: &Android, id: &str) -> Result<String, String> {
     } else {
         "is off the screen"
     };
-    Err(format!("element {id} {why}"))
+    Err(stopped(sent, format!("element {id} {why}")))
 }
 
 /// The innermost element at a screen point, with its ancestors.
@@ -1026,7 +1089,15 @@ async fn in_front(
     if window.is_none() && pid.is_none() {
         return Ok(None);
     }
-    let frames = frames(android).await?;
+    front_id(frames(android).await?, window, pid, pinned)
+}
+
+fn front_id(
+    frames: Vec<Frame>,
+    window: Option<&str>,
+    pid: Option<u32>,
+    pinned: Option<i64>,
+) -> Result<Option<i64>, String> {
     let frame = match pinned {
         Some(id) => frames
             .into_iter()
@@ -1037,8 +1108,19 @@ async fn in_front(
                     window.unwrap_or("of the process")
                 )
             })?,
-        None => window::pick(frames, window, pid)?,
+        None => match window {
+            Some(want) => {
+                let way_out = if pid.is_some() {
+                    FRONT_BY_PID
+                } else {
+                    FRONT_BY_ITS_PID
+                };
+                window::pick_input(frames, want, pid, way_out)?
+            }
+            None => window::pick(frames, None, pid)?,
+        },
     };
+    frame.settled()?;
     if frame.active {
         Ok(frame.id.parse().ok())
     } else {
@@ -1049,11 +1131,49 @@ async fn in_front(
     }
 }
 
+fn named(frames: Vec<Frame>, a: &WindowArgs) -> Result<Frame, String> {
+    let frame = match a.id.as_deref() {
+        Some(id) => window::pick_id(frames, id, &a.window, a.pid, |f| f.id.as_str()),
+        None => window::pick_input(frames, &a.window, a.pid, window::BY_ID),
+    }?;
+    frame.settled()?;
+    Ok(frame)
+}
+
+async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String> {
+    android.keys("back").await?;
+    for _ in 0..SWITCH_POLLS {
+        tokio::time::sleep(FOCUS_POLL).await;
+        match frames(android)
+            .await
+            .map_err(|e| {
+                format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
+            })?
+            .into_iter()
+            .find(|f| f.id == frame.id)
+        {
+            None => return Ok(false),
+            Some(f) if f.keyboard || f.guessed => {}
+            Some(f) if f.active => return Ok(true),
+            Some(_) => {
+                return Err(format!(
+                    "{} left the front after a back key to hide the keyboard, so no closing back was sent",
+                    frame.title
+                ));
+            }
+        }
+    }
+    Err(format!(
+        "the keyboard stayed up after a back key, so {} was not closed",
+        frame.title
+    ))
+}
+
 /// The window `window` names, which must be in front; a package name without a window starts its app.
 async fn focus(android: &Android, a: WindowArgs) -> Result<String, String> {
-    let frame = match window::pick(frames(android).await?, Some(&a.window), a.pid) {
+    let frame = match named(frames(android).await?, &a) {
         Ok(f) => f,
-        Err(e) if is_package(&a.window) && e.starts_with("no window") => {
+        Err(e) if a.id.is_none() && is_package(&a.window) && e.starts_with("no window") => {
             android.launch(&a.window).await?;
             let end = Instant::now() + FOCUS_WAIT;
             loop {
@@ -1150,7 +1270,7 @@ mod tests {
     use super::*;
 
     const REDROID: (i32, i32) = (720, 1280);
-    const DUMP: &str = r#"<hierarchy><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,300][720,400]" /><node text="Dark theme" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0" bounds="[40,320][400,380]" /><node text="" class="android.widget.Switch" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.1" bounds="[600,320][680,380]" /><node text="Search…" class="android.widget.EditText" content-desc="" hint="Search…" showing-hint="true" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" enabled="false" focused="true" selected="false" scrollable="false" visible="true" path="0.1" bounds="[40,100][680,180]" /><node text="gone" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="false" path="0.2" bounds="[0,0][0,0]" /></hierarchy>"#;
+    const DUMP: &str = r#"<hierarchy><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,300][720,400]" /><node text="Dark theme" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0" bounds="[40,320][400,380]" /><node text="" class="android.widget.Switch" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.1" bounds="[600,320][680,380]" /><node text="Search…" class="android.widget.EditText" content-desc="" hint="Search…" showing-hint="true" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" password="false" enabled="false" focused="true" selected="false" scrollable="false" visible="true" path="0.1" bounds="[40,100][680,180]" /><node text="gone" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="false" path="0.2" bounds="[0,0][0,0]" /></hierarchy>"#;
 
     #[test]
     fn a_text_read_keeps_its_head_or_with_tail_its_end_and_says_when_it_was_cut() {
@@ -1180,6 +1300,113 @@ mod tests {
             assert!(out["value"] == want.as_str(), "{text} {tail}");
             assert_eq!(out.get("truncated").is_some(), cut, "{text} {tail}");
             assert_eq!(out["parent"], -1);
+        }
+    }
+
+    #[test]
+    fn input_by_a_page_title_goes_nowhere_while_only_a_dialog_of_its_app_is_listed() {
+        let dialog = WindowInfo {
+            id: 30,
+            title: "Device name".into(),
+            ..window([18, 435, 702, 797])
+        };
+        let frames = frames_of(vec![bar(18, 3, 1, [0, 0, 720, 48]), dialog], REDROID);
+        assert_eq!(
+            front_id(frames, Some("About phone - com.android.settings"), None, None),
+            Err("no window titled \"About phone - com.android.settings\", so nothing was sent; \"Device name - com.android.settings\" of the same app is in front: name it to send there".to_owned())
+        );
+    }
+
+    #[test]
+    fn input_by_a_title_two_windows_share_names_the_pid_alone_as_the_way_out() {
+        let twins = || {
+            frames_of(
+                vec![
+                    window([0, 0, 720, 1280]),
+                    WindowInfo {
+                        id: 9,
+                        active: false,
+                        focused: false,
+                        ..window([0, 0, 720, 1280])
+                    },
+                ],
+                REDROID,
+            )
+        };
+        let title = "Settings - com.android.settings";
+        let refused = |ending: &str| {
+            Err(format!(
+                "2 windows match the title \"{title}\", so nothing was sent: {ending}"
+            ))
+        };
+        let pid = package_pid("com.android.settings");
+        assert_eq!(
+            front_id(twins(), Some(title), None, None),
+            refused(FRONT_BY_ITS_PID)
+        );
+        assert_eq!(
+            front_id(twins(), Some(title), Some(pid), None),
+            refused(FRONT_BY_PID)
+        );
+        assert_eq!(front_id(twins(), None, Some(pid), None), Ok(Some(7)));
+    }
+
+    #[test]
+    fn focus_or_close_by_id_takes_that_one_of_two_same_titled_windows() {
+        let twins = || {
+            frames_of(
+                vec![
+                    window([0, 0, 720, 1280]),
+                    WindowInfo {
+                        id: 9,
+                        active: false,
+                        focused: false,
+                        ..window([0, 0, 720, 1280])
+                    },
+                ],
+                REDROID,
+            )
+        };
+        let args = |id: Option<&str>| WindowArgs {
+            window: "Settings - com.android.settings".into(),
+            pid: None,
+            id: id.map(str::to_owned),
+        };
+        assert_eq!(
+            named(twins(), &args(Some("9"))).map(|f| f.id),
+            Ok("9".to_owned())
+        );
+        assert_eq!(
+            named(twins(), &args(Some("5"))).map(|f| f.id),
+            Err("no window id \"5\" in the window list, so nothing was sent".to_owned())
+        );
+        assert_eq!(
+            named(twins(), &args(None)).map(|f| f.id),
+            Err("2 windows match the title \"Settings - com.android.settings\", so nothing was sent: pass the window's id from desk windows".to_owned())
+        );
+    }
+
+    #[test]
+    fn input_is_refused_while_the_window_list_marks_no_window_in_front() {
+        let page = || WindowInfo {
+            title: "About phone".into(),
+            ..window([0, 0, 720, 1280])
+        };
+        let opening = || WindowInfo {
+            active: false,
+            focused: false,
+            ..page()
+        };
+        let named = Some("About phone - com.android.settings");
+        let settled = frames_of(vec![bar(18, 3, 1, [0, 0, 720, 48]), page()], REDROID);
+        assert_eq!(front_id(settled, named, None, None), Ok(Some(7)));
+        for pinned in [None, Some(7)] {
+            let switching = frames_of(vec![bar(18, 3, 1, [0, 0, 720, 48]), opening()], REDROID);
+            assert_eq!(
+                front_id(switching, named, None, pinned),
+                Err("the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles".to_owned()),
+                "{pinned:?}"
+            );
         }
     }
 
@@ -1497,7 +1724,7 @@ mod tests {
     fn an_open_drawer_hides_the_layout_behind_it() {
         let drawer = |visible: bool, bounds: &str, item: &str| {
             format!(
-                r#"<hierarchy><node text="" class="androidx.drawerlayout.widget.DrawerLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,0][720,1280]" />{}<node text="" class="com.google.android.material.navigation.NavigationView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="false" visible="{visible}" path="0.1" bounds="{bounds}" />{}</hierarchy>"#,
+                r#"<hierarchy><node text="" class="androidx.drawerlayout.widget.DrawerLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,0][720,1280]" />{}<node text="" class="com.google.android.material.navigation.NavigationView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="{visible}" path="0.1" bounds="{bounds}" />{}</hierarchy>"#,
                 row("0.0.0", false, "[100,800][620,890]"),
                 row("0.1.0", false, item),
             )
@@ -1893,7 +2120,7 @@ mod tests {
 
     fn row(path: &str, scrollable: bool, bounds: &str) -> String {
         format!(
-            r#"<node text="{path}" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" enabled="true" focused="false" selected="false" scrollable="{scrollable}" visible="true" path="{path}" bounds="{bounds}" />"#
+            r#"<node text="{path}" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="{scrollable}" visible="true" path="{path}" bounds="{bounds}" />"#
         )
     }
 

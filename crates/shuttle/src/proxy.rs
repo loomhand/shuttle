@@ -1,7 +1,7 @@
 //! The way from the MCP server to the daemon: one call per connection, starting the daemon when nothing listens.
 
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
@@ -19,8 +19,8 @@ pub async fn call(endpoint: &str, call: &Call) -> Result<Output, String> {
 }
 
 async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, String> {
-    let (conn, child) = match server::connect(endpoint).await {
-        Ok(conn) => (conn, None),
+    match server::connect(endpoint).await {
+        Ok(conn) => return server::exchange(conn, call).await,
         Err(e) if !matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
             return Err(format!("connect {endpoint}: {e}"));
         }
@@ -31,23 +31,42 @@ async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, St
                 EMBEDDED = crate::EMBEDDED
             ));
         }
-        Err(_) => started(endpoint).await?,
-    };
+        Err(_) => {}
+    }
+    let (conn, child) = listening(endpoint, start(endpoint).await?).await?;
+    answered(endpoint, conn, child, call).await
+}
+
+async fn answered(
+    endpoint: &str,
+    conn: Conn,
+    child: Option<Child>,
+    call: &Call,
+) -> Result<Output, String> {
     match (server::exchange(conn, call).await, child) {
         (Err(e), Some(child)) => Err(daemon_error(child, e).await),
+        (Err(e), None) => Err(opened_error(endpoint, e).await),
         (out, _) => out,
     }
 }
 
-async fn started(endpoint: &str) -> Result<(Conn, Option<Child>), String> {
-    let mut child = start(endpoint).await?;
+async fn listening(
+    endpoint: &str,
+    mut child: Option<Child>,
+) -> Result<(Conn, Option<Child>), String> {
     let mut waited = Duration::ZERO;
     loop {
         if let Ok(conn) = server::connect(endpoint).await {
             return Ok((conn, child));
         }
-        if let Some(Ok(Some(status))) = child.as_mut().map(Child::try_wait) {
-            return Err(exited(status));
+        match child.as_mut().map(Child::try_wait) {
+            Some(Ok(Some(status))) => return Err(exited(status)),
+            None => {
+                if let Ok(e) = std::fs::read_to_string(failed(endpoint)) {
+                    return Err(format!("the daemon did not start: {e}"));
+                }
+            }
+            _ => {}
         }
         if waited >= START_WAIT {
             return Err(format!(
@@ -61,9 +80,21 @@ async fn started(endpoint: &str) -> Result<(Conn, Option<Child>), String> {
 
 async fn daemon_error(mut child: Child, e: String) -> String {
     match tokio::time::timeout(EXIT_WAIT, child.wait()).await {
-        Ok(Ok(status)) => exited(status),
+        Ok(Ok(status)) => format!("{e}; {}", exited(status)),
         _ => e,
     }
+}
+
+async fn opened_error(endpoint: &str, e: String) -> String {
+    let mut waited = Duration::ZERO;
+    while waited < EXIT_WAIT {
+        if let Ok(why) = std::fs::read_to_string(failed(endpoint)) {
+            return format!("{e}; the daemon did not start: {why}");
+        }
+        tokio::time::sleep(START_POLL).await;
+        waited += START_POLL;
+    }
+    e
 }
 
 fn exited(status: ExitStatus) -> String {
@@ -79,6 +110,7 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
     if let Some(app) = app_bundle(&exe) {
+        let _ = std::fs::remove_file(failed(endpoint));
         // TCC attributes a daemon LaunchServices starts to its app, not to the terminal or agent that runs `mcp`
         let status = Command::new("open")
             .args(["-n", "-g", "-a"])
@@ -112,6 +144,10 @@ fn daemon(exe: &Path, endpoint: &str) -> Command {
         crate::win::disinherit_stdio();
     }
     cmd
+}
+
+pub(crate) fn failed(endpoint: &str) -> PathBuf {
+    format!("{endpoint}.err").into()
 }
 
 pub(crate) fn app_bundle(exe: &Path) -> Option<&Path> {
@@ -167,7 +203,11 @@ mod tests {
     async fn a_started_daemon_that_exits_before_it_answers_names_its_exit() {
         let gone = Command::new("sh").args(["-c", "exit 3"]).spawn().unwrap();
         let err = daemon_error(gone, "read frame length: early eof".to_owned()).await;
-        assert!(err.contains("exited with exit status: 3"), "{err}");
+        assert!(
+            err.starts_with("read frame length: early eof; ")
+                && err.contains("exited with exit status: 3"),
+            "{err}"
+        );
         let alive = Command::new("sleep")
             .arg("5")
             .kill_on_drop(true)
@@ -176,6 +216,64 @@ mod tests {
         assert_eq!(
             daemon_error(alive, "early eof".to_owned()).await,
             "early eof"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_daemon_started_through_its_app_that_fails_is_answered_with_its_own_error_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        std::fs::write(failed(&endpoint), "[android] sets no ui_jar").unwrap();
+        let started = std::time::Instant::now();
+        let Err(err) = listening(&endpoint, None).await else {
+            panic!("a daemon that failed was reached");
+        };
+        assert_eq!(err, "the daemon did not start: [android] sets no ui_jar");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_daemon_started_through_its_app_that_drops_the_call_and_fails_names_its_own_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let eof = "no answer to desk_windows could be read".to_owned();
+        tokio::time::pause();
+        assert_eq!(opened_error(&endpoint, eof.clone()).await, eof);
+        std::fs::write(failed(&endpoint), "[android] sets no ui_jar").unwrap();
+        assert_eq!(
+            opened_error(&endpoint, eof).await,
+            "no answer to desk_windows could be read; the daemon did not start: [android] sets no ui_jar"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_call_an_app_started_daemon_drops_is_answered_with_its_start_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let listener = tokio::net::UnixListener::bind(&endpoint).unwrap();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let _: Call = read_frame(&mut s).await.unwrap();
+        });
+        std::fs::write(failed(&endpoint), "[android] sets no ui_jar").unwrap();
+        let conn = server::connect(&endpoint).await.unwrap();
+        let ask = Call {
+            agent_id: "t".into(),
+            tool: "desk_windows".into(),
+            args: serde_json::json!({}),
+        };
+        let err = answered(&endpoint, conn, None, &ask).await.unwrap_err();
+        assert!(
+            err.starts_with("no answer to desk_windows could be read")
+                && err.ends_with("; the daemon did not start: [android] sets no ui_jar"),
+            "{err}"
         );
     }
 
@@ -199,7 +297,12 @@ mod tests {
             tool: "desk_type".into(),
             args: serde_json::json!({"text": "once"}),
         };
-        assert!(call(&endpoint, &ask).await.is_err());
+        let err = call(&endpoint, &ask).await.unwrap_err();
+        assert!(
+            err.contains("no answer to desk_type could be read")
+                && err.contains("whether it ran is not known"),
+            "{err}"
+        );
         assert_eq!(*seen.lock().unwrap(), 1);
     }
 

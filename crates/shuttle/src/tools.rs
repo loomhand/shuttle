@@ -47,6 +47,9 @@ pub fn list(plugins: &Plugins) -> Value {
     let mut listed = builtins();
     let script = listed["tools"][1]["inputSchema"].clone();
     if let Some(tools) = listed["tools"].as_array_mut() {
+        if plugins.script_run_off {
+            tools.remove(1);
+        }
         tools.extend(plugins.runs.iter().map(|p| {
             let mut tool = json!({"name": p.name, "description": p.description});
             tool["inputSchema"] = script.clone();
@@ -112,7 +115,7 @@ fn builtins() -> Value {
     json!({"tools": [
         {
             "name": "gui_plan",
-            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise; caveats lists the steps whose effect no later step read back, such as an accessibility action's reply on Linux or an Android type the device could not check: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A {verify} with timeout_ms re-reads the window until its element shows, with its value, on or enabled when given, and with gone: true until the element is gone. A password typed at a terminal prompt (read -s, sudo, ssh) goes in its own step as {type, secret: true}, one line, so it is never quoted back or saved as text. A passing plan can be saved as a flow with save, and replayed with flow and params. An error that says what it left reports the steps that ran before it.",
+            "description": "Run a desktop-app GUI plan in one call: each step runs on the accessibility tree, is checked, and the plan stops at the first surprise, also before it acts in a window behind an untitled alert of its app on macOS; caveats lists the steps whose effect no later step read back, such as an accessibility action's reply on Linux or an Android type the device could not check: read their effect before relying on them. One op per step: {app}, {menu}, {click}, {check, on}, {set, value}, {type}, {key}, {wait}, {expect}, {verify}, {close: true}. A {verify} with timeout_ms re-reads the window until its element shows, with its value, on or enabled when given, and with gone: true until the element is gone. A password typed at a terminal prompt (read -s, sudo, ssh) goes in its own step as {type, secret: true}, one line, and a password into a field as {type, secret: true} or {set, value, secret: true}, so it is never quoted back or saved as text. A passing plan can be saved as a flow with save, and replayed with flow and params. An error that says what it left reports the steps that ran before it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -141,7 +144,7 @@ fn builtins() -> Value {
         },
         {
             "name": "desk",
-            "description": "One desk call on this desktop: list windows, name the front window of an app that stopped answering accessibility, or wait for windows to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen. In a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field: reach a chat by scrolling its list, or use foreground input. A key, type, click, scroll or drag result with unverified, a type error that counts the lines typed before it, and a key error that counts the presses sent before it, may have taken effect.",
+            "description": "One desk call on this desktop: list windows, name the front window of an app that stopped answering accessibility, or wait for windows to change, snapshot or search a window's accessibility tree, read, press or act on an element, send keys, type, click, scroll or drag, wait for the screen to hold still, focus, close or launch, or crop the screen. Focus and close by a title several windows share are refused: pass the window's id from desk windows. Key, type, click, scroll and drag by title act only in the one window whose own title matches, and a stale title is refused, naming the window of the same app; a read by a stale title reads that window and names it. In a macOS Qt app with no accessibility focus, such as WeChat, background typing into a search field can land in another field: reach a chat by scrolling its list, or use foreground input. A key, type, click, scroll or drag result with unverified, a type error that counts the lines typed before it, and a key error that counts the presses sent before it, may have taken effect.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -287,6 +290,41 @@ mod tests {
     }
 
     #[test]
+    fn the_gui_plan_tool_marks_a_password_into_a_field_secret() {
+        let tools = list(&Plugins::default());
+        let plan = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "gui_plan")
+            .unwrap();
+        let text = plan["description"].as_str().unwrap();
+        assert!(
+            text.contains(
+                "a password into a field as {type, secret: true} or {set, value, secret: true}"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_desk_tool_tells_input_by_title_from_reads_by_title() {
+        let tools = list(&Plugins::default());
+        let desk = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "desk")
+            .unwrap();
+        let text = desk["description"].as_str().unwrap();
+        assert!(
+            text.contains("Key, type, click, scroll and drag by title act only in the one window whose own title matches")
+                && text.contains("a read by a stale title reads that window and names it"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn the_built_in_names_are_the_listed_tools_and_plugins_follow_with_script_runs_arguments() {
         let plugins = Plugins {
             runs: vec![Plugin {
@@ -295,7 +333,7 @@ mod tests {
                 bin: "/usr/bin/demo".into(),
                 resources: Vec::new(),
             }],
-            services: Vec::new(),
+            ..Plugins::default()
         };
         let listed = list(&plugins);
         let names = names(&listed);
@@ -308,10 +346,20 @@ mod tests {
         assert_eq!(listed["tools"][1]["name"], "script_run");
     }
 
+    #[test]
+    fn script_run_is_not_listed_while_it_is_off() {
+        let off = list(&Plugins {
+            script_run_off: true,
+            ..Plugins::default()
+        });
+        let mut without = NAMES.to_vec();
+        without.remove(1);
+        assert_eq!(names(&off), without);
+    }
+
     #[tokio::test]
     async fn a_service_tool_is_listed_with_its_own_schema_unless_it_is_for_the_wire_only() {
         let plugins = Plugins {
-            runs: Vec::new(),
             services: vec![
                 serde_json::from_value(json!({
                     "service": "demo",
@@ -323,6 +371,7 @@ mod tests {
                 }))
                 .unwrap(),
             ],
+            ..Plugins::default()
         };
         let listed = list(&plugins);
         let tools = listed["tools"].as_array().unwrap();
