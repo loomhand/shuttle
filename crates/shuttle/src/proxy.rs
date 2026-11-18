@@ -40,14 +40,27 @@ async fn reach(endpoint: &str, call: &Call, embedded: bool) -> Result<Output, St
 }
 
 async fn started(endpoint: &str) -> Result<(Conn, Option<Child>), String> {
-    let mut child = start(endpoint).await?;
+    let child = start(endpoint).await?;
+    listening(endpoint, child).await
+}
+
+async fn listening(
+    endpoint: &str,
+    mut child: Option<Child>,
+) -> Result<(Conn, Option<Child>), String> {
     let mut waited = Duration::ZERO;
     loop {
         if let Ok(conn) = server::connect(endpoint).await {
             return Ok((conn, child));
         }
-        if let Some(Ok(Some(status))) = child.as_mut().map(Child::try_wait) {
-            return Err(exited(status));
+        match child.as_mut().map(Child::try_wait) {
+            Some(Ok(Some(status))) => return Err(exited(status)),
+            None => {
+                if let Ok(e) = std::fs::read_to_string(failed(endpoint)) {
+                    return Err(format!("the daemon did not start: {e}"));
+                }
+            }
+            _ => {}
         }
         if waited >= START_WAIT {
             return Err(format!(
@@ -79,6 +92,7 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
         .and_then(std::fs::canonicalize)
         .map_err(|e| format!("locate this program: {e}"))?;
     if let Some(app) = app_bundle(&exe) {
+        let _ = std::fs::remove_file(failed(endpoint));
         // TCC attributes a daemon LaunchServices starts to its app, not to the terminal or agent that runs `mcp`
         let status = Command::new("open")
             .args(["-n", "-g", "-a"])
@@ -112,6 +126,10 @@ fn daemon(exe: &Path, endpoint: &str) -> Command {
         crate::win::disinherit_stdio();
     }
     cmd
+}
+
+pub(crate) fn failed(endpoint: &str) -> String {
+    format!("{endpoint}.err")
 }
 
 pub(crate) fn app_bundle(exe: &Path) -> Option<&Path> {
@@ -180,6 +198,24 @@ mod tests {
         assert_eq!(
             daemon_error(alive, "early eof".to_owned()).await,
             "early eof"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_daemon_started_through_its_app_that_fails_is_answered_with_its_own_error_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        std::fs::write(failed(&endpoint), "[android] sets no ui_jar").unwrap();
+        let started = std::time::Instant::now();
+        let Err(err) = listening(&endpoint, None).await else {
+            panic!("a daemon that failed was reached");
+        };
+        assert_eq!(err, "the daemon did not start: [android] sets no ui_jar");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
         );
     }
 

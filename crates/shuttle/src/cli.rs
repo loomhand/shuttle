@@ -236,6 +236,16 @@ fn controls_serve(endpoint: String) -> ExitCode {
         );
         if let Err(e) = &done {
             log(e);
+            #[cfg(target_os = "macos")]
+            let _ = std::os::unix::fs::OpenOptionsExt::mode(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true),
+                0o600,
+            )
+            .open(crate::proxy::failed(&endpoint))
+            .and_then(|mut f| f.write_all(e.as_bytes()));
         }
         #[cfg(windows)]
         controls::shutdown();
