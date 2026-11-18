@@ -159,6 +159,20 @@ mod tests {
         assert_eq!(&buf[6..12], &[200; 6]);
     }
 
+    #[test]
+    fn a_mask_with_fractional_edges_blacks_every_pixel_a_left_out_window_touches_and_keeps_only_whole_admitted_pixels()
+     {
+        let shot = |mask: [([f64; 4], bool); 2]| {
+            let png = rgb_png(vec![200; 4 * 3], [0, 0, 4, 1], Some(&mask)).unwrap();
+            decode(&png).chunks(3).map(|p| p[0]).collect::<Vec<u8>>()
+        };
+        let part = [0.5, 0.0, 2.0, 1.0];
+        let left_out = shot([([0.0, 0.0, 4.0, 1.0], true), (part, false)]);
+        assert_eq!(left_out, [0, 0, 0, 200]);
+        let admitted = shot([([0.0, 0.0, 4.0, 1.0], false), (part, true)]);
+        assert_eq!(admitted, [0, 200, 0, 0]);
+    }
+
     fn decode(png: &[u8]) -> Vec<u8> {
         let mut dec = png::Decoder::new(std::io::Cursor::new(png))
             .read_info()
