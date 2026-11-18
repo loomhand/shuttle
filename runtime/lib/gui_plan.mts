@@ -105,6 +105,7 @@ const RUN_S = 90
 const RUN_MAX_S = 110
 const RUN_SPARE = 3000
 const BUSY_MS = 3000
+const INTO_PASSWORD = ' (into a password field)'
 const INERT_KEY = /^shift\+[^+]$/i
 const ARROW_KEY = /^(shift\+)?(arrow)?(up|down|left|right)$/i
 const SAID: Record<string, string[]> = { link: ['link'], button: ['button', 'togglebutton'] }
@@ -257,6 +258,7 @@ async function perform(p: Params): Promise<Result> {
       const before = recs[i - 1]
       if (before && (s.expect || (s.verify && ((s.value ?? s.on ?? s.enabled) !== undefined || rec.waited)) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
     } catch (e: unknown) {
+      if (s.type !== undefined && !secure(s) && String(e instanceof Error ? e.message : e).endsWith(INTO_PASSWORD)) { rec.secret = true; sealStep() }
       const sp = e instanceof Surprise ? e : new Surprise(e instanceof Error ? e.message : String(e), await seen())
       if ((sp.late || sp.seen.window === undefined) && sp.seen.outline === undefined && sp.reason !== NO_FRONT) sp.seen = await seen()
       if (sp.reason === NO_FRONT || sp.seen.outline === `(${NO_FRONT})`) { const u = await desk.unanswered().catch(() => null); const why = u ? `front app "${u.app ?? u.title}" (pid ${u.pid}) is not answering accessibility` : NO_FRONT; if (sp.reason === NO_FRONT) sp.reason = why; if (sp.seen.outline === `(${NO_FRONT})`) sp.seen.outline = `(${why})` }

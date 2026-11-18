@@ -142,6 +142,21 @@ test('a plain line typed with its Return into a field the step\'s own read shows
   for (const text of [JSON.stringify(r), disk, ...shown]) assert.ok(!text.includes('hunter14'), text)
 })
 
+test('a plain type whose desk call fails after finding a password field is kept out of the escalation, the partial result and the records', async (t) => {
+  const run = mkdtempSync(`${tmpdir()}/run-`)
+  process.env.SHUTTLE_RUN = run
+  const partial = ((await import(`../lib/gui_plan.mts?${run}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_RUN
+  const failed = 'type_text: the device did not acknowledge the clipboard set, so the line was not pasted (into a password field)'
+  await daemon(t, ({ tool }) => tool === 'desk_type' ? { text: failed, error: true } : answer(() => [notepad])({ tool }))
+  const r = await partial({ steps: [{ app: 'Notepad' }, { type: 'hunter15' }] })
+  assert.equal(r.escalate?.step, 1, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, failed)
+  assert.equal(r.escalate?.outline, undefined, JSON.stringify(r))
+  const disk = ['.pending.json', '.runs.jsonl'].map((n) => readFileSync(`${process.env.SHUTTLE_FLOWS}/${n}`, 'utf8')).join('\n')
+  for (const text of [JSON.stringify(r), disk, readFileSync(`${run}/result.json`, 'utf8')]) assert.ok(!text.includes('hunter15'), text)
+})
+
 test('a value typed into a password field is never written to a saved flow or the chain record', async (t) => {
   const field = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused', 'protected'] }
   await daemon(t, ({ tool }) => {
