@@ -293,7 +293,7 @@ impl Uia {
         self.tops.retain(|h, _| listed(h));
         let mut last = lock(&LAST);
         last.retain(|h, _| listed(h));
-        forget_closed(&mut self.unnamed, &last);
+        uia_roles::forget_closed(&mut self.unnamed, &last);
         drop(last);
         (0..shown.len())
             .filter(|&i| {
@@ -868,10 +868,6 @@ fn stale_front(frames: &mut [Frame], last: &mut BTreeMap<isize, Frame>, front: i
     }
 }
 
-fn forget_closed<T>(unnamed: &mut HashMap<String, T>, last: &BTreeMap<isize, Frame>) {
-    unnamed.retain(|id, _| last.values().any(|f| f.id == *id));
-}
-
 fn owned(shown: &[Shown], root: usize) -> Vec<usize> {
     let mut owners = vec![shown[root].hwnd.0 as isize];
     let mut found = Vec::new();
@@ -1250,18 +1246,6 @@ mod tests {
         let mut last = BTreeMap::from([(8, left)]);
         assert!(kept(&mut last, 8, 1, true).unwrap().active);
         assert!(kept(&mut last, 8, 1, false).unwrap().active);
-    }
-
-    #[test]
-    fn the_walked_elements_of_a_window_no_longer_listed_are_dropped() {
-        let frame = |id: &str| Frame {
-            id: id.into(),
-            ..Frame::default()
-        };
-        let last = BTreeMap::from([(7, frame("open"))]);
-        let mut unnamed = HashMap::from([("open".to_owned(), 1), ("closed".to_owned(), 2)]);
-        forget_closed(&mut unnamed, &last);
-        assert_eq!(unnamed, HashMap::from([("open".to_owned(), 1)]));
     }
 
     #[test]

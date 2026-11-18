@@ -1,5 +1,7 @@
 //! UIA control types as ARIA roles after W3C Core-AAM, and UIA properties as desk state names.
 
+use std::collections::{BTreeMap, HashMap};
+
 use crate::model::{self, States};
 
 /// The UIA facts that decide an element's role.
@@ -104,6 +106,10 @@ pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
     })
 }
 
+pub fn forget_closed<T>(unnamed: &mut HashMap<String, T>, last: &BTreeMap<isize, model::Frame>) {
+    unnamed.retain(|id, _| last.values().any(|f| f.id == *id));
+}
+
 pub fn walked_id<'a, K: PartialEq + 'a>(
     lists: impl IntoIterator<Item = &'a (isize, Vec<(String, K)>)>,
     top: Option<isize>,
@@ -198,6 +204,18 @@ mod tests {
             ..Facts::default()
         };
         assert_eq!(states("textbox", pw), ["protected"]);
+    }
+
+    #[test]
+    fn the_walked_elements_of_a_window_no_longer_listed_are_dropped() {
+        let frame = |id: &str| model::Frame {
+            id: id.into(),
+            ..model::Frame::default()
+        };
+        let last = BTreeMap::from([(7, frame("open"))]);
+        let mut unnamed = HashMap::from([("open".to_owned(), 1), ("closed".to_owned(), 2)]);
+        forget_closed(&mut unnamed, &last);
+        assert_eq!(unnamed, HashMap::from([("open".to_owned(), 1)]));
     }
 
     #[test]
