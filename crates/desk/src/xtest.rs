@@ -8,6 +8,7 @@ use x11rb::protocol::xkb::{ConnectionExt as _, ID};
 use x11rb::protocol::xproto::{ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, ModMask};
 use x11rb::protocol::xtest::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
+use x11rb::wrapper::ConnectionExt as _;
 
 const SHIFT_L: u32 = 0xffe1;
 const TAB: u32 = 0xff09;
@@ -80,10 +81,7 @@ pub fn type_mapped(text: &str, stop: &AtomicBool) -> Result<bool, String> {
     for &key in held.iter().rev() {
         let _ = conn.xtest_fake_input(KEY_RELEASE_EVENT, key, x11rb::CURRENT_TIME, root, 0, 0, 0);
     }
-    conn.get_input_focus()
-        .map_err(|e| format!("XTest: {e}"))?
-        .reply()
-        .map_err(|e| format!("XTest: {e}"))?;
+    conn.sync().map_err(|e| format!("XTest: {e}"))?;
     typed?;
     for cookie in sent {
         cookie.check().map_err(|e| format!("XTest: {e}"))?;
