@@ -1,6 +1,6 @@
 //! UIA control types as ARIA roles after W3C Core-AAM, and UIA properties as desk state names.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::model::{self, States};
 
@@ -108,6 +108,25 @@ pub fn states(role: &str, f: Facts) -> Vec<&'static str> {
 
 pub fn forget_closed<T>(unnamed: &mut HashMap<String, T>, last: &BTreeMap<isize, model::Frame>) {
     unnamed.retain(|id, _| last.values().any(|f| f.id == *id));
+}
+
+pub fn popup_entries<K>(
+    nodes: &[model::Node],
+    root: usize,
+    frame: &mut Vec<(String, K)>,
+) -> Vec<(String, K)> {
+    let depth = nodes[root].depth;
+    let inside: HashSet<&str> = nodes[root..]
+        .iter()
+        .enumerate()
+        .take_while(|(i, n)| *i == 0 || n.depth > depth)
+        .map(|(_, n)| n.id.as_str())
+        .collect();
+    let (popup, rest) = std::mem::take(frame)
+        .into_iter()
+        .partition(|(id, _)| inside.contains(id.as_str()));
+    *frame = rest;
+    popup
 }
 
 pub fn walked_id<'a, K: PartialEq + 'a>(
@@ -256,6 +275,31 @@ mod tests {
         assert_eq!(found(Some(12), entry("Status Bar")).as_deref(), Some("u2"));
         assert_eq!(found(Some(7), entry("Status Bar")), None);
         assert_eq!(found(Some(7), entry("View")).as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn a_popup_listed_inside_its_frames_tree_takes_the_entries_of_its_own_subtree() {
+        let node = |id: &str, depth| model::Node {
+            id: id.into(),
+            depth,
+            ..model::Node::default()
+        };
+        let nodes = [
+            node("w", 0),
+            node("u1", 1),
+            node("m", 1),
+            node("u2", 2),
+            node("u3", 3),
+            node("u4", 1),
+        ];
+        let mut frame: Vec<(String, i32)> = ["u1", "u2", "u3", "u4"]
+            .iter()
+            .map(|id| ((*id).to_owned(), 0))
+            .collect();
+        let popup = popup_entries(&nodes, 2, &mut frame);
+        let ids = |l: &[(String, i32)]| l.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&popup), ["u2", "u3"]);
+        assert_eq!(ids(&frame), ["u1", "u4"]);
     }
 
     #[test]

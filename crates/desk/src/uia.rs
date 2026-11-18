@@ -451,8 +451,16 @@ impl Access for Uia {
                 })
                 .collect();
             for (popup, menu) in menus {
-                let listed = runtime_id(&menu).is_ok_and(|id| nodes.iter().any(|n| n.id == id));
-                if truncated || listed {
+                let listed = runtime_id(&menu)
+                    .ok()
+                    .and_then(|id| nodes.iter().position(|n| n.id == id));
+                if let Some(root) = listed
+                    && let Some((_, frame)) = self.walking.first_mut()
+                {
+                    let entries = uia_roles::popup_entries(&nodes, root, frame);
+                    self.walking.push((popup, entries));
+                }
+                if truncated || listed.is_some() {
                     continue;
                 }
                 self.walking.push((popup, Vec::new()));
