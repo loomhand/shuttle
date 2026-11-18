@@ -276,12 +276,7 @@ async fn serve(
         }
     };
     safety.indicator &= local;
-    let mut key_vars = vec![DEFAULT_KEY_ENV.to_owned()];
-    if let Ok(c) = &config
-        && !key_vars.contains(&c.api_key_env)
-    {
-        key_vars.push(c.api_key_env.clone());
-    }
+    let key_vars = key_vars(config.as_ref().ok().map(|c| c.api_key_env.as_str()));
     let apps = std::mem::take(&mut safety.apps);
     let input = config
         .as_ref()
@@ -396,6 +391,14 @@ async fn serve(
     served
 }
 
+fn key_vars(configured: Option<&str>) -> Vec<String> {
+    let mut vars = vec![DEFAULT_KEY_ENV.to_owned(), http::TOKEN_ENV.to_owned()];
+    if let Some(key) = configured.filter(|k| !vars.iter().any(|v| v == k)) {
+        vars.push(key.to_owned());
+    }
+    vars
+}
+
 #[cfg(unix)]
 async fn shutdown() {
     use tokio::signal::unix::{SignalKind, signal};
@@ -457,6 +460,13 @@ fn fail(e: impl Display) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_run_gets_a_model_key_or_the_http_token() {
+        assert_eq!(key_vars(None), [DEFAULT_KEY_ENV, http::TOKEN_ENV]);
+        assert_eq!(key_vars(Some(DEFAULT_KEY_ENV)).len(), 2);
+        assert_eq!(key_vars(Some("MY_KEY"))[2], "MY_KEY");
+    }
 
     #[test]
     fn cli_arguments_are_json_or_pairs_with_json_values() {

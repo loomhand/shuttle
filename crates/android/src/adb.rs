@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -107,7 +108,7 @@ pub struct Android {
     points: Mutex<HashMap<String, Saved>>,
     ui: Mutex<Option<UiServer>>,
     server_input: AtomicBool,
-    control: Mutex<Option<Control>>,
+    control: Arc<Mutex<Option<Control>>>,
     natural: OnceCell<(i32, i32)>,
 }
 
@@ -118,7 +119,7 @@ impl Android {
             points: Mutex::new(HashMap::new()),
             ui: Mutex::new(None),
             server_input: AtomicBool::new(true),
-            control: Mutex::new(None),
+            control: Arc::default(),
             natural: OnceCell::new(),
         }
     }
@@ -405,13 +406,10 @@ impl Android {
         C: FnMut() -> Cf,
         Cf: Future<Output = Result<Option<i64>, String>>,
     {
+        let mut wipe = Wipe(Some(Arc::clone(&self.control)));
         let typed = self.type_lines(text, at, check).await;
-        let mut slot = self.control.lock().await;
-        if let Some(control) = slot.as_mut().filter(|c| c.is_open())
-            && control.set_clipboard("").await.is_err()
-        {
-            *slot = None;
-        }
+        wipe.0 = None;
+        wiped(&self.control).await;
         typed
     }
 
@@ -930,6 +928,18 @@ impl Control {
     }
 }
 
+struct Wipe(Option<Arc<Mutex<Option<Control>>>>);
+
+impl Drop for Wipe {
+    fn drop(&mut self) {
+        if let Some(slot) = self.0.take()
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            rt.spawn(async move { wiped(&slot).await });
+        }
+    }
+}
+
 struct Forward {
     port: String,
     remove: Command,
@@ -1298,6 +1308,15 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
         tokio::time::sleep(CONNECT_PAUSE).await;
     }
     Err("scrcpy control did not start".to_owned())
+}
+
+async fn wiped(slot: &Mutex<Option<Control>>) {
+    let mut slot = slot.lock().await;
+    if let Some(control) = slot.as_mut().filter(|c| c.is_open())
+        && control.set_clipboard("").await.is_err()
+    {
+        *slot = None;
+    }
 }
 
 /// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.
@@ -2316,6 +2335,24 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_type_dropped_before_its_end_still_empties_the_device_clipboard() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let typing = android.type_text("secret", None, std::future::pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), typing)
+                .await
+                .is_err()
+        );
+        let mut buf = [0; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), peer.read(&mut buf))
+            .await
+            .expect("no clear after the dropped type")
+            .unwrap();
+        assert_eq!(buf[..n], clipboard_message("", 1));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_double_tap_is_two_server_taps_inside_the_double_tap_window() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
@@ -3060,10 +3097,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn acked(fake: &Fake) -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+    async fn acked(fake: &Fake) -> Arc<std::sync::Mutex<Vec<String>>> {
         let mut peer = controlled(&fake.android).await;
-        let pasted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let seen = std::sync::Arc::clone(&pasted);
+        let pasted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&pasted);
         tokio::spawn(async move {
             let mut head = [0u8; 14];
             while peer.read_exact(&mut head).await.is_ok() {
