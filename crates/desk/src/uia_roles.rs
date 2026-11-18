@@ -291,15 +291,16 @@ mod tests {
             node("u2", 2),
             node("u3", 3),
             node("u4", 1),
+            node("u5", 2),
         ];
-        let mut frame: Vec<(String, i32)> = ["u1", "u2", "u3", "u4"]
+        let mut frame: Vec<(String, i32)> = ["u1", "u2", "u3", "u4", "u5"]
             .iter()
             .map(|id| ((*id).to_owned(), 0))
             .collect();
         let popup = popup_entries(&nodes, 2, &mut frame);
         let ids = |l: &[(String, i32)]| l.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&popup), ["u2", "u3"]);
-        assert_eq!(ids(&frame), ["u1", "u4"]);
+        assert_eq!(ids(&frame), ["u1", "u4", "u5"]);
     }
 
     #[test]
