@@ -653,3 +653,34 @@ test('a background terminal line into a window no read reaches waits for no sett
   assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['a', 'b'])
   assert.ok(sent(d.calls, 'desk_snapshot').length < 10, String(sent(d.calls, 'desk_snapshot').length))
 })
+
+const STALE = { text: 'window list is stale: "Terminal" did not answer in time, so its app is busy or hung; wait and retry, or close the app', error: true }
+
+test('a background terminal line reads its window again after one stale read that follows its Return', async (t) => {
+  const term: W = { id: '1', title: 'Terminal', role: 'window', pid: 4, active: false }
+  let value = ''; let fail = false
+  const d = desktop([user(), term], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') { if (fail) { fail = false; return STALE } return JSON.stringify({ window: term, truncated: false, nodes: [root('window', 'Terminal'), { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'terminal', name: '', states: ['showing'], value }] }) }
+    if (tool === 'desk_type') { value += String(args.text); return JSON.stringify({ ok: true, chars: String(args.text).length, terminal: true, unverified: 'unverifiable: Typed (terminal emulator: pty/XTest key events)' }) }
+    if (tool === 'desk_key' && args.keys === 'Return') { value += '\n'; fail = true }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Terminal' }, { type: 'a\nb' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(value, 'a\nb')
+})
+
+test('a background password line whose first read after typing is stale is still read for its echo before its Return', async (t) => {
+  let value = ''; let fail = false
+  const d = desktop([user(), notepad()], ({ tool, args }) => {
+    if (tool === 'desk_snapshot') { if (fail) { fail = false; return STALE } return JSON.stringify({ window: notepad(), truncated: false, nodes: [root('window', notepad().title), { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'textbox', name: '', states: ['showing', 'focused'], value }] }) }
+    if (tool === 'desk_type') { value += String(args.text); fail = !String(args.text).includes('\n'); return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: 'unverifiable: Posted via CGEvent.' }) }
+    return undefined
+  })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: '{{pw}}\n', secret: true }], params: { pw: 'hunter2' } })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^the password showed in "Untitled - Notepad", so it was not submitted/)
+  assert.deepEqual(sent(d.calls, 'desk_type').map((a) => a.text), ['hunter2'])
+})

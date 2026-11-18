@@ -123,6 +123,7 @@ const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does 
 const NOOP = 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect'
 const UNCHECKED = 'the text was sent, and the device did not check that it showed, as for a web view, a field that changes what is typed, or a first line pasted where no field reports the input focus; no later step read it back'
 const UNREAD_SECRET = 'the password was entered, and its field reads back nothing, so it was not checked: do not set it again; no later step read what it unlocks'
+const OFF_SPACE = 'is on another Space'
 const MAY_HAVE_RUN = ['input_delivery_stalled:', 'closed the connection without an answer', 'timed out']
 const TOGGLE_UNREAD = 'the menu toggle was pressed, and its state after the press could not be read; no later step read it back'
 const SHORTCUT_VERBS: Record<string, string> = { 'ctrl+n': 'new', 'ctrl+s': 'save', 'ctrl+shift+s': 'save as', 'ctrl+o': 'open' }
@@ -1139,19 +1140,18 @@ async function typedInto(w: Win, text: string): Promise<{ fp?: Fp; kept?: Kept }
     return { fp, kept }
   } catch { return {} } finally { tick('blank', t0) }
 }
-async function texts(w: Win): Promise<Map<string, Text> | null> {
-  try {
-    const slot = pool(READS_AT_ONCE)
-    const nodes = parse(await snapOf(w)); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
-    const all = await Promise.all(nodes.map(async (n): Promise<[string, Text][]> => {
-      const field = textual(n)
-      if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
-      if (!field && !(bare && n.role === 'text' && n.focused)) return []
-      const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
-      return [[n.id, { value: r?.value, field, cut: r?.truncated }]]
-    }))
-    return new Map(all.flat())
-  } catch { return null }
+async function texts(w: Win): Promise<Map<string, Text> | null> { return readTexts(w).catch(() => null) }
+async function readTexts(w: Win): Promise<Map<string, Text>> {
+  const slot = pool(READS_AT_ONCE)
+  const nodes = parse(await snapOf(w)); const textual = (n: Node) => n.role === 'document' || n.role === 'terminal' || FIELD_ROLES.has(n.role); const bare = !nodes.some(textual)
+  const all = await Promise.all(nodes.map(async (n): Promise<[string, Text][]> => {
+    const field = textual(n)
+    if (n.value && !(field && n.value.length >= VALUE_CHARS)) return [[n.id, { value: n.value, field }]]
+    if (!field && !(bare && n.role === 'text' && n.focused)) return []
+    const r = await slot(() => desk.read(n.id, { text: true, tail: true })).catch(() => null)
+    return [[n.id, { value: r?.value, field, cut: r?.truncated }]]
+  }))
+  return new Map(all.flat())
 }
 async function hides(w: Win, read: Map<string, Text> | null) {
   try { return !!read && (await snapOf(w)).nodes.some((n) => n.states.includes('protected') && n.states.includes('focused') && n.value === undefined && read.has(n.id) && read.get(n.id)?.value === undefined) } catch { return false }
@@ -1201,8 +1201,10 @@ function cutShort(e: unknown, n: number, done: number, ret: boolean, from: numbe
   return i ? new Error(`${i} of ${n} lines${r ? ` and the Return after line ${i}` : ''} were typed, then ${then}`) : e
 }
 async function settled(w: Win) {
-  let a = await texts(w)
-  for (const end = Date.now() + BASE_SETTLE; a && Date.now() < end;) { const b = await texts(w); if (unchanged(a, b)) return b; a = b }
+  let away = false
+  const read = () => readTexts(w).catch((e: unknown) => { away = String(e).includes(OFF_SPACE); return null })
+  let a = await read()
+  for (const end = Date.now() + BASE_SETTLE; !away && Date.now() < end;) { const b = await read(); if (unchanged(a, b)) return b; a = b }
   return a
 }
 function unchanged(before: Map<string, Text> | null, after: Map<string, Text> | null) {
