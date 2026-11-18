@@ -931,10 +931,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let scale = self.scale().await?;
             let point = (f64::from(a.x) / scale, f64::from(a.y) / scale);
             let top = self.top_at(point).await?.ok_or(NO_WINDOW_AT)?;
-            a.window = top["title"]
-                .as_str()
-                .filter(|t| !t.is_empty())
-                .map(str::to_owned);
+            a.window = top["title"].as_str().map(str::to_owned);
             a.pid = top["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
             number = top["window_id"]
                 .as_u64()
@@ -946,6 +943,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             .run(CALL_LIMIT, (), move |b| {
                 b.evict();
                 let mut frames = frames(b, a.pid, &allow)?;
+                if a.window.as_deref() == Some("")
+                    && !frames
+                        .iter()
+                        .any(|f| f.pid == a.pid && f.title.trim().is_empty())
+                {
+                    a.window = None;
+                }
                 let window = a.window.as_deref();
                 if uia
                     && !frames.iter().any(|f| {
@@ -7991,6 +7995,23 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn at_without_a_window_reads_the_untitled_dialog_under_the_point_not_its_titled_parent() {
+        let desk = Desk::new(|| Ok(ParentDialog), DialogOver, Os::Linux);
+        let out = desk
+            .run("desk_at", json!({"x": 50, "y": 50}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["found"]["id"], "dlg/ok", "{v}");
+        let out = desk
+            .run("desk_at", json!({"x": 500, "y": 500}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["found"]["id"], "main/ok", "{v}");
+    }
+
+    #[tokio::test]
     async fn at_without_a_window_reads_the_twin_whose_bounds_hold_the_point() {
         let desk = Desk::new(|| Ok(TwinFrames), Pair, Os::Linux);
         let out = desk
@@ -12411,6 +12432,73 @@ pub(crate) mod tests {
                 v["structuredContent"]["windows"][1]["bounds"]["x"] = x.into();
             }
             Ok(v)
+        }
+    }
+
+    struct ParentDialog;
+
+    impl Access for ParentDialog {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![
+                frame("main", "Untitled - Notepad", 4, true, Some("Notepad")),
+                Frame {
+                    role: "dialog",
+                    ..frame("dlg", "", 4, false, Some("Notepad"))
+                },
+            ])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn node(&mut self, id: &str, _: Extras, _: usize) -> Result<Node, String> {
+            Ok(Node {
+                id: id.into(),
+                role: "button",
+                ..Node::default()
+            })
+        }
+
+        fn ancestors(&mut self, id: &str) -> Result<Vec<String>, String> {
+            Ok(id
+                .split_once('/')
+                .map(|(w, _)| vec![w.to_owned()])
+                .unwrap_or_default())
+        }
+
+        fn pid_of(&mut self, _: &str) -> Result<Option<u32>, String> {
+            Ok(Some(4))
+        }
+
+        fn at(&mut self, window: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(Some(format!("{window}/ok")))
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct DialogOver;
+
+    impl Input for DialogOver {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            Ok(match tool {
+                "get_screen_size" => json!({"structuredContent": {"scale_factor": 1.0}}),
+                "list_windows" => json!({"structuredContent": {"windows": [
+                    {"pid": 4, "window_id": 1, "layer": 0, "z_index": 1, "title": "Untitled - Notepad", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}},
+                    {"pid": 4, "window_id": 2, "layer": 0, "z_index": 2, "title": "", "bounds": {"x": 0.0, "y": 0.0, "width": 200.0, "height": 100.0}}
+                ]}}),
+                _ => json!({}),
+            })
         }
     }
 
