@@ -453,7 +453,9 @@ impl Android {
             if line.is_empty() {
                 if i == 0 && window.is_none() && at.is_none() && rows.iter().any(|l| !l.is_empty())
                 {
-                    pin = Some(self.field_window().await?.ok_or(NO_FIELD_FIRST)?);
+                    let (id, password) = self.field_window().await?.ok_or(NO_FIELD_FIRST)?;
+                    *protected |= password;
+                    pin = Some(id);
                 }
                 continue;
             }
@@ -518,9 +520,11 @@ impl Android {
         Ok(focus)
     }
 
-    async fn field_window(&self) -> Result<Option<i64>, String> {
+    async fn field_window(&self) -> Result<Option<(i64, bool)>, String> {
         let focus = self.focus(true).await?;
-        Ok(focus.filter(|f| f.editable && f.window).and_then(|f| f.id))
+        Ok(focus
+            .filter(|f| f.editable && f.window)
+            .and_then(|f| f.id.map(|id| (id, f.password))))
     }
 
     /// The screen size `wm size` reports in the device's natural rotation, read once per device.
@@ -1186,6 +1190,9 @@ where
     let end = start + TYPE_WAIT;
     let before = loop {
         let cached = focus(false).await?;
+        if cached.as_ref().is_some_and(|f| usable(f) && f.password) {
+            *took = Some((None, true));
+        }
         if cached.as_ref().is_some_and(usable)
             && let Some(f) = focus(true).await?.filter(usable)
         {
@@ -1214,7 +1221,11 @@ where
     if before.is_none() && !blind {
         return Err(NO_FIELD.to_owned());
     }
-    *took = before.as_ref().map(|(f, _)| (f.id, f.password));
+    let latched = took.is_some_and(|(_, password)| password);
+    *took = match &before {
+        Some((f, _)) => Some((f.id, f.password || latched)),
+        None => latched.then_some((None, true)),
+    };
     let (before, cached) = match before {
         Some((f, cached)) if !f.password => (f, cached),
         unchecked => {
@@ -2370,6 +2381,44 @@ mod tests {
             acked(&fake).await;
             let out = desk(&fake, "desk_type", serde_json::json!({"text": "pw"})).await;
             assert_eq!(out, Ok(want), "{}", log(&fake, "requests"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_type_that_fails_after_any_focus_read_named_a_password_field_ends_by_saying_so() {
+        use desk_core::wire::INTO_PASSWORD_FIELD;
+
+        let secret = r#"{"editable":true,"password":true,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        for (text, focus, live_fails, clause) in [
+            ("pw", secret.to_owned(), true, true),
+            ("\npw", secret.to_owned(), false, true),
+            ("pw", focused(7, ""), true, false),
+            ("\npw", focused(7, ""), false, false),
+        ] {
+            let fake = Fake::new();
+            fake.put("inject.answer", "false");
+            fake.windows("");
+            fake.put("focus.json", &focus);
+            if live_fails {
+                fake.put("live.fail", "");
+            }
+            let err = fake
+                .android
+                .type_text(text, None, || async { Ok(None) })
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err.ends_with(INTO_PASSWORD_FIELD),
+                clause,
+                "{text:?} {err} {}",
+                log(&fake, "requests")
+            );
+            assert_eq!(
+                err.matches(INTO_PASSWORD_FIELD).count(),
+                usize::from(clause)
+            );
+            assert!(!log(&fake, "requests").contains("paste"), "{text:?}");
         }
     }
 
@@ -3661,7 +3710,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"forward tcp:0\"*) cat \"$DIR/port\" 2>/dev/null;;\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-swipe.json\" ]; then mv \"$DIR/after-swipe.json\" \"$DIR/windows.json\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/after-dump-focus.json\" ]; then mv \"$DIR/after-dump-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"forward tcp:0\"*) cat \"$DIR/port\" 2>/dev/null;;\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-swipe.json\" ]; then mv \"$DIR/after-swipe.json\" \"$DIR/windows.json\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      \"focus live\") if [ -f \"$DIR/live.fail\" ]; then printf '<error>focus read failed</error>'; else cat \"$DIR/focus.json\" 2>/dev/null; fi;;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/after-dump-focus.json\" ]; then mv \"$DIR/after-dump-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = android_at(adb);
             Self { dir, android }
