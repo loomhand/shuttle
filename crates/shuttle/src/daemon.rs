@@ -1430,12 +1430,12 @@ mod tests {
         );
         let out = d
             .answer(Call {
-                agent_id: "mcp-claude-ab12".into(),
+                agent_id: "mcp-a1b2".into(),
                 tool: "gui_plan".into(),
                 args: json!({"steps": []}),
             })
             .await;
-        assert_eq!(out.text, "\"mcp-claude-ab12\"", "{}", out.text);
+        assert_eq!(out.text, "\"mcp-a1b2\"", "{}", out.text);
     }
 
     #[tokio::test]
