@@ -1060,14 +1060,12 @@ async function act(n: Node) {
 
 // a menu entry with a shortcut takes the shortcut, since an AT-SPI action can open a modal dialog that deadlocks the app on the first key
 async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = false, w: Win | null = null) {
-  return timed('act', async () => {
-    const mods = n.shortcut.split('+').slice(0, -1)
-    if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut))) {
-      if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
-      try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e }
-    }
-    rec.via = await act(n)
-  })
+  const mods = n.shortcut.split('+').slice(0, -1)
+  if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut)) && await timed('act', async () => {
+    if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
+    try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return true } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e; return false }
+  })) return
+  rec.via = await act(n)
 }
 
 async function settle(before: string | undefined) {
@@ -1277,10 +1275,10 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
   if (!o) throw new Surprise(`"${target}" has no option "${value}"; its options: ${opts.map((n) => `"${n.name}"`).join(', ')}`, await seen())
   rec.value = o.name
   if (norm(combo.name) === norm(o.name)) { rec.noop = true; return }
-  const t0 = Date.now()
   await act(combo)
+  const t0 = Date.now()
   for (let i = 0; i < 25 && !(await desk.read(o.id)).states.includes('showing'); i++) await sleep(20)
-  await act(o); tick('act', t0)
+  tick('settle', t0); await act(o)
   let got = ''
   for (let i = 0; i < 10; i++) { got = (await desk.read(combo.id)).name; if (norm(got) === norm(o.name)) { rec.confirmed = true; return } await sleep(40) }
   throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
