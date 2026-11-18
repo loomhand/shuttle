@@ -616,15 +616,12 @@ fn unescape(value: &str) -> Cow<'_, str> {
                 .and_then(|d| d.parse().ok())
                 .and_then(char::from_u32),
         };
-        match ch {
-            Some(c) => {
-                out.push(c);
-                rest = &rest[end + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = &rest[1..];
-            }
+        if let Some(c) = ch {
+            out.push(c);
+            rest = &rest[end + 1..];
+        } else {
+            out.push('&');
+            rest = &rest[1..];
         }
     }
     out.push_str(rest);
