@@ -1290,10 +1290,8 @@ fn gtk_combo(accel: &str) -> Option<String> {
 /// The items of a `GetItems` reply in either cache signature.
 fn cache_items(reply: &zbus::Message) -> Result<Vec<Item>, zbus::Error> {
     let body = reply.body();
-    match body.deserialize::<Vec<Item>>() {
-        Ok(items) => Ok(items),
-        Err(_) => body.deserialize::<Vec<OldItem>>().map(indexed),
-    }
+    body.deserialize::<Vec<Item>>()
+        .or_else(|_| body.deserialize::<Vec<OldItem>>().map(indexed))
 }
 
 /// Items of the older cache with each object's index among its parent's children, -1 when the parent does not list it, and its child count.

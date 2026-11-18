@@ -425,14 +425,13 @@ fn reuse<G, T>(
             open().ok()?
         }
     };
-    let (g, out) = match read(&g) {
-        Ok(out) => (g, out),
-        Err(_) => {
-            drop(g);
-            let g = open().ok()?;
-            let out = read(&g).ok()?;
-            (g, out)
-        }
+    let (g, out) = if let Ok(out) = read(&g) {
+        (g, out)
+    } else {
+        drop(g);
+        let g = open().ok()?;
+        let out = read(&g).ok()?;
+        (g, out)
     };
     *slot = Some(g);
     Some(out)
