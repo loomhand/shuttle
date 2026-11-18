@@ -336,6 +336,9 @@ impl Node {
         if self.has(INDETERMINATE) && matches!(self.role(), "checkbox" | "menuitemcheckbox") {
             names.push("mixed");
         }
+        if self.role == PASSWORD_TEXT {
+            names.push("protected");
+        }
         names
     }
 
@@ -2151,6 +2154,18 @@ mod tests {
         };
         assert_eq!(n(7).state_names(), vec!["indeterminate", "mixed"]);
         assert_eq!(n(42).state_names(), vec!["indeterminate"]);
+    }
+
+    #[test]
+    fn a_password_field_is_protected_and_a_plain_entry_is_not() {
+        let n = |role: u32| Node {
+            role,
+            states: (1 << ENABLED) | (1 << FOCUSED),
+            ..Node::default()
+        };
+        assert_eq!(n(PASSWORD_TEXT).state_names(), vec!["focused", "protected"]);
+        assert_eq!(n(61).state_names(), vec!["focused"]);
+        assert_eq!(n(79).state_names(), vec!["focused"]);
     }
 
     #[test]
