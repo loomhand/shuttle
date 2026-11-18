@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use futures_util::future::join_all;
+use futures_util::future::{OptionFuture, join_all};
 use serde::de::DeserializeOwned;
 use tokio::sync::Mutex;
 use zbus::Connection;
@@ -227,15 +227,12 @@ const ROLE_NAMES: [&str; 130] = [
 ];
 
 /// The apps that stopped answering, by bus name, with when; shared by every client, so a restarted worker keeps skipping them.
-static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> =
-    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+static HUNG: LazyLock<std::sync::Mutex<HashMap<String, Instant>>> = LazyLock::new(Default::default);
 
-static SEEN: LazyLock<std::sync::Mutex<HashMap<String, Seen>>> =
-    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+static SEEN: LazyLock<std::sync::Mutex<HashMap<String, Seen>>> = LazyLock::new(Default::default);
 
 /// The apps, by bus name, already asked for their attributes by [`Atspi::wake`].
-static WOKEN: LazyLock<std::sync::Mutex<HashSet<String>>> =
-    LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+static WOKEN: LazyLock<std::sync::Mutex<HashSet<String>>> = LazyLock::new(Default::default);
 
 /// Whether each app, by bus name, answers screen coordinates.
 static SCREEN_COORDS: LazyLock<std::sync::Mutex<HashMap<String, bool>>> =
@@ -593,37 +590,17 @@ impl Atspi {
     /// The node's live role, name and states, with the reads `extras` asks for; a value has at most `chars` characters.
     pub async fn node(&self, obj: Obj, extras: Extras, chars: usize) -> Result<Node, String> {
         let r = self.raw(&obj).await?;
+        let value = extras
+            .values
+            .then(|| self.value(&obj, r.role, r.ifaces, chars, extras.tail));
+        let bounds = (extras.bounds && r.ifaces & IF_COMPONENT != 0).then(|| self.extents(&obj));
+        let keys = (extras.keys && r.ifaces & IF_ACTION != 0).then(|| self.key_binding(&obj));
+        let url = (extras.urls && role_name(r.role, true) == "link").then(|| self.uri(&obj));
         let (value, bounds, keys, url) = tokio::join!(
-            async {
-                if extras.values {
-                    self.value(&obj, r.role, r.ifaces, chars, extras.tail)
-                        .await
-                        .filter(|v| !v.is_empty())
-                } else {
-                    None
-                }
-            },
-            async {
-                if extras.bounds && r.ifaces & IF_COMPONENT != 0 {
-                    self.extents(&obj).await.ok()
-                } else {
-                    None
-                }
-            },
-            async {
-                if extras.keys && r.ifaces & IF_ACTION != 0 {
-                    self.key_binding(&obj).await.ok()
-                } else {
-                    None
-                }
-            },
-            async {
-                if extras.urls && role_name(r.role, true) == "link" {
-                    self.uri(&obj).await
-                } else {
-                    None
-                }
-            }
+            OptionFuture::from(value),
+            OptionFuture::from(bounds),
+            OptionFuture::from(keys),
+            OptionFuture::from(url)
         );
         Ok(Node {
             obj: Rc::new(obj),
@@ -634,10 +611,10 @@ impl Atspi {
             ifaces: r.ifaces,
             parent: None,
             depth: 0,
-            value,
-            bounds,
-            keys,
-            url,
+            value: value.flatten().filter(|v| !v.is_empty()),
+            bounds: bounds.and_then(Result::ok),
+            keys: keys.and_then(Result::ok),
+            url: url.flatten(),
         })
     }
 
@@ -826,30 +803,14 @@ impl Atspi {
         let reads = join_all(nodes.iter().map(|n| async move {
             let obj = &*n.obj;
             let role = n.role();
-            let value = async {
-                if !(extras.values && is_field(role)) {
-                    return None;
-                }
-                self.value(obj, n.role, n.ifaces, VALUE_CHARS, false)
-                    .await
-                    .filter(|v| !v.is_empty())
-            };
-            let bounds = async {
-                if !(extras.bounds
-                    && n.has(SHOWING)
-                    && n.ifaces & IF_COMPONENT != 0
-                    && (extras.frame || is_active(role)))
-                {
-                    return None;
-                }
-                self.extents(obj).await.ok()
-            };
-            let keys = async {
-                if !(extras.keys && n.ifaces & IF_ACTION != 0) {
-                    return None;
-                }
-                self.key_binding(obj).await.ok().filter(|k| !k.is_empty())
-            };
+            let value = (extras.values && is_field(role))
+                .then(|| self.value(obj, n.role, n.ifaces, VALUE_CHARS, false));
+            let bounds = (extras.bounds
+                && n.has(SHOWING)
+                && n.ifaces & IF_COMPONENT != 0
+                && (extras.frame || is_active(role)))
+            .then(|| self.extents(obj));
+            let keys = (extras.keys && n.ifaces & IF_ACTION != 0).then(|| self.key_binding(obj));
             let label = async {
                 if !(extras.values && n.name.is_empty() && n.has(SHOWING) && is_field(role)) {
                     return None;
@@ -865,20 +826,21 @@ impl Atspi {
                 }
                 .filter(|s| !s.is_empty())
             };
-            let url = async {
-                if !(extras.urls && role == "link") {
-                    return None;
-                }
-                self.uri(obj).await
-            };
-            tokio::join!(value, bounds, keys, label, url)
+            let url = (extras.urls && role == "link").then(|| self.uri(obj));
+            tokio::join!(
+                OptionFuture::from(value),
+                OptionFuture::from(bounds),
+                OptionFuture::from(keys),
+                label,
+                OptionFuture::from(url)
+            )
         }))
         .await;
         for (n, (value, bounds, keys, label, url)) in nodes.iter_mut().zip(reads) {
-            n.value = value;
-            n.bounds = bounds;
-            n.keys = keys;
-            n.url = url;
+            n.value = value.flatten().filter(|v| !v.is_empty());
+            n.bounds = bounds.and_then(Result::ok);
+            n.keys = keys.and_then(Result::ok).filter(|k| !k.is_empty());
+            n.url = url.flatten();
             if let Some(label) = label {
                 n.name = label;
             }
