@@ -135,9 +135,10 @@ test('shift stays on a key combo and leaves only typed text', async (t) => {
     { t: 1, kind: 'key', code: 0, text: 'b', mods: [], app: 'TextEdit' },
     { t: 2, kind: 'key', code: 48, text: '\t', mods: ['shift'], app: 'TextEdit' },
     { t: 3, kind: 'key', code: 1, text: 's', mods: ['cmd', 'shift'], app: 'TextEdit' },
+    { t: 4, kind: 'key', code: 49, text: ' ', mods: ['ctrl'], app: 'TextEdit' },
   ]
   const d = await main({ recording: { id: 'rec-8', events } })
-  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: 'Ab', focus: 'unverified' }, { key: 'shift+tab' }, { key: 'cmd+shift+s' }])
+  assert.deepEqual(d.steps.map(({ intent: _, ...s }) => s), [{ app: 'TextEdit' }, { type: 'Ab', focus: 'unverified' }, { key: 'shift+tab' }, { key: 'cmd+shift+s' }, { key: 'ctrl+space' }])
 })
 
 test('a right click, a double click and a click with modifiers keep their button, count and mods', async (t) => {
