@@ -426,21 +426,13 @@ impl Grabber {
         if !self.inside(focus, window)? {
             return Ok(false);
         }
-        let (width, height) = (i32::from(self.width), i32::from(self.height));
-        let popups: Vec<Option<u32>> = self
-            .children(true)?
-            .iter()
-            .filter(|p| p.popup && p.drawn)
-            .filter(|p| {
-                let (x, y) = (i32::from(p.x), i32::from(p.y));
-                x < width && y < height && x + i32::from(p.width) > 0 && y + i32::from(p.height) > 0
-            })
-            .map(|p| self.pid(p.id))
-            .collect();
-        if popups.iter().any(|p| *p != Some(pid)) {
-            return Ok(false);
-        }
-        Ok(!popups.is_empty() || !self.grabbed(false)?)
+        keys_reach(
+            &self.children(true)?,
+            (i32::from(self.width), i32::from(self.height)),
+            |w| self.pid(w),
+            pid,
+            || self.grabbed(false),
+        )
     }
 
     /// Whether another client holds an active grab of the keyboard, or of the pointer with `pointer`.
@@ -1005,6 +997,28 @@ fn cover(
         .map(|p| Cover::Under(p.id))
 }
 
+fn keys_reach(
+    mapped: &[Placement],
+    (width, height): (i32, i32),
+    pid_of: impl Fn(Window) -> Option<u32>,
+    pid: u32,
+    grabbed: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    let popups: Vec<Option<u32>> = mapped
+        .iter()
+        .filter(|p| p.popup && p.drawn)
+        .filter(|p| {
+            let (x, y) = (i32::from(p.x), i32::from(p.y));
+            x < width && y < height && x + i32::from(p.width) > 0 && y + i32::from(p.height) > 0
+        })
+        .map(|p| pid_of(p.id))
+        .collect();
+    if popups.iter().any(|p| *p != Some(pid)) {
+        return Ok(false);
+    }
+    Ok(!popups.is_empty() || !grabbed()?)
+}
+
 fn framed(
     id: Window,
     attrs: &GetWindowAttributesReply,
@@ -1419,6 +1433,50 @@ mod tests {
             cover(9, &mapped, (1280, 800), |w| w == 7),
             Some(Cover::Under(5))
         );
+    }
+
+    #[test]
+    fn background_keys_reach_the_window_only_when_every_open_popup_is_its_own_and_no_other_client_grabs_the_keyboard()
+     {
+        let at = |id: Window, x: i16, y: i16, width: u16, popup: bool, drawn: bool| Placement {
+            id,
+            x,
+            y,
+            width,
+            height: width,
+            popup,
+            drawn,
+        };
+        let pid_of = |w: Window| match w {
+            10 => Some(7924),
+            30 => None,
+            _ => Some(9061),
+        };
+        let reach = |mapped: &[Placement], grab: Option<bool>| {
+            keys_reach(mapped, (1920, 1080), pid_of, 7924, || {
+                grab.ok_or_else(|| "probed".to_owned())
+            })
+        };
+        let frame = at(1, 100, 100, 900, false, true);
+        let menu = at(10, 120, 140, 200, true, true);
+        let k89 = at(20, 1300, 700, 200, true, true);
+        let grab = at(21, -50, -50, 1, true, true);
+        let undrawn = at(22, 300, 300, 50, true, false);
+        let unowned = at(30, 300, 300, 50, true, true);
+        let cases = [
+            (vec![frame.clone()], Some(false), Ok(true)),
+            (vec![frame.clone()], Some(true), Ok(false)),
+            (vec![frame.clone(), menu.clone()], None, Ok(true)),
+            (vec![frame.clone(), k89.clone()], None, Ok(false)),
+            (vec![frame.clone(), grab.clone()], Some(true), Ok(false)),
+            (vec![frame.clone(), k89, grab], None, Ok(false)),
+            (vec![frame.clone(), menu, undrawn], None, Ok(true)),
+            (vec![frame, unowned], None, Ok(false)),
+            (Vec::new(), None, Err("probed".to_owned())),
+        ];
+        for (i, (mapped, grabbed, want)) in cases.into_iter().enumerate() {
+            assert_eq!(reach(&mapped, grabbed), want, "case {i}");
+        }
     }
 
     #[test]
