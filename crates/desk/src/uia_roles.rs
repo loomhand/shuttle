@@ -165,18 +165,20 @@ pub fn menu_family(control_type: i32) -> bool {
     matches!(control_type, 50009..=50011)
 }
 
-pub fn menu_up_to_root(
-    steps: impl IntoIterator<Item = (bool, Option<(isize, isize)>)>,
-    at: isize,
-) -> bool {
-    for (menu, window) in steps {
-        if menu {
+pub fn menu_up_to_root(steps: impl IntoIterator<Item = (bool, isize, isize)>, at: isize) -> bool {
+    let mut menu_seen = false;
+    for (menu, hwnd, root) in steps {
+        menu_seen |= menu;
+        if hwnd == 0 {
+            continue;
+        }
+        if root != at {
+            return false;
+        }
+        if menu_seen {
             return true;
         }
-        if let Some((hwnd, root)) = window
-            && hwnd != 0
-            && (hwnd == at || root != at)
-        {
+        if hwnd == at {
             return false;
         }
     }
@@ -417,40 +419,65 @@ mod tests {
         }));
         assert!(!menu_click_reaches(None, Some(form), owners, || menu(true)));
         assert_eq!(asked, 0);
-        let child = 16;
-        assert!(
-            menu_up_to_root([(true, None)], dropdown),
-            "the dropdown's own root is its menu \"ViewDropDown\""
-        );
-        assert!(
-            !menu_up_to_root(
-                [
-                    (false, Some((0, 0))),
-                    (false, Some((palette, palette))),
-                    (true, None)
-                ],
-                palette
-            ),
-            "a tool window with no menu up to its own root, though the form above it has a menu bar"
-        );
-        assert!(
-            !menu_up_to_root([(false, Some((form, form))), (true, None)], palette),
-            "a hit element in another window than the one at the point"
-        );
-        assert!(
-            menu_up_to_root(
-                [
-                    (false, Some((0, 0))),
-                    (false, Some((child, palette))),
-                    (true, None)
-                ],
-                palette
-            ),
-            "the residual: a menu inside the owned window, above a child window of it"
-        );
-        assert!(!menu_up_to_root([], palette), "no hit element");
         assert!([50009, 50010, 50011].into_iter().all(menu_family));
         assert!(![50000, 50021, 50032].into_iter().any(menu_family));
+    }
+
+    #[test]
+    fn a_menu_counts_only_once_the_climb_reaches_a_window_whose_root_is_the_one_at_the_point() {
+        let (form, palette, child, dropdown, other) = (7, 15, 16, 13, 50);
+        let rows = [
+            (
+                vec![(true, dropdown, dropdown)],
+                dropdown,
+                true,
+                "the measured dropdown: the hit element is its menu \"ViewDropDown\", handle the window at the point",
+            ),
+            (
+                vec![(true, 0, 0), (false, dropdown, dropdown)],
+                dropdown,
+                true,
+                "a menu entry with no window of its own under the popup at the point",
+            ),
+            (
+                vec![(true, other, other), (false, palette, palette)],
+                palette,
+                false,
+                "the hit element is a menu in another window than the one at the point",
+            ),
+            (
+                vec![(true, 0, 0), (false, form, form)],
+                palette,
+                false,
+                "a menu entry with no window whose first windowed ancestor has another root",
+            ),
+            (
+                vec![(false, 0, 0), (false, palette, palette), (true, form, form)],
+                palette,
+                false,
+                "a tool window with no menu up to its own root, though the form above it has a menu bar",
+            ),
+            (
+                vec![
+                    (false, 0, 0),
+                    (false, child, palette),
+                    (true, 0, 0),
+                    (false, palette, palette),
+                ],
+                palette,
+                true,
+                "the residual: a menu inside the owned window, above a child window of it",
+            ),
+            (
+                Vec::new(),
+                palette,
+                false,
+                "no hit element or a failed read",
+            ),
+        ];
+        for (steps, at, passes, row) in rows {
+            assert_eq!(menu_up_to_root(steps, at), passes, "{row}");
+        }
     }
 
     #[test]

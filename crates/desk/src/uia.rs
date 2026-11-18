@@ -210,16 +210,17 @@ impl Uia {
                 None => unsafe { walker.GetParentElement(last.as_ref()?) }.ok()?,
             };
             // SAFETY: `el` is a live UIA element of this thread; a stale one answers an error.
-            let kind = unsafe { el.CurrentControlType() }.ok()?;
-            if uia_roles::menu_family(kind.0) {
-                return Some((true, None));
-            }
-            // SAFETY: as above.
             let hwnd = unsafe { el.CurrentNativeWindowHandle() }.ok()?;
+            // SAFETY: as above.
+            let kind = unsafe { el.CurrentControlType() }.ok()?;
             // SAFETY: GetAncestor takes any handle; a null or stale one answers a null handle.
             let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
             last = Some(el);
-            Some((false, Some((hwnd.0 as isize, root.0 as isize))))
+            Some((
+                uia_roles::menu_family(kind.0),
+                hwnd.0 as isize,
+                root.0 as isize,
+            ))
         });
         uia_roles::menu_up_to_root(steps.take(MAX_DEPTH), at)
     }
