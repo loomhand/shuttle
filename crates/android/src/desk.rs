@@ -329,7 +329,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         "desk_type" => {
             let a: TypeArgs = parse(args)?;
             let pin = std::sync::Mutex::new(None);
-            let typed = android
+            let (typed, protected) = android
                 .type_text(&a.text, None, || async {
                     let pinned = pin.lock().ok().and_then(|p| *p);
                     let id = in_front(android, a.window.as_deref(), a.pid, pinned).await?;
@@ -339,7 +339,11 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                     Ok(id)
                 })
                 .await?;
-            json!({"ok": true, "chars": a.text.chars().count(), "typed": typed}).to_string()
+            let mut out = json!({"ok": true, "chars": a.text.chars().count(), "typed": typed});
+            if protected {
+                out["protected"] = true.into();
+            }
+            out.to_string()
         }
         "desk_click" => click(android, parse(args)?).await?,
         "desk_focus" => focus(android, parse(args)?).await?,

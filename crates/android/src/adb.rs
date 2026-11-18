@@ -237,7 +237,7 @@ impl Android {
                     self.tap(p).await?;
                 }
                 let chars = text.chars().count();
-                match self.type_text(text, point, || async { Ok(None) }).await? {
+                match self.type_text(text, point, || async { Ok(None) }).await?.0 {
                     Some(true) => format!("typed {chars} characters"),
                     Some(false) => {
                         format!("pasted {chars} characters; the field does not show them")
@@ -394,13 +394,13 @@ impl Android {
         self.served("windows").await
     }
 
-    /// Types `text` into the focused field: each line pasted after `check` passes, Return between lines, and the clipboard emptied after.
+    /// Types `text` into the focused field: each line pasted after `check` passes, Return between lines, and the clipboard emptied after; true beside the outcome when a line went into a password field.
     pub(crate) async fn type_text<C, Cf>(
         &self,
         text: &str,
         at: Option<(i32, i32)>,
         check: C,
-    ) -> Result<Option<bool>, String>
+    ) -> Result<(Option<bool>, bool), String>
     where
         C: FnMut() -> Cf,
         Cf: Future<Output = Result<Option<i64>, String>>,
@@ -422,12 +422,13 @@ impl Android {
         text: &str,
         at: Option<(i32, i32)>,
         mut check: C,
-    ) -> Result<Option<bool>, String>
+    ) -> Result<(Option<bool>, bool), String>
     where
         C: FnMut() -> Cf,
         Cf: Future<Output = Result<Option<i64>, String>>,
     {
         let mut typed = Some(true);
+        let mut protected = false;
         let mut pin = None;
         let rows: Vec<&str> = text.split('\n').map(|l| l.trim_end_matches('\r')).collect();
         let lines = rows.len();
@@ -476,15 +477,16 @@ impl Android {
             .await
             .map_err(returned)?;
             if i == 0 {
-                pin = took;
+                pin = took.and_then(|(id, _)| id);
             }
+            protected |= took.is_some_and(|(_, password)| password);
             typed = match (typed, shown) {
                 (Some(false), _) | (_, Some(false)) => Some(false),
                 (None, _) | (_, None) => None,
                 _ => Some(true),
             };
         }
-        Ok(typed)
+        Ok((typed, protected))
     }
 
     async fn focus(&self, live: bool) -> Result<Option<Focus>, String> {
@@ -1160,7 +1162,7 @@ async fn type_with<F, Ff, P, Pf>(
     at: Option<(i32, i32)>,
     window: Option<i64>,
     blind: bool,
-    took: &mut Option<i64>,
+    took: &mut Option<(Option<i64>, bool)>,
     mut focus: F,
     mut paste: P,
 ) -> Result<Option<bool>, String>
@@ -1208,7 +1210,7 @@ where
     if before.is_none() && !blind {
         return Err(NO_FIELD.to_owned());
     }
-    *took = before.as_ref().and_then(|(f, _)| f.id);
+    *took = before.as_ref().map(|(f, _)| (f.id, f.password));
     let (before, cached) = match before {
         Some((f, cached)) if !f.password => (f, cached),
         unchecked => {
@@ -2191,6 +2193,34 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_type_says_protected_when_a_line_went_into_a_password_field() {
+        let secret = r#"{"editable":true,"password":true,"window":true,"id":7,"len":0,"hash":0,"tail":"","bounds":[0,0,720,100]}"#;
+        let pasted = r#"{"editable":true,"password":true,"window":true,"id":7,"len":2,"hash":5,"tail":"","bounds":[0,0,720,100]}"#;
+        for (focus, after, want) in [
+            (
+                secret.to_owned(),
+                pasted.to_owned(),
+                serde_json::json!({"ok": true, "chars": 2, "typed": null, "protected": true}),
+            ),
+            (
+                focused(7, ""),
+                focused(7, "pw"),
+                serde_json::json!({"ok": true, "chars": 2, "typed": true}),
+            ),
+        ] {
+            let fake = Fake::new();
+            fake.put("inject.answer", "true");
+            fake.windows("");
+            fake.put("focus.json", &focus);
+            fake.put("after-paste.json", &after);
+            acked(&fake).await;
+            let out = desk(&fake, "desk_type", serde_json::json!({"text": "pw"})).await;
+            assert_eq!(out, Ok(want), "{}", log(&fake, "requests"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn an_unnamed_type_pastes_after_a_return_only_into_the_window_its_first_line_went_into() {
         let focus = |id: i64, text: &str| {
             format!(
@@ -2477,7 +2507,7 @@ mod tests {
             buf[..n].to_vec()
         });
         let typed = android.type_text("", None, || async { Ok(None) }).await;
-        assert_eq!(typed, Ok(Some(true)));
+        assert_eq!(typed, Ok((Some(true), false)));
         let sent = tokio::time::timeout(Duration::from_secs(5), device).await;
         assert_eq!(sent.unwrap().unwrap(), clipboard_message("", 1));
         assert!(android.control.lock().await.is_some());
@@ -2605,7 +2635,7 @@ mod tests {
             .android
             .type_text("", None, || async { Ok(None) })
             .await;
-        assert_eq!(typed, Ok(Some(true)));
+        assert_eq!(typed, Ok((Some(true), false)));
         let reopened = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
         assert!(
             reopened.is_err(),

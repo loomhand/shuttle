@@ -1246,11 +1246,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 _ => format!("{i} of {lines} lines were typed, then this stopped the rest: {e}"),
             })?;
         }
-        if self.os == Os::Linux && to.is_none() {
-            self.typed(text).await;
-        }
+        let mut protected = self.os == Os::Linux && to.is_none() && self.typed(text).await;
         let mut out = json!({"ok": true, "chars": text.chars().count()});
-        if let Some((focused, field)) = focus {
+        if let Some((focused, field, secret)) = focus {
+            protected |= secret;
             out["focused"] = focused;
             if !field {
                 note = Some(note.map_or_else(
@@ -1265,15 +1264,18 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if terminal {
             out["terminal"] = true.into();
         }
+        if protected {
+            out["protected"] = true.into();
+        }
         Ok(out.to_string())
     }
 
-    /// The focused element of window `to`'s app as `{role, name}` and whether it is a text field.
+    /// The focused element of window `to`'s app as `{role, name}`, whether it is a text field and whether it is a password field.
     async fn typing_focus(
         &self,
         to: (i64, i64),
         unverified: bool,
-    ) -> Result<(Value, bool), String> {
+    ) -> Result<(Value, bool, bool), String> {
         let clicked = lock(&self.clicked).filter(|c| c.to == to).map(|c| c.at);
         let n = self.keyboard_focus(to.0).await;
         let field = n.as_ref().is_some_and(|n| FIELD_ROLES.contains(&n.role));
@@ -1281,7 +1283,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             return Err(FOCUS_UNREAD.to_owned());
         }
         let Some(n) = n else {
-            return Ok((Value::Null, false));
+            return Ok((Value::Null, false, false));
         };
         if field && clicked.and_then(|at| holds(&n, at)) == Some(false) {
             return Err(format!(
@@ -1289,9 +1291,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 n.role, n.name
             ));
         }
+        let secret = n.states.contains(&"protected");
         let mut focused = json!({"role": n.role});
         focused["name"] = n.name.into();
-        Ok((focused, field))
+        Ok((focused, field, secret))
     }
 
     async fn keyboard_focus(&self, pid: i64) -> Option<Node> {
@@ -1364,14 +1367,14 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         )
     }
 
-    /// Waits at most [`TYPE_SETTLE`] until the focused element holds the end of the typed text.
-    async fn typed(&self, text: &str) {
+    /// Waits at most [`TYPE_SETTLE`] until the focused element holds the end of the typed text; true when it is a password field, which shows none.
+    async fn typed(&self, text: &str) -> bool {
         let Some(tail) = typed_tail(text) else {
-            return;
+            return false;
         };
         let allow = self.allow.clone();
         let started = Instant::now();
-        let _ = tokio::time::timeout(TYPE_SETTLE, async {
+        let read = tokio::time::timeout(TYPE_SETTLE, async {
             let focused = self
                 .access
                 .run(CALL_LIMIT, (), move |b| {
@@ -1380,7 +1383,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 })
                 .await?;
             let Some(focused) = focused else {
-                return Ok(());
+                return Ok(false);
             };
             loop {
                 let (id, tail) = (focused.clone(), tail.clone());
@@ -1388,21 +1391,24 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     values: true,
                     ..Extras::default()
                 };
-                let holds = self
+                let (holds, protected) = self
                     .access
                     .run(CALL_LIMIT, (), move |b| {
-                        Ok(b.node(&id, values, READ_CHARS)?
-                            .value
-                            .is_some_and(|v| v.contains(&tail)))
+                        let n = b.node(&id, values, READ_CHARS)?;
+                        Ok((
+                            n.value.is_some_and(|v| v.contains(&tail)),
+                            n.states.contains(&"protected"),
+                        ))
                     })
                     .await?;
-                if holds {
-                    return Ok::<(), String>(());
+                if holds || protected {
+                    return Ok::<bool, String>(protected);
                 }
                 tokio::time::sleep(TYPE_POLL).await;
             }
         })
         .await;
+        matches!(read, Ok(Ok(true)))
     }
 
     async fn click(&self, a: ClickArgs, turn: Option<Turn>) -> Result<String, String> {
@@ -5604,6 +5610,41 @@ pub(crate) mod tests {
                 .is_some_and(|n| n.ends_with(FOCUS_UNKNOWN)),
             "{typed}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_type_says_protected_only_for_a_password_field_its_own_focus_read_finds() {
+        type OpenSecret = fn() -> Result<Secret, String>;
+        let opens: [(OpenSecret, bool); 2] = [
+            (|| Ok(Secret(true, 0)), true),
+            (|| Ok(Secret(false, 0)), false),
+        ];
+        for (os, background, args) in [
+            (Os::Linux, false, json!({"text": "hello"})),
+            (
+                Os::Mac,
+                true,
+                json!({"text": "hello", "window": "Untitled - Notepad"}),
+            ),
+            (Os::Windows, true, json!({"text": "hello", "pid": 4})),
+        ] {
+            for (open, password) in opens {
+                let desk = Desk::new(open, Behind(Arc::default()), os)
+                    .background(background)
+                    .with_typer(|_, _| Ok(true));
+                let out: Value =
+                    serde_json::from_str(&desk.run("desk_type", args.clone()).await.unwrap().text)
+                        .unwrap();
+                let protected = password && os != Os::Windows;
+                assert_eq!(
+                    out.get("protected"),
+                    protected.then_some(&Value::Bool(true)),
+                    "{os:?} {password}: {out}"
+                );
+                let reads = desk.access.run(CALL_LIMIT, (), |b| Ok(b.1)).await.unwrap();
+                assert_eq!(reads, usize::from(os == Os::Linux), "{os:?} {password}");
+            }
+        }
     }
 
     #[tokio::test]
@@ -11594,6 +11635,74 @@ pub(crate) mod tests {
                 bounds: Some([100, 500, 800, 100]),
                 ..Node::default()
             }))
+        }
+
+        fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
+            Ok(Vec::new())
+        }
+
+        fn at(&mut self, _: &str, _: i32, _: i32) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+
+        fn act(&mut self, _: &str, _: Act) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        fn close(&mut self, _: &Frame) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct Secret(bool, usize);
+
+    impl Secret {
+        fn field(&self) -> Node {
+            Node {
+                id: "4/7".into(),
+                role: "textbox",
+                name: "Password".into(),
+                states: if self.0 {
+                    vec!["focused", "protected"]
+                } else {
+                    vec!["focused"]
+                },
+                value: (!self.0).then(|| "hello".to_owned()),
+                bounds: Some([100, 500, 800, 100]),
+                ..Node::default()
+            }
+        }
+    }
+
+    impl Access for Secret {
+        fn frames(&mut self) -> Result<Vec<Frame>, String> {
+            Ok(vec![frame(
+                "4/1",
+                "Untitled - Notepad",
+                4,
+                true,
+                Some("Notepad"),
+            )])
+        }
+
+        fn tree(&mut self, frame: &Frame, _: Extras) -> Result<Tree, String> {
+            Ok(Tree {
+                frame: frame.clone(),
+                ..Tree::default()
+            })
+        }
+
+        fn focused(&mut self, _: &Frame, _: Duration) -> Result<Option<String>, String> {
+            Ok(Some("4/7".into()))
+        }
+
+        fn node(&mut self, _: &str, _: Extras, _: usize) -> Result<Node, String> {
+            self.1 += 1;
+            Ok(self.field())
+        }
+
+        fn keyboard_focus(&mut self, pid: u32) -> Result<Option<Node>, String> {
+            Ok((pid == 4).then(|| self.field()))
         }
 
         fn ancestors(&mut self, _: &str) -> Result<Vec<String>, String> {
