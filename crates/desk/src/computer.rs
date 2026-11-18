@@ -2967,6 +2967,55 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_read_whose_retry_after_an_empty_reply_fails_names_its_tool_once() {
+        for (tool, name) in [
+            ("get_window_state", "computer_state"),
+            ("list_windows", "list_windows"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let listener = Fake::bind(&socket).unwrap();
+            let driver = tokio::spawn(async move {
+                let (stream, ()) = listener.accept().await.unwrap();
+                let mut line = String::new();
+                BufReader::new(stream).read_line(&mut line).await.unwrap();
+            });
+            let err = cua(&socket)
+                .request("s", tool, json!({}))
+                .await
+                .unwrap_err();
+            assert!(
+                err.starts_with(&format!("{name}: connect cua-driver ")),
+                "{tool}: {err}"
+            );
+            driver.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_state_read_whose_reply_is_not_json_names_computer_state_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let listener = Fake::bind(&socket).unwrap();
+        let driver = tokio::spawn(async move {
+            let (stream, ()) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            reader.into_inner().write_all(b"<html>\n").await.unwrap();
+        });
+        let err = cua(&socket)
+            .request("s", "get_window_state", json!({}))
+            .await
+            .unwrap_err();
+        assert!(
+            err.starts_with("computer_state: decode cua-driver reply: "),
+            "{err}"
+        );
+        driver.await.unwrap();
+    }
+
     #[tokio::test]
     async fn a_state_read_the_driver_marks_failed_names_computer_state_once_whether_or_not_its_text_starts_with_get_window_state()
      {
