@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use desk_core::text::clip;
@@ -80,6 +81,7 @@ const TOP_PROPS: [UIA_PROPERTY_ID; 4] = [
 ];
 
 static LAST: Mutex<BTreeMap<isize, Frame>> = Mutex::new(BTreeMap::new());
+static MINTED: AtomicU64 = AtomicU64::new(0);
 
 /// The UIA backend of this thread.
 pub struct Uia {
@@ -90,7 +92,6 @@ pub struct Uia {
     top: IUIAutomationCacheRequest,
     root: IUIAutomationElement,
     ids: HashMap<String, IUIAutomationElement>,
-    minted: u64,
     unnamed: HashMap<String, Vec<(String, IUIAutomationElement)>>,
     walking: Vec<(String, IUIAutomationElement)>,
     tops: HashMap<isize, Top>,
@@ -126,7 +127,6 @@ impl Uia {
             top,
             root,
             ids: HashMap::new(),
-            minted: 0,
             unnamed: HashMap::new(),
             walking: Vec::new(),
             tops: HashMap::new(),
@@ -142,7 +142,7 @@ impl Uia {
     fn id_of(&mut self, el: &IUIAutomationElement) -> Result<String, String> {
         let runtime = runtime_id(el)?;
         let unnamed = runtime.is_empty();
-        let id = own_id(runtime, &mut self.minted);
+        let id = own_id(runtime);
         if unnamed {
             self.walking.push((id.clone(), el.clone()));
         }
@@ -1081,12 +1081,11 @@ fn runtime_id(el: &IUIAutomationElement) -> Result<String, String> {
     }
 }
 
-fn own_id(runtime: String, minted: &mut u64) -> String {
+fn own_id(runtime: String) -> String {
     if !runtime.is_empty() {
         return runtime;
     }
-    *minted += 1;
-    format!("u{minted}")
+    format!("u{}", MINTED.fetch_add(1, Ordering::Relaxed) + 1)
 }
 
 fn known<'a, T: 'a>(
@@ -1142,12 +1141,13 @@ mod tests {
     }
 
     #[test]
-    fn an_element_with_an_empty_runtime_id_gets_an_id_no_other_element_shares() {
-        let mut minted = 0;
-        assert_eq!(own_id("42-656186".into(), &mut minted), "42-656186");
-        assert_eq!(own_id(String::new(), &mut minted), "u1");
-        assert_eq!(own_id(String::new(), &mut minted), "u2");
-        assert_eq!(minted, 2);
+    fn an_element_with_an_empty_runtime_id_gets_an_id_no_other_element_shares_across_backends() {
+        assert_eq!(own_id("42-656186".into()), "42-656186");
+        let walk = || (0..10).map(|_| own_id(String::new())).collect::<Vec<_>>();
+        let (first, reopened) = (walk(), walk());
+        let all: std::collections::HashSet<_> = first.iter().chain(&reopened).collect();
+        assert_eq!(all.len(), 20);
+        assert!(all.iter().all(|id| id.starts_with('u') && id.len() > 1));
     }
 
     #[test]
