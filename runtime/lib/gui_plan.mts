@@ -514,10 +514,7 @@ async function readTree(w: Win, r: Reads): Promise<Tree> {
 async function answered(w: Win, r: Reads, tree: Tree): Promise<Tree | null> {
   for (const end = Math.min(Date.now() + BUSY_MS, deadline); tree.snap.truncated && tree.nodes.length <= 1; await sleep(VERIFY_POLL)) {
     if (Date.now() >= end) return null
-    try { tree = await readTree(w, r) } catch (e: unknown) {
-      if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
-      throw e
-    }
+    try { tree = await readTree(w, r) } catch (e: unknown) { await unblocked(e, w); throw e }
   }
   return tree
 }
@@ -569,6 +566,7 @@ async function hiddenModal(ws: Win[], f: Win | null) {
 }
 function modalBlocks(m: Win) { return `modal dialog "${m.title}" is open but ${m.modal}, and ${m.blocks ? `"${m.blocks}"` : 'its app'} takes no input until it closes: finish it, or close it with {close: true, window: "${m.title}"}` }
 function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no accessibility answer within/.test(o) }
+async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
 async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
@@ -1428,10 +1426,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   rec.seen = w.title; if (w.title.trim()) lastSeen = w.title
   let t0 = Date.now(); let tree: Tree
   const r = reads(s)
-  try { tree = reuse(kept, w, r) ?? await readTree(w, r) } catch (e: unknown) {
-    if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen())
-    throw e
-  }
+  try { tree = reuse(kept, w, r) ?? await readTree(w, r) } catch (e: unknown) { await unblocked(e, w); throw e }
   tick('snap', t0)
   const aim = s.verify ?? s.click ?? s.check
   let read = r
@@ -1469,7 +1464,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (!hit) { observed ||= !snap.truncated || (OS === 'darwin' && !!read.menus && nodes.some((n) => n.role === 'menubar' && n.depth === 1 && n.parent === 0)); return `verify: no element matches "${want}"` }
       rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
       const bad: string[] = []
-      if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
+      if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { await unblocked(e, w); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
       if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
       if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? (ask ? await cropState(hit.n) : null); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
       return bad.length ? `verify: "${hit.n.name || want}" ${bad.join(', ')}` : ''
@@ -1616,7 +1611,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   if (f.role === 'textbox' && !lines) await selectLine(w); else await desk.key(SELECT_ALL, at(w)); if (value) await desk.typeText(value, at(w)); else await desk.key('delete', at(w)); if (hit.n.role === 'spinbutton' || hit.n.role === 'slider') { await desk.key('tab', at(w)); await desk.key('shift+tab', at(w)) }
   tick('act', t0)
   t0 = Date.now(); let got: string | undefined
-  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()); got = undefined }; if (same(got)) break; await sleep(40) }
+  for (let i = 0; i < 10; i++) { try { got = (await desk.read(f.id)).value ?? '' } catch (e: unknown) { await unblocked(e, w); got = undefined }; if (same(got)) break; await sleep(40) }
   tick('verify', t0); rec.value = got
   if (!same(got)) throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
   rec.confirmed = true
