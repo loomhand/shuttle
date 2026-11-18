@@ -1406,6 +1406,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       if (BG && !d && OS === 'darwin' && ws.some((x) => x.pid === pid && x.owner === undefined && x.role === 'dialog' && !adopted.has(x.id))) throw new Surprise(`a dialog of "${w.title}"'s app has no owner the OS names, and background close never guesses whether it belongs to the plan's window: name it with {close: true, window}`, await seen())
       w = d
     }
+    const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))
+    if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid] = [w.title, w.pid]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid); await desk.key('Escape', at(w))
     if (titledIn(await settle(w.title), title, pid)) { unique(w); await desk.close(title, pid) }

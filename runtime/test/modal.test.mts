@@ -54,3 +54,19 @@ test('a close step fails when the dialog it closes stays open', async (t) => {
   assert.match(r.escalate?.reason ?? '', /"Find" is still open/)
   assert.ok(calls.includes('desk_close'), calls.join(' '))
 })
+
+test('a close step with no window in front and a window listed as not answering sends nothing and is not ok', async (t) => {
+  const panel = { id: '1.2/38', title: '', role: 'window', pid: 1206, active: false, app: 'xfce4-panel', shell: true }
+  const editor = { id: '1.9/116', title: '~/a.txt - Mousepad', role: 'window', pid: 1339, active: false, app: 'mousepad', stale: true }
+  const term = { id: '1.10/39', title: 'term', role: 'window', pid: 1353, active: false, app: 'xfce4-terminal' }
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify([panel, editor, term])
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ close: true }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'no window is in front, and "~/a.txt - Mousepad" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app')
+  assert.ok(!calls.includes('desk_key') && !calls.includes('desk_close'), calls.join(' '))
+})
