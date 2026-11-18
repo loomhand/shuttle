@@ -26,6 +26,11 @@ function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefin
 
 const sent = (calls: Call[], tool: string) => calls.filter((c) => c.tool === tool).map((c) => c.args)
 
+const BASE = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
+const NAMED = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a step that names "r89aN3" never acts in the dialog: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
+const INPUT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a type or key would go into it: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
+const BOTH = '"Delete" is in both the untitled dialog of "R89Kit" and "r89aN3" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "Delete"; nothing was sent'
+
 test('a background plan types into its app window behind the front one, names it on every input and fronts nothing', async (t) => {
   const d = desktop([user(), notepad()])
   await daemon(t, d.reply)
@@ -276,18 +281,18 @@ test('a macOS background step, named for its window or not, stops with nothing s
     await daemon(t, d.reply)
     const r = await main({ steps: [{ app: 'R89Kit' }, { click: 'Alert now' }, step] })
     assert.equal(r.escalate?.step, 2, JSON.stringify(r))
-    assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
+    assert.equal(r.escalate?.reason, 'window' in step ? NAMED : BASE)
     assert.deepEqual(sent(d.calls, 'desk_press'), [{ id: '198/1' }])
   }
 })
 
-test('a macOS background step meant for the window behind an alert of the app open before the plan stops with nothing sent, and a click on the alert\'s button goes through', { skip: process.platform !== 'darwin' }, async (t) => {
-  for (const step of [{ click: 'Tool' }, { click: 'Tool', window: 'r89aN3' }, { type: 'x' }, { key: 'cmd+s' }, { click: 'OK' }]) {
+test('a macOS background step behind an alert of the app open before the plan stops with nothing sent when it is meant for the window behind, names that window, types or keys, or clicks a name both have, and a click on a button only the alert has goes through', { skip: process.platform !== 'darwin' }, async (t) => {
+  for (const [step, want, risky] of [[{ click: 'Tool' }, BASE, 'Delete'], [{ click: 'Tool', window: 'r89aN3' }, NAMED, 'Delete'], [{ type: 'x' }, INPUT, 'Delete'], [{ key: 'return' }, INPUT, 'Delete'], [{ click: 'OK' }, '', 'Delete'], [{ click: 'Delete', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'OK', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete…']] as const) {
     const doc: W = { id: '198', title: 'r89aN3', role: 'window', pid: 4, active: false, app: 'R89Kit' }
     const alert: W = { id: '201', title: '', role: 'dialog', pid: 4, active: false, app: 'R89Kit' }
+    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }, { ref: 2, id: '198/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]
+    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }, { ref: 2, id: '201/2', parent: 0, depth: 1, role: 'button', name: risky, states: ['showing'] }]
     const ws = [user(), doc, alert]
-    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }]
-    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }]
     const d = desktop(ws, ({ tool, args }) => {
       if (tool === 'desk_snapshot') return JSON.stringify(args.id === alert.id ? { window: alert, nodes: own, truncated: false } : { window: doc, nodes, truncated: false })
       if (tool === 'desk_press') { if (args.id === '201/1') ws.pop(); return '{"ok":true,"how":"action"}' }
@@ -296,9 +301,9 @@ test('a macOS background step meant for the window behind an alert of the app op
     await daemon(t, d.reply)
     const r = await main({ steps: [{ app: 'R89Kit' }, step] })
     const input = d.calls.filter((c) => ['desk_press', 'desk_type', 'desk_key', 'desk_click'].includes(c.tool)).map((c) => c.args.id ?? c.tool)
-    if (step.click === 'OK') { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, ['201/1']); continue }
+    if (!want) { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, ['201/1']); continue }
     assert.equal(r.escalate?.step, 1, `${JSON.stringify(step)} ${JSON.stringify(r)}`)
-    assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
+    assert.equal(r.escalate?.reason, want, JSON.stringify(step))
     assert.deepEqual(input, [], JSON.stringify(step))
   }
 })

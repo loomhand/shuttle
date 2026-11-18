@@ -4,6 +4,11 @@ import { test } from 'node:test'
 import { daemon } from './daemon.mts'
 import { main as plan } from '../lib/gui_plan.mts'
 
+const BASE = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
+const NAMED = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a step that names "r89aN3" never acts in the dialog: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
+const INPUT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a type or key would go into it: answer it with {click: "<its button>"} and no window, or close it with {close: true}; nothing was sent'
+const BOTH = '"Delete" is in both the untitled dialog of "R89Kit" and "r89aN3" behind it, and the step never guesses which one it means: answer the dialog with a button only it has, or close it with {close: true}, then click "Delete"; nothing was sent'
+
 test('a click that opens a combo box\'s list leaves the next step in the dialog, whose tree holds the list\'s entries, also in a new plan', async (t) => {
   const wm = { id: '1.3/1', title: '', role: 'window', pid: 687, active: true }
   const main = { id: '1.14/117', title: 'Untitled 1 - Mousepad', role: 'window', pid: 889, active: false }
@@ -62,28 +67,28 @@ test('a macOS click step with an untitled app-modal alert of the app in front st
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.equal(r.saved, undefined, JSON.stringify(r))
   assert.equal(r.escalate?.step, 2, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
+  assert.equal(r.escalate?.reason, BASE)
   assert.deepEqual(pressed, ['198/1'])
 })
 
-test('a macOS alert of the app open before the plan stops a step meant for the window behind it with nothing sent, and a click on its own button goes through', { skip: process.platform !== 'darwin' }, async (t) => {
-  for (const step of [{ click: 'Tool' }, { click: 'Tool', window: 'r89aN3' }, { type: 'x' }, { key: 'cmd+s' }, { click: 'OK' }]) {
+test('a macOS alert of the app open before the plan stops a step meant for the window behind it, one that names that window, a type or key, and a click whose name both have, each with nothing sent, and lets a click on a button only it has through', { skip: process.platform !== 'darwin' }, async (t) => {
+  for (const [step, want, risky] of [[{ click: 'Tool' }, BASE, 'Delete'], [{ click: 'Tool', window: 'r89aN3' }, NAMED, 'Delete'], [{ type: 'x' }, INPUT, 'Delete'], [{ key: 'return' }, INPUT, 'Delete'], [{ click: 'OK' }, '', 'Delete'], [{ click: 'Delete', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'OK', window: 'r89aN3' }, NAMED, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete'], [{ click: 'Delete' }, BOTH, 'Delete…']] as const) {
     const doc = { id: '198', title: 'r89aN3', role: 'window', pid: 1966, active: true, app: 'R89Kit' }
     const alert = { id: '201', title: '', role: 'dialog', pid: 1966, active: false, app: 'R89Kit' }
-    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }]
-    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }]
-    let open = true; const sent: string[] = []
+    const nodes = [{ ref: 0, id: '198/0', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] }, { ref: 1, id: '198/2', parent: 0, depth: 1, role: 'button', name: 'Tool', states: ['showing'] }, { ref: 2, id: '198/3', parent: 0, depth: 1, role: 'button', name: 'Delete', states: ['showing'] }]
+    const own = [{ ref: 0, id: '201/0', parent: -1, depth: 0, role: 'dialog', name: 'alert', states: ['showing'] }, { ref: 1, id: '201/1', parent: 0, depth: 1, role: 'button', name: 'OK', states: ['showing'] }, { ref: 2, id: '201/2', parent: 0, depth: 1, role: 'button', name: risky, states: ['showing'] }]
+    let open = true; const input: string[] = []
     await daemon(t, ({ tool, args }) => {
       if (tool === 'desk_windows') return JSON.stringify(open ? [doc, alert] : [doc])
       if (tool === 'desk_snapshot') return JSON.stringify(args.window === '' || args.id === alert.id ? { window: alert, nodes: own, truncated: false } : { window: doc, nodes, truncated: false })
-      if (tool === 'desk_press') { sent.push(String(args.id)); open &&= args.id !== '201/1'; return '{"ok":true,"how":"action"}' }
-      if (tool === 'desk_type' || tool === 'desk_key') sent.push(tool)
+      if (tool === 'desk_press') { input.push(String(args.id)); open &&= args.id !== '201/1'; return '{"ok":true,"how":"action"}' }
+      if (tool === 'desk_type' || tool === 'desk_key' || tool === 'desk_click') input.push(tool)
       return '{"ok":true}'
     })
     const r = await plan({ steps: [{ app: 'R89Kit' }, step] })
-    if (step.click === 'OK') { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(sent, ['201/1']); continue }
+    if (!want) { assert.equal(r.ok, true, JSON.stringify(r)); assert.deepEqual(input, ['201/1']); continue }
     assert.equal(r.escalate?.step, 1, `${JSON.stringify(step)} ${JSON.stringify(r)}`)
-    assert.equal(r.escalate?.reason, 'an untitled dialog of "R89Kit" is in front of "r89aN3", and on macOS such an alert takes all of its app\'s input until it closes: nothing was sent; answer it in a plan that starts with it in front, or close it with {close: true}')
-    assert.deepEqual(sent, [], JSON.stringify(step))
+    assert.equal(r.escalate?.reason, want, JSON.stringify(step))
+    assert.deepEqual(input, [], JSON.stringify(step))
   }
 })
