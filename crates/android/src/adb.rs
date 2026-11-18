@@ -699,7 +699,7 @@ impl Android {
         tokio::time::timeout(UI_TIMEOUT, stdout.read_line(&mut ready))
             .await
             .map_err(|_| "UI server start timed out".to_owned())?
-            .map_err(|e| format!("read UI server: {e}"))?;
+            .map_err(read_err)?;
         if ready.trim() != "ready" {
             return Err(self.start_failure(&mut child, stderr, ready.trim()).await);
         }
@@ -825,26 +825,14 @@ impl UiServer {
     async fn ask_png(&mut self) -> Result<Result<Vec<u8>, String>, String> {
         self.send("shot").await?;
         let mut head = String::new();
-        self.stdout
-            .read_line(&mut head)
-            .await
-            .map_err(|e| format!("read UI server: {e}"))?;
+        self.stdout.read_line(&mut head).await.map_err(read_err)?;
         let Some(len) = head
             .strip_prefix("png ")
             .and_then(|n| n.trim().parse::<usize>().ok())
             .filter(|n| *n <= MAX_PNG)
         else {
-            let mut line = String::new();
-            while head.trim_end() != UI_END && line.trim_end() != UI_END {
-                line.clear();
-                let n = self
-                    .stdout
-                    .read_line(&mut line)
-                    .await
-                    .map_err(|e| format!("read UI server: {e}"))?;
-                if n == 0 {
-                    return Err("UI server exited".to_owned());
-                }
+            if head.trim_end() != UI_END {
+                self.read_answer().await?;
             }
             return Ok(Err(match server_error(&head) {
                 Some(e) => format!("UI server: {e}"),
@@ -852,15 +840,9 @@ impl UiServer {
             }));
         };
         let mut png = vec![0; len];
-        self.stdout
-            .read_exact(&mut png)
-            .await
-            .map_err(|e| format!("read UI server: {e}"))?;
+        self.stdout.read_exact(&mut png).await.map_err(read_err)?;
         let mut end = String::new();
-        self.stdout
-            .read_line(&mut end)
-            .await
-            .map_err(|e| format!("read UI server: {e}"))?;
+        self.stdout.read_line(&mut end).await.map_err(read_err)?;
         if end.trim_end() != UI_END {
             return Err("UI server: the PNG frame has no end".to_owned());
         }
@@ -883,11 +865,7 @@ impl UiServer {
         let mut answer = String::new();
         loop {
             let start = answer.len();
-            let n = self
-                .stdout
-                .read_line(&mut answer)
-                .await
-                .map_err(|e| format!("read UI server: {e}"))?;
+            let n = self.stdout.read_line(&mut answer).await.map_err(read_err)?;
             if n == 0 {
                 return Err("UI server exited".to_owned());
             }
@@ -1039,6 +1017,10 @@ fn unhandled_paste(focus: &str) -> String {
         "{stalled} within {} s; the paste may still land, so check the field before typing again",
         PASTE_TIMEOUT.as_secs()
     )
+}
+
+fn read_err(e: std::io::Error) -> String {
+    format!("read UI server: {e}")
 }
 
 fn server_error(answer: &str) -> Option<&str> {
