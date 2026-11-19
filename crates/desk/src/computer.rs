@@ -2109,6 +2109,38 @@ struct Cut {
     per_unit: f64,
 }
 
+/// The note for a Windows click the driver calls `foreground_unavailable` because a window of the target's own process, such as Explorer's context-menu host, took the foreground after it.
+pub(crate) fn own_popup_front(
+    e: &str,
+    before: Option<u32>,
+    pid: fn(i64) -> Option<u32>,
+) -> Option<String> {
+    let (target, actual) = front_pair(e)?;
+    let tool = e.split(':').next()?;
+    let owner = before.or_else(|| pid(target))?;
+    (pid(actual) == Some(owner)).then(|| format!("{tool} {OWN_POPUP}"))
+}
+
+pub(crate) fn click_owner(os: Os, tool: &str, req: &Value) -> Option<u32> {
+    if os != Os::Windows || !CLICK_TOOLS.contains(&tool) {
+        return None;
+    }
+    req["pid"]
+        .as_u64()
+        .and_then(|p| u32::try_from(p).ok())
+        .or_else(|| pid_at_point(req["x"].as_f64()?, req["y"].as_f64()?))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn window_pid(_: i64) -> Option<u32> {
+    None
+}
+
+#[cfg(not(windows))]
+pub(crate) fn pid_at_point(_: f64, _: f64) -> Option<u32> {
+    None
+}
+
 fn positive(scale: Option<f64>) -> Result<(), String> {
     match scale {
         Some(k) if !(k.is_finite() && k > 0.0) => {
@@ -2664,28 +2696,6 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
     v.as_deref().ok_or_else(|| format!("missing {name}"))
 }
 
-/// The note for a Windows click the driver calls `foreground_unavailable` because a window of the target's own process, such as Explorer's context-menu host, took the foreground after it.
-pub(crate) fn own_popup_front(
-    e: &str,
-    before: Option<u32>,
-    pid: fn(i64) -> Option<u32>,
-) -> Option<String> {
-    let (target, actual) = front_pair(e)?;
-    let tool = e.split(':').next()?;
-    let owner = before.or_else(|| pid(target))?;
-    (pid(actual) == Some(owner)).then(|| format!("{tool} {OWN_POPUP}"))
-}
-
-pub(crate) fn click_owner(os: Os, tool: &str, req: &Value) -> Option<u32> {
-    if os != Os::Windows || !CLICK_TOOLS.contains(&tool) {
-        return None;
-    }
-    req["pid"]
-        .as_u64()
-        .and_then(|p| u32::try_from(p).ok())
-        .or_else(|| pid_at_point(req["x"].as_f64()?, req["y"].as_f64()?))
-}
-
 fn front_pair(e: &str) -> Option<(i64, i64)> {
     let click = e
         .split_once(": ")
@@ -2701,16 +2711,6 @@ fn front_pair(e: &str) -> Option<(i64, i64)> {
         i64::from_str_radix(&e[at..end], 16).ok()
     };
     Some((hex(FRONT_TARGET)?, hex(FRONT_ACTUAL)?))
-}
-
-#[cfg(not(windows))]
-pub(crate) fn window_pid(_: i64) -> Option<u32> {
-    None
-}
-
-#[cfg(not(windows))]
-pub(crate) fn pid_at_point(_: f64, _: f64) -> Option<u32> {
-    None
 }
 
 #[cfg(test)]
