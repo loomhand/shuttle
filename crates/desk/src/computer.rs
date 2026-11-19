@@ -22,8 +22,8 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, launch_name, runs_app, text_runs,
-    without_protocol_tail, xtest,
+    BUSY, Glider, HUMAN, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, glide, launch_name,
+    runs_app, text_runs, without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
@@ -132,6 +132,7 @@ pub struct Computer {
     driver: Arc<Driver>,
     os: Os,
     typer: Typer,
+    glider: Glider,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Arc<Mutex<()>>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
@@ -158,6 +159,7 @@ impl Computer {
             driver,
             os,
             typer: crate::desk::TYPER,
+            glider: crate::desk::GLIDER,
             last: Mutex::new(HashMap::new()),
             input: Arc::new(Mutex::new(())),
             grabber: std::sync::Mutex::new(None),
@@ -378,7 +380,11 @@ impl Computer {
         Ok(out)
     }
 
-    async fn act_one(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
+    async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
+        HUMAN.scope(a.human, self.act_step(session, a)).await
+    }
+
+    async fn act_step(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
         if a.action == "launch_app" {
             return self.launch(session, &a).await;
         }
@@ -1889,6 +1895,7 @@ impl Computer {
     /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
     async fn call(&self, session: &str, name: &str, mut args: Value) -> Result<Value, String> {
         args["session"] = session.into();
+        glide(self.glider, name, &args).await;
         let mut v = self.reply(name, &args).await?;
         if name != "end_session" && ended(&v) {
             self.reply("start_session", &json!({"session": session}))
@@ -2056,6 +2063,8 @@ struct ActArgs {
     seconds: Option<f64>,
     #[serde(default)]
     foreground: bool,
+    #[serde(default)]
+    human: bool,
     max_edge: Option<u32>,
     /// Screen pixels per pixel of the screenshot the caller saw, in place of the session's latest.
     scale: Option<f64>,
@@ -2697,6 +2706,8 @@ mod tests {
 
     use crate::driver::CLICK_SPACING;
 
+    static GLIDES: std::sync::Mutex<Vec<(f64, f64)>> = std::sync::Mutex::new(Vec::new());
+
     const UNSUPPORTED: &str = "AX action failed: AXUIElementPerformAction(AXPress) returned -25206";
 
     type Clicks = std::sync::Arc<std::sync::Mutex<Vec<(f64, f64)>>>;
@@ -2809,7 +2820,7 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket).background(true);
-        cua.typer = |_, _| panic!("the XTest typer ran in background");
+        cua.typer = |_, _, _| panic!("the XTest typer ran in background");
         for args in [
             json!({"action": "type", "text": "Ab3!x"}),
             json!({"actions": [{"action": "type", "text": "Ab3!x"}]}),
@@ -3176,7 +3187,7 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
-        cua.typer = |text, _| Ok(text == "Ab3!x-Y_z?");
+        cua.typer = |text, _, _| Ok(text == "Ab3!x-Y_z?");
         let req =
             json!({"text": "Ab3!x-Y_z?", "target": {"kind": "desktop", "display_id": "primary"}});
         let out = cua
@@ -3195,8 +3206,28 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
-        cua.typer = |_, _| Ok(false);
+        cua.typer = |_, _, _| Ok(false);
         let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
+        cua.send("s", "type_text", req, false, &turn(&cua).await)
+            .await
+            .unwrap();
+        assert_eq!(types(&calls), ["abc"]);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_human_desktop_line_reaches_the_typer_as_human() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = endpoint(dir.path());
+        let calls = std::sync::Arc::default();
+        let driver = window_driver(&socket, &calls, usize::MAX);
+        let mut cua = cua(&socket);
+        cua.typer = |_, human, _| Ok(human);
+        let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
+        let input = turn(&cua).await;
+        let sent = HUMAN.scope(true, cua.send("s", "type_text", req.clone(), false, &input));
+        assert_eq!(text_of(&sent.await.unwrap()), XTEST_TYPED);
+        drop(input);
         cua.send("s", "type_text", req, false, &turn(&cua).await)
             .await
             .unwrap();
@@ -3211,7 +3242,7 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
-        cua.typer = |_, _| Err("XTest: connection lost".to_owned());
+        cua.typer = |_, _, _| Err("XTest: connection lost".to_owned());
         let req = json!({"text": "abc", "target": {"kind": "desktop", "display_id": "primary"}});
         let err = cua
             .send("s", "type_text", req, false, &turn(&cua).await)
@@ -3229,7 +3260,7 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
-        cua.typer = |_, stop| {
+        cua.typer = |_, _, stop| {
             while !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -3420,7 +3451,7 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
-        cua.typer = |text, _| match text {
+        cua.typer = |text, _, _| match text {
             "hello" => Ok(true),
             other => Err(format!("the typer got {other:?}")),
         };
@@ -3615,7 +3646,7 @@ mod tests {
         let calls = std::sync::Arc::default();
         let driver = window_driver(&socket, &calls, usize::MAX);
         let mut cua = cua(&socket);
-        cua.typer = |_, _| Err("the typer ran".to_owned());
+        cua.typer = |_, _, _| Err("the typer ran".to_owned());
         let pid = json!({"text": "abc", "pid": 7, "window_id": 9});
         cua.send("s", "type_text", pid, false, &turn(&cua).await)
             .await
@@ -4062,6 +4093,27 @@ mod tests {
             .unwrap();
         assert!(!out.is_error, "{}", out.text);
         assert_eq!(*clicks.lock().unwrap(), [(62.5, 25.0)]);
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn only_a_human_click_glides_to_its_screen_point_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 640);
+        let mut cua = cua(&socket);
+        cua.glider = |to, _| GLIDES.lock().unwrap().push(to);
+        cua.state(json!({})).await.unwrap();
+        cua.act(json!({"action": "click", "x": 100.0, "y": 40.0}))
+            .await
+            .unwrap();
+        assert!(GLIDES.lock().unwrap().is_empty());
+        let out = cua
+            .act(json!({"actions": [{"action": "click", "x": 100.0, "y": 40.0, "human": true}]}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(*GLIDES.lock().unwrap(), [(62.5, 25.0)]);
+        assert_eq!(*clicks.lock().unwrap(), [(62.5, 25.0), (62.5, 25.0)]);
         driver.abort();
     }
 
