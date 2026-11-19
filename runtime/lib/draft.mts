@@ -59,7 +59,9 @@ export async function main(p: Params): Promise<Draft> {
   const input = (e: Event) => e.kind === 'click' || e.kind === 'key' || e.kind === 'password'
   const doubled = (e: Event, i: number) => { const n = events.find((x, j) => j > i && input(x)); return n?.kind === 'click' && (n.count ?? 1) > 1 && near(n, e) }
   const slot = pool(CAPTIONS_AT_ONCE)
-  const captions = new Map(events.flatMap((e, i) => e.kind === 'click' && e.crop && !own(e) && !doubled(e, i) ? [[e, slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], until, e.element?.role))] as const] : []))
+  const unnamed = (e: Event) => e.kind === 'click' && !!e.crop && !own(e)
+  const captionOf = (e: Event) => slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], until, e.element?.role))
+  const captions = new Map(events.flatMap((e, i) => unnamed(e) && !doubled(e, i) ? [[e, captionOf(e)] as const] : []))
   const first = events.find(input)
   const app = events.find((e) => input(e) && e.app)?.app
   const opened = first ? windowOf(first) : undefined
@@ -119,6 +121,7 @@ export async function main(p: Params): Promise<Draft> {
       }
       const again = (e.count ?? 1) > 1 && clicked && draft.steps.at(-1) === clicked.step && near(e, clicked.e)
       if (again) draft.steps.pop()
+      else if (clicked && unnamed(clicked.e) && !captions.has(clicked.e)) Object.assign(clicked.step, click(clicked.e, templ, await captionOf(clicked.e)))
       clicked = { e, step: click(e, templ, await captions.get(e)) }
       draft.steps.push(clicked.step)
       filled = !!e.secret

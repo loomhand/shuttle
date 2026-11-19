@@ -385,6 +385,23 @@ test('a draft names the clicks past its caption time budget by their point, and 
   assert.deepEqual(late?.steps.slice(1).map((s) => s.click), ['the button at 20, 100', 'the button at 50, 100'])
 })
 
+test('a double click in a window its first click opened stays two steps, and the first click keeps its caption', async (t) => {
+  let asked = 0
+  await daemon(t, ({ tool }) => {
+    if (tool !== 'model_ask') return '{"ok":true}'
+    asked += 1
+    return JSON.stringify({ text: 'the Green button', usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } })
+  })
+  const events: Event[] = [
+    { t: 0, kind: 'click', x: 20, y: 100, app: 'Game', element: { role: 'button', name: '' }, root: false, window: win('board'), crop },
+    { t: 1, kind: 'after', window: 'Confirm', role: 'dialog', app: 'Game' },
+    { t: 2, kind: 'click', x: 21, y: 100, count: 2, app: 'Game', element: { role: 'button', name: '' }, root: false, window: win('Confirm'), crop },
+  ]
+  const d = await main({ recording: { id: 'rec-24', events } })
+  assert.deepEqual(d.steps.map(({ intent: _, recorded: __, ...s }) => s), [{ app: 'Game', title: 'board' }, { click: 'the Green button' }, { app: 'Game', title: 'Confirm' }, { click: 'the Green button', count: 2 }])
+  assert.equal(asked, 2)
+})
+
 test('a model caption keeps its first line and at most 80 characters', async (t) => {
   let text = ''
   await daemon(t, ({ tool }) => tool === 'model_ask' ? JSON.stringify({ text, usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } }) : '{"ok":true}')
