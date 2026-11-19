@@ -22,8 +22,8 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, launch_name, runs_app, text_runs,
-    without_protocol_tail, xtest,
+    BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, launch_name, runs_app,
+    text_runs, without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
@@ -467,6 +467,15 @@ impl Computer {
         if let Err(e) = &result
             && let Some(note) = own_popup_front(e, same_process)
         {
+            result = Ok(json!({"content": [{"type": "text", "text": note}]}));
+        }
+        if let Err(e) = &result
+            && tool == "press_key"
+            && e.contains(WINDOW_GONE)
+        {
+            let key = a.key.as_deref().unwrap_or_default();
+            let note =
+                format!("the window closed while {key} was sent, so it may have reached it: {e}");
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
         }
         if let Some(typed) = typed
@@ -3068,6 +3077,48 @@ mod tests {
         );
         assert!(!out.text.contains("type_text: type_text"), "{}", out.text);
         driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_windows_key_to_an_element_whose_window_closes_while_it_is_sent_says_it_may_have_reached_it()
+     {
+        let gone = "Invalid window handle. (0x80070578)";
+        let stale = "window_id 9 is closed, stale, or invalid.";
+        for (error, ok) in [(gone, true), (stale, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let listener = Fake::bind(&socket).unwrap();
+            let driver = tokio::spawn(listener.serve(move |req| {
+                match req["name"].as_str().unwrap_or_default() {
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Notepad.exe", "title": "Save as", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 1}]}}})
+                    }
+                    "get_window_state" => {
+                        json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": "Button", "label": "Save", "enabled": true, "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
+                    }
+                    "press_key" => {
+                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": error}]}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                }
+            }));
+            let cua = cua_on(&socket, Os::Windows);
+            cua.state(json!({"pid": 7})).await.unwrap();
+            let out = cua
+                .act(json!({"action": "key", "key": "Return", "element": 0}))
+                .await
+                .unwrap();
+            driver.abort();
+            let want = if ok {
+                format!(
+                    "the window closed while return was sent, so it may have reached it: press_key: {gone}"
+                )
+            } else {
+                format!("press_key: {stale}")
+            };
+            assert_eq!(out.is_error, !ok, "{}", out.text);
+            assert!(out.text.starts_with(&want), "{}", out.text);
+        }
     }
 
     #[tokio::test]
