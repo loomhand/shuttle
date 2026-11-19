@@ -23,7 +23,7 @@ use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, frame_of};
 use crate::auto;
-use crate::computer::{own_popup_front, pid_at_point, window_pid};
+use crate::computer::{click_owner, own_popup_front, window_pid};
 use crate::driver::{
     CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
 };
@@ -1621,9 +1621,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg() {
             return Err(BACKGROUND_NO_WINDOW.to_owned());
         }
-        let before = point
-            .filter(|_| self.os == Os::Windows)
-            .and_then(|(x, y)| pid_at_point(x, y));
+        let before = click_owner(self.os, "click", &req);
         match self.call("click", desktop(req)).await {
             Err(e) => own_popup_front(&e, before, window_pid).map(Some).ok_or(e),
             Ok(_) => Ok(None),

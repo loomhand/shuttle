@@ -25,9 +25,10 @@ use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GA_ROOT, GW_OWNER, GetAncestor, GetForegroundWindow, GetWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsHungAppWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG,
-    SMTO_BLOCK, SendMessageTimeoutW, WM_CLOSE, WM_NULL, WindowFromPoint,
+    EnumWindows, GA_ROOT, GUITHREADINFO, GW_OWNER, GetAncestor, GetForegroundWindow,
+    GetGUIThreadInfo, GetWindow, GetWindowTextW, GetWindowThreadProcessId, IsChild,
+    IsHungAppWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+    SendMessageTimeoutW, WM_CLOSE, WM_NULL, WindowFromPoint,
 };
 use windows::core::{BOOL, HRESULT, Interface, PWSTR};
 
@@ -319,6 +320,30 @@ impl Uia {
         Ok(false)
     }
 
+    fn mark_keyboard(&self, window: HWND, nodes: &mut [Node]) {
+        let Some(mut at) = keyboard_element(&self.auto, window) else {
+            return;
+        };
+        // SAFETY: `self.auto` is a live IUIAutomation of this thread.
+        let Ok(walker) = (unsafe { self.auto.ControlViewWalker() }) else {
+            return;
+        };
+        for _ in 0..MAX_DEPTH {
+            if let Ok(runtime) = runtime_id(&at)
+                && !runtime.is_empty()
+                && let Some(n) = nodes.iter_mut().find(|n| n.id == runtime)
+            {
+                n.states.push("keyboard");
+                return;
+            }
+            // SAFETY: `walker` and `at` are live UIA objects of this thread.
+            let Ok(parent) = (unsafe { walker.GetParentElement(&at) }) else {
+                return;
+            };
+            at = parent;
+        }
+    }
+
     fn top_of(&mut self, s: &Shown) -> Option<&Top> {
         let key = s.hwnd.0 as isize;
         if self.tops.get(&key).is_none_or(|t| t.pid != s.pid) {
@@ -530,6 +555,9 @@ impl Access for Uia {
         }
         let unnamed = std::mem::take(&mut self.walking);
         self.unnamed.insert(frame.id.clone(), unnamed);
+        if frame.role == "dialog" && hwnd != foreground().0 as isize {
+            self.mark_keyboard(HWND(hwnd as *mut core::ffi::c_void), &mut nodes);
+        }
         Ok(Tree {
             frame: frame.clone(),
             nodes,
@@ -595,9 +623,8 @@ impl Access for Uia {
             return Ok(None);
         }
         Ok(Some(at.map_or((String::new(), None), |w| {
-            let pid = window_pid(w as i64);
             let hwnd = HWND(w as *mut core::ffi::c_void);
-            (title(hwnd).trim().to_owned(), (pid != 0).then_some(pid))
+            (title(hwnd).trim().to_owned(), window_pid(w as i64))
         })))
     }
 
@@ -760,17 +787,15 @@ enum Val {
 type Key = (i32, String, [i32; 4]);
 type Walked = (isize, bool, Vec<(String, Key)>);
 
-pub(crate) fn window_pid(w: i64) -> u32 {
+pub(crate) fn window_pid(w: i64) -> Option<u32> {
     let mut pid = 0u32;
     // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
     unsafe { GetWindowThreadProcessId(HWND(w as *mut core::ffi::c_void), Some(&raw mut pid)) };
-    pid
+    (pid != 0).then_some(pid)
 }
 
-pub(crate) fn pid_at_point(x: i32, y: i32) -> Option<u32> {
-    top_at(x, y)
-        .map(|w| window_pid(w as i64))
-        .filter(|&p| p != 0)
+pub(crate) fn pid_at_point(x: f64, y: f64) -> Option<u32> {
+    top_at(x as i32, y as i32).and_then(|w| window_pid(w as i64))
 }
 
 fn tried(r: windows::core::Result<()>) -> Option<Result<bool, String>> {
@@ -1014,6 +1039,26 @@ fn visible(hwnd: HWND) -> bool {
 fn foreground() -> HWND {
     // SAFETY: GetForegroundWindow takes no arguments.
     unsafe { GetForegroundWindow() }
+}
+
+fn keyboard_element(auto: &IUIAutomation, window: HWND) -> Option<IUIAutomationElement> {
+    // SAFETY: GetWindowThreadProcessId reads a window handle; a stale one gives 0.
+    let thread = unsafe { GetWindowThreadProcessId(window, None) };
+    let mut info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `info` is a GUITHREADINFO whose cbSize is set; the call fills it.
+    if thread == 0 || unsafe { GetGUIThreadInfo(thread, &mut info) }.is_err() {
+        return None;
+    }
+    let focus = info.hwndFocus;
+    // SAFETY: IsChild reads two window handles; a stale one gives false.
+    if focus.0.is_null() || !unsafe { IsChild(window, focus) }.as_bool() {
+        return None;
+    }
+    // SAFETY: `auto` is a live IUIAutomation of this thread; a stale handle fails.
+    unsafe { auto.ElementFromHandle(focus) }.ok()
 }
 
 fn element_at(auto: &IUIAutomation, x: i32, y: i32) -> Result<IUIAutomationElement, String> {
