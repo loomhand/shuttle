@@ -2304,6 +2304,7 @@ mod tests {
         fake.put("after-input.json", &app);
         let popup = r#"{"id":12,"type":1,"layer":1,"title":"","package":"com.android.settings","active":false,"focused":false,"bounds":[40,180,680,600]},"#;
         fake.put("windows.json", &app.replacen('[', &format!("[{popup}"), 1));
+        let started = std::time::Instant::now();
         let out = desk(
             &fake,
             "desk_close",
@@ -2320,10 +2321,15 @@ mod tests {
             out["unverified"],
             "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again"
         );
-        assert_eq!(
-            log(&fake, "requests"),
-            format!("windows\nkey 4\n{}", "windows\n".repeat(10))
+        let requests = log(&fake, "requests");
+        let reads = requests
+            .strip_prefix("windows\nkey 4\n")
+            .unwrap_or_default();
+        assert!(
+            reads.lines().all(|l| l == "windows") && (2..=26).contains(&reads.lines().count()),
+            "{requests}"
         );
+        assert!(started.elapsed() >= Duration::from_secs(1));
     }
 
     #[cfg(unix)]

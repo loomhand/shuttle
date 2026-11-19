@@ -27,6 +27,8 @@ const PID_BASE: u32 = 1 << 22;
 const FOCUS_WAIT: Duration = Duration::from_secs(5);
 const FOCUS_POLL: Duration = Duration::from_millis(100);
 const SWITCH_POLLS: u32 = 10;
+const CLOSE_WAIT: Duration = Duration::from_secs(1);
+const CLOSE_POLL: Duration = Duration::from_millis(40);
 const SCROLL_TRIES: u32 = 6;
 const SCROLL_MS: u32 = 600;
 const SCROLL_SETTLE: Duration = Duration::from_millis(400);
@@ -375,7 +377,13 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                         true => format!("{e}; a back key had hidden the keyboard before it"),
                         false => e,
                     })?;
-                stayed = still_in_front(android, &frame.id).await?;
+                stayed = still_in_front(|| async {
+                    let frames = frames(android)
+                        .await
+                        .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
+                    Ok(frames.iter().any(|f| f.id == frame.id && f.active))
+                })
+                .await?;
             }
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
@@ -1175,17 +1183,22 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
     ))
 }
 
-async fn still_in_front(android: &Android, id: &str) -> Result<bool, String> {
-    for _ in 0..SWITCH_POLLS {
-        tokio::time::sleep(FOCUS_POLL).await;
-        let frames = frames(android)
-            .await
-            .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
-        if !frames.iter().any(|f| f.id == id && f.active) {
+async fn still_in_front<F, Fut>(mut in_front: F) -> Result<bool, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<bool, String>>,
+{
+    let end = tokio::time::Instant::now() + CLOSE_WAIT;
+    loop {
+        if !in_front().await? {
             return Ok(false);
         }
+        let left = end.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Ok(true);
+        }
+        tokio::time::sleep(CLOSE_POLL.min(left)).await;
     }
-    Ok(true)
 }
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
@@ -2080,6 +2093,50 @@ mod tests {
         assert_eq!(out["changed"], true);
         assert_eq!(out["windows"], after);
         assert_eq!(started.elapsed(), Duration::from_millis(151));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_close_reads_at_once_after_the_back_then_every_40_ms_until_the_window_leaves() {
+        for (leaves_at, want) in [(1, vec![0]), (3, vec![0, 40, 80])] {
+            let started = tokio::time::Instant::now();
+            let reads = std::cell::RefCell::new(Vec::new());
+            let stayed = still_in_front(|| {
+                reads.borrow_mut().push(started.elapsed());
+                let n = reads.borrow().len();
+                async move { Ok(n < leaves_at) }
+            })
+            .await
+            .unwrap();
+            assert!(!stayed, "{leaves_at}");
+            let want: Vec<Duration> = want.into_iter().map(Duration::from_millis).collect();
+            assert_eq!(reads.into_inner(), want, "{leaves_at}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_close_whose_window_stays_reads_until_1_s_has_passed_however_long_a_read_takes() {
+        let fast: Vec<u64> = (0..=25).map(|i| i * 40).collect();
+        for (read_ms, want, end_ms) in [(0, fast, 1000), (300, vec![0, 340, 680, 1000], 1300)] {
+            let started = tokio::time::Instant::now();
+            let reads = std::cell::RefCell::new(Vec::new());
+            let stayed = still_in_front(|| {
+                reads.borrow_mut().push(started.elapsed());
+                async move {
+                    tokio::time::sleep(Duration::from_millis(read_ms)).await;
+                    Ok(true)
+                }
+            })
+            .await
+            .unwrap();
+            assert!(stayed, "{read_ms}");
+            let want: Vec<Duration> = want.into_iter().map(Duration::from_millis).collect();
+            assert_eq!(reads.into_inner(), want, "{read_ms}");
+            assert_eq!(
+                started.elapsed(),
+                Duration::from_millis(end_ms),
+                "{read_ms}"
+            );
+        }
     }
 
     #[tokio::test]
