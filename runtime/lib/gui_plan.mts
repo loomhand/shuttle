@@ -589,8 +589,10 @@ async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
 function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'combobox' || n.role === 'textbox') && /^File name:?$/.test(n.name)) }
-async function eraseName(w: Win | null, nodes: Node[]) {
-  const most = Math.max(0, ...nameFields(nodes).map((n) => n.value.length))
+async function eraseName(w: Win, read: { nodes?: Node[]; snap?: desk.Snap }) {
+  const fields = nameFields(read.nodes ?? []); const f = focusOf(read.snap?.nodes ?? [])
+  if (!fields.some((n) => n.id === f?.id)) throw new Surprise(`the keyboard focus of "${w.title}" is ${f ? `on ${f.role} "${f.name}"` : 'on no element it reports'}, not on its file name field, so nothing was typed`, await seen())
+  const most = Math.max(0, ...fields.map((n) => n.value.length))
   await desk.key('end', at(w))
   for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
 }
@@ -936,11 +938,12 @@ async function typingInto(want: Focus, w: Win | null) {
   }
 }
 
+function focusOf(nodes: desk.El[]) { return nodes.filter((n) => n.depth > 0 && n.states.includes('focused')).at(-1) }
 async function focusMiss(want: Focus, w: Win | null): Promise<string | null> {
   const said = want.role ? `${want.role} "${want.name ?? ''}"${want.frame ? ` in a ${want.frame}` : ''}` : 'a password field'
   let nodes: desk.El[] = []
   try { if (w) nodes = (await snapOf(w)).nodes } catch {}
-  const f = nodes.filter((n) => n.depth > 0 && n.states.includes('focused')).at(-1)
+  const f = focusOf(nodes)
   if (!f || !w) return `the recording typed into ${said}, and no focused element can be read now, so the text could go anywhere`
   if ((want.role && (f.role !== want.role || norm(f.name) !== norm(want.name ?? ''))) || (want.frame && w.role !== want.frame)) return `the recording typed into ${said}, and the focus is on ${f.role} "${f.name}" in the ${w.role} "${w.title}" now`
   if (want.secure && !f.states.includes('protected')) return `the recording typed into a password field, and the focused ${f.role} "${f.name}" in the ${w.role} "${w.title}" is not one, so the text would show`
@@ -1397,7 +1400,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = named && OS === 'win32' && BG
-    if (erase) await eraseName(w, pre?.nodes ?? []); else if (named) await selectLine(w)
+    if (erase && w) await eraseName(w, pre ?? {}); else if (named) await selectLine(w)
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
