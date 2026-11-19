@@ -587,10 +587,10 @@ test('a Windows menu toggle read as already on passes with no note of the unconf
   assert.equal(state.open, false)
 })
 
-function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean } = {}) {
+function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: boolean } = {}) {
   const ws: W[] = [user(), notepad(), { id: 's', title: 'Save as', role: 'dialog', pid: 4, active: false, owner: '1' }]
   const field = { value: start, saved: '', typed: false }
-  const shown = () => field.value && (field.typed || !o.hidden) ? { value: field.value.slice(0, 200) } : {}
+  const shown = () => field.value && !o.opaque && (field.typed || !o.hidden) ? { value: field.value.slice(0, 200) } : {}
   const d = desktop(ws, ({ tool, args }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[2], truncated: false, nodes: [root('dialog', 'Save as'), { ref: 1, id: 's/2', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing'], ...shown() }, { ref: 2, id: 's/3', parent: 1, depth: 2, role: 'textbox', name: 'File name:', states: ['showing', 'focused'], ...shown() }, { ref: 3, id: 's/4', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] }, { ref: 4, id: 's/5', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }] })
     if (tool === 'desk_type') { field.value += String(args.text); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
@@ -639,6 +639,18 @@ test('a Windows background file chooser field whose name its first read did not 
   assert.equal(r.escalate?.reason, '"r93.txt" did not replace the text of field "File name:" in "Save as", which reads "n93w7.txtr93.txt", so it was not submitted')
   assert.ok(!sent(d.calls, 'desk_key').some((a) => a.keys === 'Return'), JSON.stringify(sent(d.calls, 'desk_key')))
   assert.equal(d.field.saved, '')
+})
+
+test('a Windows background name the file chooser field reads back cut, or does not read back, is not submitted', { skip: process.platform !== 'win32' }, async (t) => {
+  const long = `${'a'.repeat(200)}.txt`
+  for (const [start, type, o, said] of [['', `${long}\n`, {}, long], ['n93w7.txt', 'r93.txt\n', { opaque: true }, 'r93.txt']] as const) {
+    const d = saveAs(start, o)
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ wait: 'Save as' }, { type }] })
+    assert.equal(r.escalate?.reason, `"${said}" was typed into the file name field of "Save as", and the field's whole value could not be read back, so it was not submitted`, JSON.stringify(r))
+    assert.ok(!sent(d.calls, 'desk_key').some((a) => a.keys === 'Return'), JSON.stringify(sent(d.calls, 'desk_key')))
+    assert.equal(d.field.saved, '')
+  }
 })
 
 test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {

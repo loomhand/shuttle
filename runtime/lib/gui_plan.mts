@@ -595,15 +595,15 @@ async function eraseName(w: Win | null, nodes: Node[]) {
   for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
 }
 async function nameShown(w: Win, name: string, rec: Rec) {
-  let off: Node | undefined; let read = false
+  let got: Node[] = []
   for (let i = 0; i < 10; i++) {
-    const got = nameFields(parse(await snapOf(w))).filter((n) => n.value && n.value.length < VALUE_CHARS)
-    off = got.find((n) => n.value !== name); read = got.length > 0
-    if (!off) break
+    got = nameFields(parse(await snapOf(w))).filter((n) => n.value)
+    if (got.length && got.every((n) => n.value === name && n.value.length < VALUE_CHARS)) { rec.confirmed = true; return }
     await sleep(40)
   }
+  const off = got.find((n) => n.value !== name && n.value.length < VALUE_CHARS)
   if (off) throw new Surprise(`"${name}" did not replace the text of field "${off.name}" in "${w.title}", which reads "${off.value}", so it was not submitted`, await seen())
-  if (read) rec.confirmed = true
+  throw new Surprise(`"${name}" was typed into the file name field of "${w.title}", and the field's whole value could not be read back, so it was not submitted`, await seen())
 }
 async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
   let left = 'and it could not be erased: clear it by hand'
