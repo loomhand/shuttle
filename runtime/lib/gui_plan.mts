@@ -388,7 +388,7 @@ class Stolen extends Surprise {
 }
 function taken(ws: Win[]): string | null {
   const f = desk.front(ws)
-  if (!f || !target || fronted || f.pid !== target.pid || (userFront && f.id === userFront.id)) return null
+  if (!f || !target || fronted || f.pid !== target.pid || (userFront && (f.id === userFront.id || f.id === userFront.owner))) return null
   return `"${f.title || f.app || 'the app'}" brought itself to the front though the plan sent no fronting call: background input cannot keep this app behind`
 }
 
@@ -590,8 +590,8 @@ function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
 function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'combobox' || n.role === 'textbox') && /^File name:?$/.test(n.name)) }
 async function eraseName(w: Win, read: { nodes?: Node[]; snap?: desk.Snap }) {
-  const fields = nameFields(read.nodes ?? []); const f = focusOf(read.snap?.nodes ?? [])
-  if (!fields.some((n) => n.id === f?.id)) throw new Surprise(`the keyboard focus of "${w.title}" is ${f ? `on ${f.role} "${f.name}"` : 'on no element it reports'}, not on its file name field, so nothing was typed`, await seen())
+  const fields = nameFields(read.nodes ?? []); const els = read.snap?.nodes ?? []; const f = focusOf(els) ?? els.find((n) => n.states.includes('keyboard'))
+  if (!fields.some((n) => n.id === f?.id || (f?.role === 'textbox' && n.ref === f.parent))) throw new Surprise(`the keyboard focus of "${w.title}" is ${f ? `on ${f.role} "${f.name}"` : 'on no element it reports'}, not on its file name field, so nothing was typed`, await seen())
   const most = Math.max(0, ...fields.map((n) => n.value.length))
   await desk.key('end', at(w))
   for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
