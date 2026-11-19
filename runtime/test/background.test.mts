@@ -672,6 +672,16 @@ test('a Windows background secret name that leaves other text in the file choose
   assert.equal(d.field.saved, '')
 })
 
+test('a Windows background file chooser name with a line break inside it is refused before any key', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const type of ['r1.txt\nr2.txt\n', 'C:\\dir\nname.txt\n']) {
+    const d = saveAs('n93w7.txt', { hidden: true })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ wait: 'Save as' }, { type }] })
+    assert.equal(r.escalate?.reason, 'the file name for "Save as" holds a line break, and a file name never does, so nothing was typed', JSON.stringify(r))
+    assert.deepEqual([sent(d.calls, 'desk_key'), sent(d.calls, 'desk_type')], [[], []])
+  }
+})
+
 test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

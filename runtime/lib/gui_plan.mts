@@ -1400,6 +1400,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
     const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = named && OS === 'win32' && BG
+    if (erase && s.type.replace(/\n$/, '').includes('\n')) throw new Surprise(`the file name for "${w?.title}" holds a line break, and a file name never does, so nothing was typed`, await seen())
     if (erase && w) await eraseName(w, pre ?? {}); else if (named) await selectLine(w)
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
