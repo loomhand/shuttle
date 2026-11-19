@@ -587,14 +587,14 @@ test('a Windows menu toggle read as already on passes with no note of the unconf
   assert.equal(state.open, false)
 })
 
-function saveAs(start: string, stuck = false) {
+function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean } = {}) {
   const ws: W[] = [user(), notepad(), { id: 's', title: 'Save as', role: 'dialog', pid: 4, active: false, owner: '1' }]
-  const field = { value: start, saved: '' }
-  const shown = () => field.value ? { value: field.value.slice(0, 200) } : {}
+  const field = { value: start, saved: '', typed: false }
+  const shown = () => field.value && (field.typed || !o.hidden) ? { value: field.value.slice(0, 200) } : {}
   const d = desktop(ws, ({ tool, args }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[2], truncated: false, nodes: [root('dialog', 'Save as'), { ref: 1, id: 's/2', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing'], ...shown() }, { ref: 2, id: 's/3', parent: 1, depth: 2, role: 'textbox', name: 'File name:', states: ['showing', 'focused'], ...shown() }, { ref: 3, id: 's/4', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] }, { ref: 4, id: 's/5', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }] })
-    if (tool === 'desk_type') { field.value += String(args.text); return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
-    if (tool === 'desk_key' && args.keys === 'backspace' && !stuck) field.value = field.value.slice(0, Math.max(0, field.value.length - Number(args.repeat ?? 1)))
+    if (tool === 'desk_type') { field.value += String(args.text); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
+    if (tool === 'desk_key' && args.keys === 'backspace' && !o.stuck) field.value = field.value.slice(0, Math.max(0, field.value.length - Number(args.repeat ?? 1)))
     if (tool === 'desk_key' && args.keys === 'Return' && ws.length > 2) { field.saved = field.value; ws.pop() }
     return undefined
   })
@@ -610,22 +610,32 @@ test('a Windows background name typed into a file chooser replaces the name in i
   assert.equal(r.ok, true, JSON.stringify(r))
 })
 
-test('a Windows background file chooser whose field reads no name, or a name the desk cut, gets 260 Backspaces', { skip: process.platform !== 'win32' }, async (t) => {
-  for (const start of ['', 'x'.repeat(230)]) {
+test('a Windows background file chooser whose field reads no name gets no Backspace, and one whose name the desk cut gets 260', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const [start, keys] of [['', [['end', undefined]]], ['x'.repeat(230), [['end', undefined], ['backspace', 256], ['backspace', 4]]]] as const) {
     const d = saveAs(start)
     await daemon(t, d.reply)
     const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
-    assert.deepEqual(keysBefore(d.calls, 'desk_type').map((a) => [a.keys, a.repeat]), [['end', undefined], ['backspace', 256], ['backspace', 4]])
+    assert.deepEqual(keysBefore(d.calls, 'desk_type').map((a) => [a.keys, a.repeat]), keys)
     assert.equal(d.field.saved, 'r93.txt')
     assert.equal(r.ok, true, JSON.stringify(r))
   }
 })
 
 test('a Windows background name that leaves other text in the file chooser field stops before its Return and names the field', { skip: process.platform !== 'win32' }, async (t) => {
-  const d = saveAs('n93w7.txt', true)
+  const d = saveAs('n93w7.txt', { stuck: true })
   await daemon(t, d.reply)
   const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"r93.txt" did not replace the text of field "File name:" in "Save as", which reads "n93w7.txtr93.txt", so it was not submitted')
+  assert.ok(!sent(d.calls, 'desk_key').some((a) => a.keys === 'Return'), JSON.stringify(sent(d.calls, 'desk_key')))
+  assert.equal(d.field.saved, '')
+})
+
+test('a Windows background file chooser field whose name its first read did not show stops on the read-back before its Return', { skip: process.platform !== 'win32' }, async (t) => {
+  const d = saveAs('n93w7.txt', { hidden: true })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
+  assert.deepEqual(keysBefore(d.calls, 'desk_type').map((a) => a.keys), ['end'])
   assert.equal(r.escalate?.reason, '"r93.txt" did not replace the text of field "File name:" in "Save as", which reads "n93w7.txtr93.txt", so it was not submitted')
   assert.ok(!sent(d.calls, 'desk_key').some((a) => a.keys === 'Return'), JSON.stringify(sent(d.calls, 'desk_key')))
   assert.equal(d.field.saved, '')

@@ -592,7 +592,7 @@ function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'com
 async function eraseName(w: Win | null, nodes: Node[]) {
   const most = Math.max(0, ...nameFields(nodes).map((n) => n.value.length))
   await desk.key('end', at(w))
-  for (let n = most > 0 && most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
+  for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
 }
 async function nameShown(w: Win, name: string, rec: Rec) {
   let off: Node | undefined; let read = false
