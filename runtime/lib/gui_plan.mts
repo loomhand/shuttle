@@ -388,7 +388,8 @@ class Stolen extends Surprise {
 }
 function taken(ws: Win[]): string | null {
   const f = desk.front(ws)
-  if (!f || !target || fronted || f.pid !== target.pid || (userFront && (f.id === userFront.id || f.id === userFront.owner))) return null
+  const u = userFront
+  if (!f || !target || fronted || f.pid !== target.pid || (u && (f.id === u.id || (f.id === u.owner && !ws.some((w) => w.id === u.id))))) return null
   return `"${f.title || f.app || 'the app'}" brought itself to the front though the plan sent no fronting call: background input cannot keep this app behind`
 }
 
