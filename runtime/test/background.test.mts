@@ -682,6 +682,16 @@ test('a Windows background file chooser name with a line break inside it is refu
   }
 })
 
+test('a Windows background file chooser name of 200 characters, which the field reads back at the desk\'s cut, is not submitted', { skip: process.platform !== 'win32' }, async (t) => {
+  const name = `${'a'.repeat(196)}.txt`
+  const d = saveAs('')
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Save as' }, { type: `${name}\n` }] })
+  assert.equal(r.escalate?.reason, `"${name}" was typed into the file name field of "Save as", and the field's whole value could not be read back, so it was not submitted`, JSON.stringify(r))
+  assert.ok(!sent(d.calls, 'desk_key').some((a) => a.keys === 'Return'), JSON.stringify(sent(d.calls, 'desk_key')))
+  assert.equal(d.field.saved, '')
+})
+
 test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {
