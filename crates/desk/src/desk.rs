@@ -3445,6 +3445,7 @@ pub(crate) mod tests {
     static STOPPED: AtomicBool = AtomicBool::new(false);
     static GLIDES: Mutex<Vec<(f64, f64)>> = Mutex::new(Vec::new());
     static TYPED_HUMAN: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+    static SENT_ORDER: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     #[test]
     fn an_outline_shows_a_linux_raw_key_binding_in_place_of_the_shortcut() {
@@ -8786,6 +8787,19 @@ pub(crate) mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_human_click_glides_before_the_driver_sends_it() {
+        let desk = Desk::new(|| Ok(notepad()), Ordered, Os::Linux)
+            .with_glider(|_, _| SENT_ORDER.lock().unwrap().push("glide".to_owned()));
+        desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
+            .await
+            .unwrap();
+        desk.run("desk_click", json!({"x": 300.0, "y": 200.0, "human": true}))
+            .await
+            .unwrap();
+        assert_eq!(*SENT_ORDER.lock().unwrap(), ["click", "glide", "click"]);
+    }
+
     #[test]
     fn only_a_desktop_click_scroll_or_drag_has_a_point_to_glide_to() {
         let desktop = json!({"x": 1.0, "y": 2.0, "scope": "desktop"});
@@ -11076,6 +11090,15 @@ pub(crate) mod tests {
     impl Input for Recorder {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(json!({}))
+        }
+    }
+
+    struct Ordered;
+
+    impl Input for Ordered {
+        async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
+            SENT_ORDER.lock().unwrap().push(tool.to_owned());
             Ok(json!({}))
         }
     }
