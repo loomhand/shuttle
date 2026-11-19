@@ -1402,7 +1402,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = named && OS === 'win32' && BG
     if (erase && /[\r\n]/.test(s.type.replace(/\r?\n$/, ''))) throw new Surprise(`the file name for "${w?.title}" holds a line break, and a file name never does, so nothing was typed`, await seen())
     if (erase && w) await eraseName(w, pre ?? {}); else if (named) await selectLine(w)
-    const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
+    const text = erase ? s.type.replace(/\r?\n$/, '') : sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
     if (erase && w) await nameShown(w, text, rec, secure(s))

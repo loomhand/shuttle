@@ -593,7 +593,7 @@ function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: 
   const shown = () => field.value && !o.opaque && (field.typed || !o.hidden) ? { value: field.value.slice(0, 200) } : {}
   const d = desktop(ws, ({ tool, args }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[2], truncated: false, nodes: [root('dialog', 'Save as'), { ref: 1, id: 's/2', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing'], ...shown() }, { ref: 2, id: 's/3', parent: 1, depth: 2, role: 'textbox', name: 'File name:', states: o.focus ? ['showing'] : ['showing', 'focused'], ...shown() }, ...(o.focus === 'search' ? [{ ref: 5, id: 's/6', parent: 0, depth: 1, role: 'searchbox', name: 'Search', states: ['showing', 'focused'], value: 'reports' }] : []), { ref: 3, id: 's/4', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] }, { ref: 4, id: 's/5', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }] })
-    if (tool === 'desk_type') { field.value += String(args.text); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
+    if (tool === 'desk_type') { field.value += String(args.text).replace(/\r+(?=\n|$)/g, ''); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
     if (tool === 'desk_key' && args.keys === 'backspace' && !o.stuck) field.value = field.value.slice(0, Math.max(0, field.value.length - Number(args.repeat ?? 1)))
     if (tool === 'desk_key' && args.keys === 'Return' && ws.length > 2) { field.saved = field.value; ws.pop() }
     return undefined
@@ -670,6 +670,14 @@ test('a Windows background secret name that leaves other text in the file choose
   assert.equal(r.escalate?.reason, 'the password did not replace the text of field "File name:" in "Save as", so it was not submitted')
   assert.ok(!JSON.stringify(r).includes('hunter2') && !JSON.stringify(r).includes('n93w7'), JSON.stringify(r))
   assert.equal(d.field.saved, '')
+})
+
+test('a Windows background file chooser path ending in CRLF is typed and compared without its carriage return, and submitted', { skip: process.platform !== 'win32' }, async (t) => {
+  const d = saveAs('n93w7.txt')
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Save as' }, { type: 'C:\\dir\\name.txt\r\n' }] })
+  assert.equal(d.field.saved, 'C:\\dir\\name.txt')
+  assert.equal(r.ok, true, JSON.stringify(r))
 })
 
 test('a Windows background file chooser name with a line break inside it is refused before any key', { skip: process.platform !== 'win32' }, async (t) => {
