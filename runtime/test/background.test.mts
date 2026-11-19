@@ -655,11 +655,15 @@ test('a Windows background name the file chooser field reads back cut, or does n
 })
 
 test('a Windows background name for a file chooser whose keyboard focus is on another field, or on none it reports, is refused before any key', { skip: process.platform !== 'win32' }, async (t) => {
-  for (const [focus, on] of [['search', 'on searchbox "Search"'], ['none', 'on no element it reports']] as const) {
-    const d = saveAs('n93w7.txt', { focus })
+  for (const [focus, front, said] of [
+    ['search', undefined, 'the keyboard focus of "Save as" is on searchbox "Search", not on its file name field, so nothing was typed'],
+    ['none', 'owner', 'the keyboard focus of "Save as" is on no element it reports, not on its file name field, so nothing was typed'],
+    ['none', undefined, 'the file name field of "Save as" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it is clicked or comes back), so nothing was typed: run this step in the foreground or click the file name field first'],
+  ] as const) {
+    const d = saveAs('n93w7.txt', { focus, front })
     await daemon(t, d.reply)
     const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
-    assert.equal(r.escalate?.reason, `the keyboard focus of "Save as" is ${on}, not on its file name field, so nothing was typed`, JSON.stringify(r))
+    assert.equal(r.escalate?.reason, said, JSON.stringify(r))
     assert.deepEqual([sent(d.calls, 'desk_key'), sent(d.calls, 'desk_type')], [[], []])
   }
 })
