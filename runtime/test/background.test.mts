@@ -673,7 +673,7 @@ test('a Windows background secret name that leaves other text in the file choose
 })
 
 test('a Windows background file chooser name with a line break inside it is refused before any key', { skip: process.platform !== 'win32' }, async (t) => {
-  for (const type of ['r1.txt\nr2.txt\n', 'C:\\dir\nname.txt\n']) {
+  for (const type of ['r1.txt\nr2.txt\n', 'C:\\dir\nname.txt\n', 'r1.txt\rr2.txt\n']) {
     const d = saveAs('n93w7.txt', { hidden: true })
     await daemon(t, d.reply)
     const r = await main({ steps: [{ wait: 'Save as' }, { type }] })
