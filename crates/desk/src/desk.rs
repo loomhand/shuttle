@@ -74,7 +74,11 @@ pub(crate) const WINDOW_GONE: &str = "(0x80070578)";
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
-pub(crate) const TYPER: Typer = |_, _| Ok(false);
+pub(crate) const TYPER: Typer = |_, _, _| Ok(false);
+#[cfg(target_os = "linux")]
+pub(crate) const GLIDER: Glider = crate::xtest::glide;
+#[cfg(not(target_os = "linux"))]
+pub(crate) const GLIDER: Glider = |_, _| {};
 
 const APP_INPUT: [&str; 5] = [
     "desk_key",
@@ -179,9 +183,14 @@ tokio::task_local! {
     static SCALE: Cell<Option<f64>>;
 }
 
+tokio::task_local! {
+    pub(crate) static HUMAN: bool;
+}
+
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
-/// Types a line on the core keyboard; false leaves the line to the driver.
-pub(crate) type Typer = fn(&str, &AtomicBool) -> Result<bool, String>;
+/// Types a line on the core keyboard, at a person's pace when asked; false leaves the line to the driver.
+pub(crate) type Typer = fn(&str, bool, &AtomicBool) -> Result<bool, String>;
+pub(crate) type Glider = fn((f64, f64), &AtomicBool);
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
@@ -202,6 +211,7 @@ pub struct Desk<B, D> {
     webs: std::sync::Mutex<HashMap<u32, Held>>,
     bases: std::sync::Mutex<Baselines>,
     typer: Typer,
+    glider: Glider,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -227,6 +237,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             webs: std::sync::Mutex::new(HashMap::new()),
             bases: std::sync::Mutex::new(Baselines::default()),
             typer: TYPER,
+            glider: GLIDER,
             #[cfg(test)]
             skew: Arc::default(),
         }
@@ -268,15 +279,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, until their backend calls end, reads alongside them.
     pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
+        let human = args["human"] == true;
         if !ACTIONS.contains(&tool) {
-            return self.run_one(tool, args).await;
+            return HUMAN.scope(human, self.run_one(tool, args)).await;
         }
-        EFFECT
-            .scope(RefCell::new(None), async {
-                let out = self.run_one(tool, args).await?;
-                Ok(EFFECT.with(|seen| with_effect(out, seen.borrow_mut().take())))
-            })
-            .await
+        let run = EFFECT.scope(RefCell::new(None), async {
+            let out = self.run_one(tool, args).await?;
+            Ok(EFFECT.with(|seen| with_effect(out, seen.borrow_mut().take())))
+        });
+        HUMAN.scope(human, run).await
     }
 
     async fn run_one(&self, tool: &str, mut args: Value) -> Result<Output, String> {
@@ -326,6 +337,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     #[cfg(test)]
     fn with_typer(mut self, typer: Typer) -> Self {
         self.typer = typer;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_glider(mut self, glider: Glider) -> Self {
+        self.glider = glider;
         self
     }
 
@@ -538,6 +555,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
             *lock(&self.read) = None;
         }
+        glide(self.glider, tool, &args).await;
         let out = self.driver.call(tool, args).await?;
         if INPUT_TOOLS.contains(&tool) {
             let _ = SENT.try_with(|n| n.set(n.get() + 1));
@@ -2966,13 +2984,37 @@ pub(crate) fn text_runs(text: &str) -> Vec<&str> {
 pub(crate) async fn xtest(typer: Typer, text: &str, turn: Option<Turn>) -> Result<bool, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _cancel = Cancel(stop.clone());
-    let text = text.to_owned();
+    let (text, human) = (text.to_owned(), human());
     tokio::task::spawn_blocking(move || {
         let _turn = turn;
-        typer(&text, &stop)
+        typer(&text, human, &stop)
     })
     .await
     .map_err(|e| format!("XTest: {e}"))?
+}
+
+pub(crate) fn human() -> bool {
+    HUMAN.try_with(|h| *h).unwrap_or(false)
+}
+
+/// On a `human` call, moves the pointer to the desktop point of a click, scroll or drag along a person's path before the driver sends it.
+pub(crate) async fn glide(glider: Glider, tool: &str, req: &Value) {
+    let Some(to) = pointer_point(tool, req).filter(|_| human()) else {
+        return;
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let _cancel = Cancel(stop.clone());
+    let _ = tokio::task::spawn_blocking(move || glider(to, &stop)).await;
+}
+
+fn pointer_point(tool: &str, req: &Value) -> Option<(f64, f64)> {
+    let (x, y) = match tool {
+        "click" | "scroll" => ("x", "y"),
+        "drag" => ("from_x", "from_y"),
+        _ => return None,
+    };
+    let desktop = req["scope"] == "desktop" || req["target"]["kind"] == "desktop";
+    req[x].as_f64().zip(req[y].as_f64()).filter(|_| desktop)
 }
 
 fn opens(prelude: &str, name: &str) -> bool {
@@ -3401,6 +3443,8 @@ pub(crate) mod tests {
     static PAGE_LIT: AtomicBool = AtomicBool::new(false);
     static LAUNCHED: AtomicBool = AtomicBool::new(false);
     static STOPPED: AtomicBool = AtomicBool::new(false);
+    static GLIDES: Mutex<Vec<(f64, f64)>> = Mutex::new(Vec::new());
+    static TYPED_HUMAN: Mutex<Vec<bool>> = Mutex::new(Vec::new());
 
     #[test]
     fn an_outline_shows_a_linux_raw_key_binding_in_place_of_the_shortcut() {
@@ -3970,7 +4014,7 @@ pub(crate) mod tests {
     ) -> (Result<Output, String>, Arc<Mutex<Vec<(String, Value)>>>) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(stub, Returns(Behind(Arc::clone(&calls)), returns), os)
-            .with_typer(|_, _| Ok(false));
+            .with_typer(|_, _, _| Ok(false));
         let args = if os == Os::Mac {
             json!({"text": text, "window": "Untitled - Notepad"})
         } else {
@@ -5860,7 +5904,7 @@ pub(crate) mod tests {
             for (open, password) in opens {
                 let desk = Desk::new(open, Behind(Arc::default()), os)
                     .background(background)
-                    .with_typer(|_, _| Ok(true));
+                    .with_typer(|_, _, _| Ok(true));
                 let out: Value =
                     serde_json::from_str(&desk.run("desk_type", args.clone()).await.unwrap().text)
                         .unwrap();
@@ -8610,7 +8654,7 @@ pub(crate) mod tests {
             Recorder(Arc::default()),
             Os::Linux,
         )
-        .with_typer(|_, _| Ok(true));
+        .with_typer(|_, _, _| Ok(true));
         let started = Instant::now();
         desk.run("desk_type", json!({"text": "hello"}))
             .await
@@ -8640,7 +8684,7 @@ pub(crate) mod tests {
     async fn linux_keys_take_keysym_names_and_text_goes_in_runs_of_eight_new_characters() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux)
-            .with_typer(|_, _| Ok(false));
+            .with_typer(|_, _, _| Ok(false));
         desk.run("desk_key", json!({"keys": "Super_L+ctrl++"}))
             .await
             .unwrap();
@@ -8679,7 +8723,7 @@ pub(crate) mod tests {
     async fn a_linux_line_xtest_types_skips_the_driver_and_a_stop_ends_xtest_at_its_next_key() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux)
-            .with_typer(|_, _| Ok(true));
+            .with_typer(|_, _, _| Ok(true));
         desk.run("desk_type", json!({"text": "hello\nworld"}))
             .await
             .unwrap();
@@ -8691,7 +8735,7 @@ pub(crate) mod tests {
             )]
         );
         let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux).with_typer(
-            |_, stop| {
+            |_, _, stop| {
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -8708,6 +8752,54 @@ pub(crate) mod tests {
         );
         desk.run("desk_key", json!({"keys": "a"})).await.unwrap();
         assert!(STOPPED.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn only_a_human_call_glides_to_its_click_and_types_at_a_person_s_pace() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux)
+            .with_glider(|to, _| GLIDES.lock().unwrap().push(to))
+            .with_typer(|_, human, _| {
+                TYPED_HUMAN.lock().unwrap().push(human);
+                Ok(true)
+            });
+        let click = json!({"x": 300.0, "y": 200.0, "scope": "desktop"});
+        desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
+            .await
+            .unwrap();
+        desk.run("desk_type", json!({"text": "a"})).await.unwrap();
+        assert!(GLIDES.lock().unwrap().is_empty());
+        desk.run("desk_click", json!({"x": 300.0, "y": 200.0, "human": true}))
+            .await
+            .unwrap();
+        desk.run("desk_type", json!({"text": "b", "human": true}))
+            .await
+            .unwrap();
+        assert_eq!(*GLIDES.lock().unwrap(), [(300.0, 200.0)]);
+        assert_eq!(*TYPED_HUMAN.lock().unwrap(), [false, true]);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                ("click".to_owned(), click.clone()),
+                ("click".to_owned(), click)
+            ]
+        );
+    }
+
+    #[test]
+    fn only_a_desktop_click_scroll_or_drag_has_a_point_to_glide_to() {
+        let desktop = json!({"x": 1.0, "y": 2.0, "scope": "desktop"});
+        let linux = json!({"x": 1.0, "y": 2.0, "target": {"kind": "desktop"}});
+        let drag =
+            json!({"from_x": 3.0, "from_y": 4.0, "to_x": 5.0, "to_y": 6.0, "scope": "desktop"});
+        let window =
+            json!({"x": 1.0, "y": 2.0, "target": {"kind": "window", "pid": 4, "window_id": 7}});
+        assert_eq!(pointer_point("click", &desktop), Some((1.0, 2.0)));
+        assert_eq!(pointer_point("scroll", &linux), Some((1.0, 2.0)));
+        assert_eq!(pointer_point("drag", &drag), Some((3.0, 4.0)));
+        assert_eq!(pointer_point("click", &window), None);
+        assert_eq!(pointer_point("press_key", &desktop), None);
+        assert_eq!(pointer_point("click", &json!({"scope": "desktop"})), None);
     }
 
     #[test]
