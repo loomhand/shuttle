@@ -1613,7 +1613,6 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         {
             self.check_point(x, y, under.as_ref()).await?;
         }
-        let known = under.as_ref().and_then(|u| u32::try_from(u.pid).ok());
         if (self.bg() || self.os == Os::Mac)
             && let Some(w) = under
         {
@@ -1622,7 +1621,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg() {
             return Err(BACKGROUND_NO_WINDOW.to_owned());
         }
-        let before = known.or_else(|| click_owner(self.os, "click", &req));
+        let before = click_owner(self.os, "click", &req);
         match self.call("click", desktop(req)).await {
             Err(e) => own_popup_front(&e, before, window_pid).map(Some).ok_or(e),
             Ok(_) => Ok(None),
