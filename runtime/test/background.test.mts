@@ -663,6 +663,15 @@ test('a Windows background name for a file chooser whose keyboard focus is on an
   }
 })
 
+test('a Windows background secret name that leaves other text in the file chooser field stops without the name or what the field reads', { skip: process.platform !== 'win32' }, async (t) => {
+  const d = saveAs('n93w7.txt', { stuck: true })
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Save as' }, { type: '{{pw}}\n', secret: true }], params: { pw: 'hunter2.txt' } })
+  assert.equal(r.escalate?.reason, 'the password did not replace the text of field "File name:" in "Save as", so it was not submitted')
+  assert.ok(!JSON.stringify(r).includes('hunter2') && !JSON.stringify(r).includes('n93w7'), JSON.stringify(r))
+  assert.equal(d.field.saved, '')
+})
+
 test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {
   const ws = [user(), notepad()]
   const d = desktop(ws, ({ tool }) => {

@@ -596,16 +596,16 @@ async function eraseName(w: Win, read: { nodes?: Node[]; snap?: desk.Snap }) {
   await desk.key('end', at(w))
   for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
 }
-async function nameShown(w: Win, name: string, rec: Rec) {
-  let got: Node[] = []
+async function nameShown(w: Win, name: string, rec: Rec, secret: boolean) {
+  const said = secret ? 'the password' : `"${name}"`; let got: Node[] = []
   for (let i = 0; i < 10; i++) {
     got = nameFields(parse(await snapOf(w))).filter((n) => n.value)
     if (got.length && got.every((n) => n.value === name && n.value.length < VALUE_CHARS)) { rec.confirmed = true; return }
     await sleep(40)
   }
   const off = got.find((n) => n.value !== name && n.value.length < VALUE_CHARS)
-  if (off) throw new Surprise(`"${name}" did not replace the text of field "${off.name}" in "${w.title}", which reads "${off.value}", so it was not submitted`, await seen())
-  throw new Surprise(`"${name}" was typed into the file name field of "${w.title}", and the field's whole value could not be read back, so it was not submitted`, await seen())
+  if (off) throw new Surprise(`${said} did not replace the text of field "${off.name}" in "${w.title}"${secret ? '' : `, which reads "${off.value}"`}, so it was not submitted`, await seen())
+  throw new Surprise(`${said} was typed into the file name field of "${w.title}", and the field's whole value could not be read back, so it was not submitted`, await seen())
 }
 async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
   let left = 'and it could not be erased: clear it by hand'
@@ -1404,7 +1404,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
-    if (erase && w) await nameShown(w, text, rec)
+    if (erase && w) await nameShown(w, text, rec, secure(s))
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw await echoed(w, line, null)
     if (held && w) { const now = await settled(w); if (shows(was, now, line, true)) throw await echoed(w, line, now) }
     if (held) heard(await desk.key('Return', at(w)), rec, s)
