@@ -98,6 +98,7 @@ const READS_AT_ONCE = 4
 const BASE_SETTLE = 300
 const ERASE_WAIT = 1000
 const VALUE_CHARS = 200
+const NAME_MAX = 260
 const NAME_CUT = 80
 const MAX_REPEAT = 256
 const VERIFY_POLL = 200
@@ -587,6 +588,23 @@ function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no acces
 async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
+function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'combobox' || n.role === 'textbox') && /^File name:?$/.test(n.name)) }
+async function eraseName(w: Win | null, nodes: Node[]) {
+  const most = Math.max(0, ...nameFields(nodes).map((n) => n.value.length))
+  await desk.key('end', at(w))
+  for (let n = most > 0 && most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
+}
+async function nameShown(w: Win, name: string, rec: Rec) {
+  let off: Node | undefined; let read = false
+  for (let i = 0; i < 10; i++) {
+    const got = nameFields(parse(await snapOf(w))).filter((n) => n.value && n.value.length < VALUE_CHARS)
+    off = got.find((n) => n.value !== name); read = got.length > 0
+    if (!off) break
+    await sleep(40)
+  }
+  if (off) throw new Surprise(`"${name}" did not replace the text of field "${off.name}" in "${w.title}", which reads "${off.value}", so it was not submitted`, await seen())
+  if (read) rec.confirmed = true
+}
 async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
   let left = 'and it could not be erased: clear it by hand'
   try {
@@ -1378,10 +1396,12 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (secretIn(was)) sealStep()
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
-    if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
+    const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = named && OS === 'win32' && BG
+    if (erase) await eraseName(w, pre?.nodes ?? []); else if (named) await selectLine(w)
     const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
+    if (erase && w) await nameShown(w, text, rec)
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw await echoed(w, line, null)
     if (held && w) { const now = await settled(w); if (shows(was, now, line, true)) throw await echoed(w, line, now) }
     if (held) heard(await desk.key('Return', at(w)), rec, s)

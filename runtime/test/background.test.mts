@@ -25,6 +25,7 @@ function desktop(ws: W[], answer: (c: Call) => Reply | undefined = () => undefin
 }
 
 const sent = (calls: Call[], tool: string) => calls.filter((c) => c.tool === tool).map((c) => c.args)
+const keysBefore = (calls: Call[], tool: string) => calls.slice(0, calls.findIndex((c) => c.tool === tool)).filter((c) => c.tool === 'desk_key').map((c) => c.args)
 
 const TEXT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id), or close it with {close: true} when it has a Cancel button; nothing was sent'
 const SEVERAL = '2 untitled dialogs of "R89Kit" are open, and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
@@ -584,6 +585,50 @@ test('a Windows menu toggle read as already on passes with no note of the unconf
   assert.deepEqual([r.trace?.[1]?.was, r.trace?.[1]?.noop], ['on', true], JSON.stringify(r))
   assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/3'])
   assert.equal(state.open, false)
+})
+
+function saveAs(start: string, stuck = false) {
+  const ws: W[] = [user(), notepad(), { id: 's', title: 'Save as', role: 'dialog', pid: 4, active: false, owner: '1' }]
+  const field = { value: start, saved: '' }
+  const shown = () => field.value ? { value: field.value.slice(0, 200) } : {}
+  const d = desktop(ws, ({ tool, args }) => {
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[2], truncated: false, nodes: [root('dialog', 'Save as'), { ref: 1, id: 's/2', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing'], ...shown() }, { ref: 2, id: 's/3', parent: 1, depth: 2, role: 'textbox', name: 'File name:', states: ['showing', 'focused'], ...shown() }, { ref: 3, id: 's/4', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] }, { ref: 4, id: 's/5', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }] })
+    if (tool === 'desk_type') { field.value += String(args.text); return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
+    if (tool === 'desk_key' && args.keys === 'backspace' && !stuck) field.value = field.value.slice(0, Math.max(0, field.value.length - Number(args.repeat ?? 1)))
+    if (tool === 'desk_key' && args.keys === 'Return' && ws.length > 2) { field.saved = field.value; ws.pop() }
+    return undefined
+  })
+  return { ...d, field }
+}
+
+test('a Windows background name typed into a file chooser replaces the name in its field with End and one Backspace per character, never Home and Shift+End', { skip: process.platform !== 'win32' }, async (t) => {
+  const d = saveAs('n93w7.txt')
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
+  assert.deepEqual(keysBefore(d.calls, 'desk_type'), [{ keys: 'end', window: 'Save as', pid: 4 }, { keys: 'backspace', window: 'Save as', pid: 4, repeat: 9 }])
+  assert.equal(d.field.saved, 'r93.txt')
+  assert.equal(r.ok, true, JSON.stringify(r))
+})
+
+test('a Windows background file chooser whose field reads no name, or a name the desk cut, gets 260 Backspaces', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const start of ['', 'x'.repeat(230)]) {
+    const d = saveAs(start)
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
+    assert.deepEqual(keysBefore(d.calls, 'desk_type').map((a) => [a.keys, a.repeat]), [['end', undefined], ['backspace', 256], ['backspace', 4]])
+    assert.equal(d.field.saved, 'r93.txt')
+    assert.equal(r.ok, true, JSON.stringify(r))
+  }
+})
+
+test('a Windows background name that leaves other text in the file chooser field stops before its Return and names the field', { skip: process.platform !== 'win32' }, async (t) => {
+  const d = saveAs('n93w7.txt', true)
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"r93.txt" did not replace the text of field "File name:" in "Save as", which reads "n93w7.txtr93.txt", so it was not submitted')
+  assert.ok(!sent(d.calls, 'desk_key').some((a) => a.keys === 'Return'), JSON.stringify(sent(d.calls, 'desk_key')))
+  assert.equal(d.field.saved, '')
 })
 
 test('a recorded after names a new window of the app, which the background plan then takes as its target', async (t) => {
