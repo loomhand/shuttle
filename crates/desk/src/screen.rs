@@ -85,19 +85,6 @@ pub fn clip([x, y, w, h]: [f64; 4], (width, height): (usize, usize)) -> Option<[
         .then(|| [left, top, right - left, bottom - top].map(|v| v as i32))
 }
 
-pub fn bgrx_rgb(px: &[u8]) -> Vec<u8> {
-    let mut rgb = vec![0; px.len() / 4 * 3];
-    for (d, s) in rgb
-        .as_chunks_mut::<3>()
-        .0
-        .iter_mut()
-        .zip(px.as_chunks::<4>().0)
-    {
-        *d = [s[2], s[1], s[0]];
-    }
-    rgb
-}
-
 fn mix(h: u64, word: u64) -> u64 {
     (h ^ word).wrapping_mul(HASH_MUL).rotate_left(29)
 }

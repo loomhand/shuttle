@@ -23,7 +23,7 @@ use x11rb::x11_utils::TryParse;
 
 use crate::lock;
 use crate::model::Modal;
-use crate::screen::{BLOCK, bgrx_rgb};
+use crate::screen::BLOCK;
 pub use crate::screen::{Placement, block_hashes, clip, visible};
 
 const OVERLAY_NAME: &[u8] = b"Cua.AgentCursorOverlay";
@@ -1220,6 +1220,19 @@ fn alive<T>(reply: Result<T, ReplyError>, what: &str) -> Result<Option<T>, Strin
 /// Whether `event` reconfigures the root window `root` to a size other than `size`.
 fn resized(event: &Event, root: Window, size: (u16, u16)) -> bool {
     matches!(event, Event::ConfigureNotify(c) if c.window == root && (c.width, c.height) != size)
+}
+
+fn bgrx_rgb(px: &[u8]) -> Vec<u8> {
+    let mut rgb = vec![0; px.len() / 4 * 3];
+    for (d, s) in rgb
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(px.as_chunks::<4>().0)
+    {
+        *d = [s[2], s[1], s[0]];
+    }
+    rgb
 }
 
 #[cfg(test)]
