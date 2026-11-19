@@ -595,10 +595,8 @@ impl Access for Uia {
             return Ok(None);
         }
         Ok(Some(at.map_or((String::new(), None), |w| {
+            let pid = window_pid(w as i64);
             let hwnd = HWND(w as *mut core::ffi::c_void);
-            let mut pid = 0u32;
-            // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
-            unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
             (title(hwnd).trim().to_owned(), (pid != 0).then_some(pid))
         })))
     }
@@ -762,7 +760,6 @@ enum Val {
 type Key = (i32, String, [i32; 4]);
 type Walked = (isize, bool, Vec<(String, Key)>);
 
-/// Whether the windows `a` and `b` belong to one process.
 pub(crate) fn window_pid(w: i64) -> u32 {
     let mut pid = 0u32;
     // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.

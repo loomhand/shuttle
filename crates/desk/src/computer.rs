@@ -78,7 +78,7 @@ const AFTER_CLICK: &str =
     "or a verified same-process post-action window was not foreground after the click";
 const CLICK_TOOLS: [&str; 3] = ["click", "double_click", "right_click"];
 const FRONT_ACTUAL: &str = "actual foreground HWND 0x";
-const OWN_POPUP: &str = "sent; a window of the same app took the foreground after it, as a context menu's host does: confirm its effect in the screenshot";
+const OWN_POPUP: &str = "sent; a window of the same app took the foreground after it, as a context menu's host or the app's own window after a closed menu does: confirm its effect";
 const HIT_REFUSALS: [&str; 3] = [
     "hit_mismatch",
     "foreground_unavailable",
