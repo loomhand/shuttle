@@ -29,7 +29,7 @@ const LOGO: [&str; 11] = [
     "cmd", "command", "meta", "win", "windows", "winleft", "winright", "super", "super_l",
     "super_r", "mod4",
 ];
-const ALIASES: [(&str, &str); 60] = [
+const ALIASES: [(&str, &str); 79] = [
     ("control", "ctrl"),
     ("primary", "ctrl"),
     ("ctl", "ctrl"),
@@ -90,6 +90,25 @@ const ALIASES: [(&str, &str); 60] = [
     ("underscore", "_"),
     ("parenleft", "("),
     ("parenright", ")"),
+    ("question", "?"),
+    ("exclam", "!"),
+    ("at", "@"),
+    ("numbersign", "#"),
+    ("dollar", "$"),
+    ("percent", "%"),
+    ("asciicircum", "^"),
+    ("ampersand", "&"),
+    ("bracketleft", "["),
+    ("bracketright", "]"),
+    ("braceleft", "{"),
+    ("braceright", "}"),
+    ("grave", "`"),
+    ("asciitilde", "~"),
+    ("apostrophe", "'"),
+    ("quotedbl", "\""),
+    ("less", "<"),
+    ("greater", ">"),
+    ("bar", "|"),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,6 +254,34 @@ mod tests {
         assert_eq!(key_names("ctrl++", Os::Linux).unwrap(), ["ctrl", "+"]);
         assert_eq!(key_names("+", Os::Linux).unwrap(), ["+"]);
         assert_eq!(key_names("KP_Enter", Os::Linux).unwrap(), ["return"]);
+        for (combo, key) in [
+            ("ctrl+question", "?"),
+            ("ctrl+exclam", "!"),
+            ("ctrl+at", "@"),
+            ("ctrl+numbersign", "#"),
+            ("ctrl+dollar", "$"),
+            ("ctrl+percent", "%"),
+            ("ctrl+asciicircum", "^"),
+            ("ctrl+ampersand", "&"),
+            ("ctrl+bracketleft", "["),
+            ("ctrl+bracketright", "]"),
+            ("ctrl+braceleft", "{"),
+            ("ctrl+braceright", "}"),
+            ("ctrl+grave", "`"),
+            ("ctrl+asciitilde", "~"),
+            ("ctrl+apostrophe", "'"),
+            ("ctrl+quotedbl", "\""),
+            ("ctrl+less", "<"),
+            ("ctrl+greater", ">"),
+            ("ctrl+bar", "|"),
+        ] {
+            assert_eq!(
+                key_names(combo, Os::Linux).unwrap(),
+                ["ctrl", key],
+                "{combo}"
+            );
+        }
+        assert!(key_names("ctrl+KP_Add", Os::Linux).is_err());
         assert!(key_names("ctrl+", Os::Linux).is_err());
     }
 

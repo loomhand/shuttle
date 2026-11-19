@@ -1,22 +1,23 @@
-//! The macOS controls on the main thread's AppKit loop: the kill hotkey, the menu-bar indicator with Stop, Resume and the recording toggle, and the confirm dialog.
+//! The macOS controls on the main thread's AppKit loop: the kill hotkey, the menu-bar indicator with Stop, Resume and the recording toggle, the confirm dialog, and the app's quit, which ends the daemon first.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
     NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationActivationOptions,
-    NSApplicationActivationPolicy, NSImage, NSMenu, NSMenuItem, NSSquareStatusItemLength,
-    NSStatusBar, NSStatusItem, NSWorkspace,
+    NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply, NSImage,
+    NSMenu, NSMenuItem, NSSquareStatusItemLength, NSStatusBar, NSStatusItem, NSWorkspace,
 };
 use objc2_foundation::{
-    NSData, NSObject, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+    NSData, NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
 };
 use tokio::sync::oneshot;
 
@@ -155,6 +156,31 @@ impl Target {
     }
 }
 
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "LoomhandShuttleAppDelegate"]
+    #[ivars = JoinHandle<()>]
+    struct Delegate;
+
+    unsafe impl NSObjectProtocol for Delegate {}
+
+    unsafe impl NSApplicationDelegate for Delegate {
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _sender: &NSApplication) -> NSApplicationTerminateReply {
+            reply(self.ivars())
+        }
+    }
+);
+
+impl Delegate {
+    fn new(mtm: MainThreadMarker, serving: JoinHandle<()>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(serving);
+        // SAFETY: NSObject's init on a freshly allocated object with its ivars set.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
 #[repr(C)]
 struct EventTypeSpec {
     class: u32,
@@ -168,11 +194,13 @@ struct EventHotKeyId {
 }
 
 /// Runs the controls on this, the main, thread until the process exits.
-pub fn run(ui: Ui) -> ! {
+pub fn run(ui: Ui, serving: JoinHandle<()>) -> ! {
     #[allow(clippy::expect_used)]
     let mtm = MainThreadMarker::new().expect("the macOS controls run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    let delegate = Delegate::new(mtm, serving);
+    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     let missed = ui
         .hotkey
         .is_some_and(|hotkey| !register(hotkey, Arc::clone(&ui.controls)));
@@ -202,6 +230,14 @@ pub fn asker() -> Asker {
         });
         rx
     })
+}
+
+fn reply(serving: &JoinHandle<()>) -> NSApplicationTerminateReply {
+    if !serving.is_finished() && crate::signal_pid(std::process::id(), libc::SIGTERM) > 0 {
+        NSApplicationTerminateReply::TerminateLater
+    } else {
+        NSApplicationTerminateReply::TerminateNow
+    }
 }
 
 fn ask(mtm: MainThreadMarker, question: &str, tx: oneshot::Sender<bool>) {
@@ -385,7 +421,43 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+
     use super::*;
+
+    #[test]
+    fn a_quit_raises_sigterm_and_waits_while_the_serve_thread_runs_and_ends_at_once_after_it() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _entered = runtime.enter();
+        let mut term = signal(SignalKind::terminate()).unwrap();
+        let received = |term: &mut Signal| {
+            runtime
+                .block_on(tokio::time::timeout(
+                    Duration::from_millis(500),
+                    term.recv(),
+                ))
+                .is_ok()
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let serving = std::thread::spawn(move || {
+            let _ = rx.recv();
+        });
+        for _ in 0..2 {
+            assert_eq!(reply(&serving), NSApplicationTerminateReply::TerminateLater);
+            assert!(received(&mut term), "a later answer raises SIGTERM");
+        }
+        drop(tx);
+        while !serving.is_finished() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(reply(&serving), NSApplicationTerminateReply::TerminateNow);
+        assert!(!received(&mut term), "a now answer raises nothing");
+    }
 
     #[test]
     fn each_state_has_an_18_point_template_icon() {

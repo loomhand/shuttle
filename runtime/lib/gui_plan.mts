@@ -98,6 +98,7 @@ const READS_AT_ONCE = 4
 const BASE_SETTLE = 300
 const ERASE_WAIT = 1000
 const VALUE_CHARS = 200
+const NAME_MAX = 260
 const NAME_CUT = 80
 const MAX_REPEAT = 256
 const VERIFY_POLL = 200
@@ -149,6 +150,7 @@ let adopted = new Set<string>()
 let doubt: string | null = null
 let unheard: string | undefined
 let actioned = false
+let noop = false
 let userFront: Win | null = null
 let BG = BEHIND
 let fronted = false
@@ -248,7 +250,7 @@ async function perform(p: Params): Promise<Result> {
       if (f && pre) vetted.add(`${f.id} ${f.pid} ${f.title}`)
       const kept = f && pre?.snap && pre.nodes && f.title !== pressed?.title ? { ...r, id: f.id, snap: pre.snap, nodes: pre.nodes } : undefined
       const prev = plan[i - 1]
-      unheard = undefined; actioned = false; picked = []; aimed = chained || plan.slice(0, i).some((x) => !!x.app || !!x.wait); if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
+      unheard = undefined; actioned = false; noop = false; picked = []; aimed = chained || plan.slice(0, i).some((x) => !!x.app || !!x.wait); if (!(prev?.wait || prev?.expect || prev?.verify)) lastPress = pressedId; pressedId = undefined
       const runs = desk.foreground.runs + foreground.steps
       sealStep = () => { rec.secret = true; if (secure(planned)) return; planned.secret = s.secret = true; left() }
       await run(s, rec, kept).catch(async (e: unknown) => {
@@ -261,6 +263,7 @@ async function perform(p: Params): Promise<Result> {
       if (s.after && await landed(s.after, s.timeout_ms ?? 5000, ws)) rec.confirmed = true
       if (unheard && !rec.unverified) rec.unverified = unheard
       if (actioned && !s.after) rec.caveat = ACTION_ONLY
+      if (noop) rec.caveat ??= NOOP
       if (desk.foreground.runs + foreground.steps > runs) { rec.fg = true; fronted = true; BG = false; settleWs = null }
       const before = recs[i - 1]
       if (before && (s.expect || (s.verify && ((s.value ?? s.on ?? s.enabled) !== undefined || rec.waited)) || (s.wait && rec.seen !== tops[i - 1]))) before.confirmed = true
@@ -508,7 +511,8 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if ((!BG || r.input === 'foreground') && r.effect === 'suspected_noop') rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if (nooped(r)) rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function nooped(r: { input?: string; effect?: string }) { return (!BG || r.input === 'foreground') && r.effect === 'suspected_noop' }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
   let ws = seed ?? await desk.windows()
@@ -584,6 +588,25 @@ function blocked(o: string) { return /AT-SPI peer \S+ is not responding|no acces
 async function unblocked(e: unknown, w: Win) { if (blocked(String(e))) throw new Surprise(unanswered(w.title), await seen()) }
 function isChooser(o: string) { return isDialog(o) && CHOOSER.test(o) }
 async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(SELECT_ALL, at(w)); else { await desk.key('home', at(w)); await desk.key('shift+end', at(w)) } }
+function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'combobox' || n.role === 'textbox') && /^File name:?$/.test(n.name)) }
+async function eraseName(w: Win, read: { nodes?: Node[]; snap?: desk.Snap }) {
+  const fields = nameFields(read.nodes ?? []); const f = focusOf(read.snap?.nodes ?? [])
+  if (!fields.some((n) => n.id === f?.id)) throw new Surprise(`the keyboard focus of "${w.title}" is ${f ? `on ${f.role} "${f.name}"` : 'on no element it reports'}, not on its file name field, so nothing was typed`, await seen())
+  const most = Math.max(0, ...fields.map((n) => n.value.length))
+  await desk.key('end', at(w))
+  for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
+}
+async function nameShown(w: Win, name: string, rec: Rec, secret: boolean) {
+  const said = secret ? 'the password' : `"${name}"`; let got: Node[] = []
+  for (let i = 0; i < 10; i++) {
+    got = nameFields(parse(await snapOf(w))).filter((n) => n.value)
+    if (got.length && got.every((n) => n.value === name && n.value.length < VALUE_CHARS)) { rec.confirmed = true; return }
+    await sleep(40)
+  }
+  const off = got.find((n) => n.value !== name && n.value.length < VALUE_CHARS)
+  if (off) throw new Surprise(`${said} did not replace the text of field "${off.name}" in "${w.title}"${secret ? '' : `, which reads "${off.value}"`}, so it was not submitted`, await seen())
+  throw new Surprise(`${said} was typed into the file name field of "${w.title}", and the field's whole value could not be read back, so it was not submitted`, await seen())
+}
 async function echoed(w: Win, line: string, shown: Map<string, Text> | null) {
   let left = 'and it could not be erased: clear it by hand'
   try {
@@ -915,11 +938,12 @@ async function typingInto(want: Focus, w: Win | null) {
   }
 }
 
+function focusOf(nodes: desk.El[]) { return nodes.filter((n) => n.depth > 0 && n.states.includes('focused')).at(-1) }
 async function focusMiss(want: Focus, w: Win | null): Promise<string | null> {
   const said = want.role ? `${want.role} "${want.name ?? ''}"${want.frame ? ` in a ${want.frame}` : ''}` : 'a password field'
   let nodes: desk.El[] = []
   try { if (w) nodes = (await snapOf(w)).nodes } catch {}
-  const f = nodes.filter((n) => n.depth > 0 && n.states.includes('focused')).at(-1)
+  const f = focusOf(nodes)
   if (!f || !w) return `the recording typed into ${said}, and no focused element can be read now, so the text could go anywhere`
   if ((want.role && (f.role !== want.role || norm(f.name) !== norm(want.name ?? ''))) || (want.frame && w.role !== want.frame)) return `the recording typed into ${said}, and the focus is on ${f.role} "${f.name}" in the ${w.role} "${w.title}" now`
   if (want.secure && !f.states.includes('protected')) return `the recording typed into a password field, and the focused ${f.role} "${f.name}" in the ${w.role} "${w.title}" is not one, so the text would show`
@@ -1077,6 +1101,7 @@ async function act(n: Node) {
     const r = await desk.press(n.id); pressedId = n.id
     if (!r.ok) throw new Surprise(`"${n.name}" took no ${r.how}`, await seen())
     if (BG && r.unverified) unheard ??= r.unverified
+    noop ||= nooped(r)
     if (OS === 'linux' && (r.how === 'action' || r.how === 'select')) actioned = true
     return r.how
   })
@@ -1087,7 +1112,7 @@ async function choose(nodes: Node[], n: Node, rec: { via?: string }, open = fals
   const mods = n.shortcut.split('+').slice(0, -1)
   if (OS !== 'darwin' && n.shortcut && (mods.some((x) => x !== 'shift') || /^f\d+$/.test(n.shortcut)) && await timed('act', async () => {
     if (open) for (const _ of menus(nodes, n.parent)) await desk.key('Escape', at(w))
-    try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; rec.via = 'shortcut'; return true } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e; return false }
+    try { const k = await desk.key(n.shortcut, at(w)); if (BG && k.unverified) unheard ??= k.unverified; noop ||= nooped(k); rec.via = 'shortcut'; return true } catch (e: unknown) { if (e instanceof Error && (MAY_HAVE_RUN.some((x) => e.message.includes(x)) || e.message.startsWith('declined by the user'))) throw e; return false }
   })) return
   rec.via = await act(n)
 }
@@ -1374,10 +1399,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (secretIn(was)) sealStep()
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
-    if (chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type)) await selectLine(w)
-    const text = sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
+    const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = named && OS === 'win32' && BG
+    if (erase && /[\r\n]/.test(s.type.replace(/\r?\n$/, ''))) throw new Surprise(`the file name for "${w?.title}" holds a line break, and a file name never does, so nothing was typed`, await seen())
+    if (erase && w) await eraseName(w, pre ?? {}); else if (named) await selectLine(w)
+    const text = erase ? s.type.replace(/\r?\n$/, '') : sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
+    if (erase && w) await nameShown(w, text, rec, secure(s))
     if (w && secure(s) && sent?.terminal && !sent.unverified) throw await echoed(w, line, null)
     if (held && w) { const now = await settled(w); if (shows(was, now, line, true)) throw await echoed(w, line, now) }
     if (held) heard(await desk.key('Return', at(w)), rec, s)
@@ -1572,7 +1600,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
       rec.confirmed = true; return
     }
     const opened = rec.opened ?? 0
-    if (BG) { for (let k = 0; k < opened; k++) await desk.key('Escape', at(w)); throw new Surprise(`the state of "${hit.n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen()) }
+    if (BG && (!AUTO || opened)) { for (let k = 0; k < opened; k++) await desk.key('Escape', at(w)); throw new Surprise(`the state of "${hit.n.name}" needs a look at the screen: ${NO_PIXELS}`, await seen()) }
+    if (BG) await front(w)
     if (!opened) for (const q of chain) { await act(q); await sleep(120) }
     const on = await cropState(hit.n); rec.was = on; rec.state = 'vision'
     if (on === s.on) { for (let k = 0; k < (opened || chain.length); k++) await desk.key('Escape', at(w)); rec.noop = true; return }
@@ -1587,7 +1616,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, {}, true)
     if (BG) await front(w)
     const [x, y] = await spot(s.recorded, target, w, rec)
-    t0 = Date.now(); await desk.click(x, y, { ...pointer(s), ...at(w) }); tick('act', t0)
+    t0 = Date.now(); if (nooped(await desk.click(x, y, { ...pointer(s), ...at(w) }))) noop = true; tick('act', t0)
     if (!s.recorded) rec.unsaved = true
     await settle(w.title); return
   }
@@ -1612,6 +1641,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (c?.check === 'covered-hit' || c?.check === 'foreign-hit') throw new Surprise(`the centre of ${rec.ref} is on ${told(c)}, so the click was not sent`, await seen())
     t0 = Date.now(); const sent = await desk.click(x, y, { ...pointer(s), ...into }); pressedId = hit.n.id; tick('act', t0)
     if (BG && sent.unverified) unheard ??= sent.unverified
+    noop ||= nooped(sent)
     await settle(w.title); return
   }
   if (s.click && hit.n.role === 'menuitem') {

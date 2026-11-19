@@ -22,8 +22,8 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, launch_name, runs_app, text_runs,
-    without_protocol_tail, xtest,
+    BUSY, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, launch_name, runs_app,
+    text_runs, without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
@@ -78,7 +78,7 @@ const AFTER_CLICK: &str =
     "or a verified same-process post-action window was not foreground after the click";
 const CLICK_TOOLS: [&str; 3] = ["click", "double_click", "right_click"];
 const FRONT_ACTUAL: &str = "actual foreground HWND 0x";
-const OWN_POPUP: &str = "sent; a window of the same app took the foreground after it, as a context menu's host does: confirm its effect in the screenshot";
+const OWN_POPUP: &str = "sent; a window of the same app took the foreground after it, as a context menu's host or the app's own window after a closed menu does: confirm its effect";
 const HIT_REFUSALS: [&str; 3] = [
     "hit_mismatch",
     "foreground_unavailable",
@@ -432,6 +432,17 @@ impl Computer {
         if let Some(p) = pressed.as_mut().and_then(Value::as_object_mut) {
             p.remove("verify_hit");
         }
+        let owner = (self.os == Os::Windows && CLICK_TOOLS.contains(&tool))
+            .then(|| {
+                req["pid"]
+                    .as_u64()
+                    .and_then(|p| u32::try_from(p).ok())
+                    .or_else(|| {
+                        let (x, y) = req["x"].as_f64().zip(req["y"].as_f64())?;
+                        pid_at_point(x, y)
+                    })
+            })
+            .flatten();
         let mut refused = None;
         let mut result = match pressed {
             Some(mut pressed) if req.get("verify_hit").is_some() => {
@@ -465,8 +476,17 @@ impl Computer {
             },
         };
         if let Err(e) = &result
-            && let Some(note) = own_popup_front(e, same_process)
+            && let Some(note) = own_popup_front(e, owner, window_pid)
         {
+            result = Ok(json!({"content": [{"type": "text", "text": note}]}));
+        }
+        if let Err(e) = &result
+            && tool == "press_key"
+            && e.contains(WINDOW_GONE)
+        {
+            let key = a.key.as_deref().unwrap_or_default();
+            let note =
+                format!("the window closed while {key} was sent, so it may have reached it: {e}");
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
         }
         if let Some(typed) = typed
@@ -2653,10 +2673,11 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 }
 
 /// The note for a Windows click the driver calls `foreground_unavailable` because a window of the target's own process, such as Explorer's context-menu host, took the foreground after it.
-fn own_popup_front(e: &str, same: fn(i64, i64) -> bool) -> Option<String> {
+pub(crate) fn own_popup_front(e: &str, before: Option<u32>, pid: fn(i64) -> u32) -> Option<String> {
     let (target, actual) = front_pair(e)?;
     let tool = e.split(':').next()?;
-    same(target, actual).then(|| format!("{tool} {OWN_POPUP}"))
+    let owner = before.unwrap_or_else(|| pid(target));
+    (owner != 0 && pid(actual) == owner).then(|| format!("{tool} {OWN_POPUP}"))
 }
 
 fn front_pair(e: &str) -> Option<(i64, i64)> {
@@ -2677,13 +2698,23 @@ fn front_pair(e: &str) -> Option<(i64, i64)> {
 }
 
 #[cfg(windows)]
-fn same_process(a: i64, b: i64) -> bool {
-    crate::uia::same_process(a, b)
+pub(crate) fn window_pid(w: i64) -> u32 {
+    crate::uia::window_pid(w)
 }
 
 #[cfg(not(windows))]
-fn same_process(_: i64, _: i64) -> bool {
-    false
+pub(crate) fn window_pid(_: i64) -> u32 {
+    0
+}
+
+#[cfg(windows)]
+pub(crate) fn pid_at_point(x: f64, y: f64) -> Option<u32> {
+    crate::uia::pid_at_point(x as i32, y as i32)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn pid_at_point(_: f64, _: f64) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]
@@ -2722,11 +2753,29 @@ mod tests {
     fn a_windows_post_click_foreground_of_the_targets_own_process_reads_as_sent_and_any_other_stays_refused()
      {
         let e = "click: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)";
-        let pair = |target: i64, actual: i64| target == 0x100f2 && actual == 0x9029a;
-        assert_eq!(own_popup_front(e, pair), Some(format!("click {OWN_POPUP}")));
-        assert_eq!(own_popup_front(e, |_, _| false), None);
+        let live = |w: i64| if w == 0x100f2 || w == 0x9029a { 7 } else { 0 };
+        let other = |w: i64| if w == 0x100f2 { 7 } else { 9 };
+        assert_eq!(
+            own_popup_front(e, None, live),
+            Some(format!("click {OWN_POPUP}"))
+        );
+        assert_eq!(own_popup_front(e, None, other), None);
+        assert_eq!(own_popup_front(e, None, |_| 0), None);
         let pre = "click: foreground_unavailable: Windows did not activate exact target HWND 0x100f2 (actual foreground HWND 0x9029a); no mouse input was sent";
-        assert_eq!(own_popup_front(pre, |_, _| true), None);
+        assert_eq!(own_popup_front(pre, Some(7), |_| 7), None);
+    }
+
+    #[test]
+    fn a_windows_post_click_foreground_whose_target_closed_reads_as_sent_only_for_the_process_clicked_before()
+     {
+        let e = "click: foreground_unavailable: exact target HWND 0x420264 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x1f0236)";
+        let closed = |w: i64| if w == 0x1f0236 { 7 } else { 0 };
+        assert_eq!(
+            own_popup_front(e, Some(7), closed),
+            Some(format!("click {OWN_POPUP}"))
+        );
+        assert_eq!(own_popup_front(e, Some(8), closed), None);
+        assert_eq!(own_popup_front(e, None, closed), None);
     }
 
     #[cfg(unix)]
@@ -3068,6 +3117,48 @@ mod tests {
         );
         assert!(!out.text.contains("type_text: type_text"), "{}", out.text);
         driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_windows_key_to_an_element_whose_window_closes_while_it_is_sent_says_it_may_have_reached_it()
+     {
+        let gone = "Invalid window handle. (0x80070578)";
+        let stale = "window_id 9 is closed, stale, or invalid.";
+        for (error, ok) in [(gone, true), (stale, false)] {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = endpoint(dir.path());
+            let listener = Fake::bind(&socket).unwrap();
+            let driver = tokio::spawn(listener.serve(move |req| {
+                match req["name"].as_str().unwrap_or_default() {
+                    "list_windows" => {
+                        json!({"ok": true, "result": {"structuredContent": {"windows": [{"pid": 7, "window_id": 9, "app_name": "Notepad.exe", "title": "Save as", "bounds": {"x": 0.0, "y": 0.0, "width": 800.0, "height": 600.0}, "z_index": 1}]}}})
+                    }
+                    "get_window_state" => {
+                        json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": "Button", "label": "Save", "enabled": true, "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
+                    }
+                    "press_key" => {
+                        json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": error}]}})
+                    }
+                    _ => json!({"ok": true, "result": {"structuredContent": {}}}),
+                }
+            }));
+            let cua = cua_on(&socket, Os::Windows);
+            cua.state(json!({"pid": 7})).await.unwrap();
+            let out = cua
+                .act(json!({"action": "key", "key": "Return", "element": 0}))
+                .await
+                .unwrap();
+            driver.abort();
+            let want = if ok {
+                format!(
+                    "the window closed while return was sent, so it may have reached it: press_key: {gone}"
+                )
+            } else {
+                format!("press_key: {stale}")
+            };
+            assert_eq!(out.is_error, !ok, "{}", out.text);
+            assert!(out.text.starts_with(&want), "{}", out.text);
+        }
     }
 
     #[tokio::test]

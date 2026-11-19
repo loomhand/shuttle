@@ -115,7 +115,7 @@ impl Shown {
 }
 
 /// Runs the controls on this thread until the process exits.
-pub fn run(ui: Ui) -> ! {
+pub fn run(ui: Ui, _serving: std::thread::JoinHandle<()>) -> ! {
     let shown = SHOWN.get_or_init(|| Shown {
         controls: ui.controls,
         stop_label: Mutex::new(ui.stop_label),

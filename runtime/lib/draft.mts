@@ -21,6 +21,7 @@ const NAMED_ROLES = new Set(['button', 'checkbox', 'radio', 'tab', 'link', 'swit
 const CAPTION = 'The image is a crop of a screen; a red ring with four ticks marks the point a user clicked. Name the control under the ring as a short noun phrase a person would use to find it on screen, such as: the Save button. At most 8 words; answer with the phrase only.'
 const RING_PT = 14
 const CAPTIONS_AT_ONCE = 4
+const CAPTION_MS = 75_000
 
 /** Turns a recording into a draft gui_plan, with `params` for the typed values the caller names. */
 export async function main(p: Params): Promise<Draft> {
@@ -29,8 +30,7 @@ export async function main(p: Params): Promise<Draft> {
   const templ = (s: string) => examples.reduce((out, [k, v]) => out.split(v).join(`{{${k}}}`), s)
   const draft: Draft = { id: p.recording.id, apps: p.recording.apps ?? [], params, steps: [], notes: [], gaps: [] }
   const events = p.recording.events
-  const slot = pool(CAPTIONS_AT_ONCE)
-  const captions = new Map(events.flatMap((e) => e.kind === 'click' && e.crop && !own(e) ? [[e, slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], e.element?.role))] as const] : []))
+  const until = Date.now() + CAPTION_MS
   const seen = new Set<string>()
   let typed = ''; let secrets = 0; let secret = false; let filled = false
   let into: Field | null | undefined
@@ -57,6 +57,11 @@ export async function main(p: Params): Promise<Draft> {
     typed = ''; secret = false; into = undefined
   }
   const input = (e: Event) => e.kind === 'click' || e.kind === 'key' || e.kind === 'password'
+  const doubled = (e: Event, i: number) => { const n = events.find((x, j) => j > i && input(x)); return n?.kind === 'click' && (n.count ?? 1) > 1 && near(n, e) }
+  const slot = pool(CAPTIONS_AT_ONCE)
+  const unnamed = (e: Event) => e.kind === 'click' && !!e.crop && !own(e)
+  const captionOf = (e: Event) => slot(() => caption(e.crop ?? '', e.crop_scale ?? 1, e.crop_offset ?? [0, 0], until, e.element?.role))
+  const captions = new Map(events.flatMap((e, i) => unnamed(e) && !doubled(e, i) ? [[e, captionOf(e)] as const] : []))
   const first = events.find(input)
   const app = events.find((e) => input(e) && e.app)?.app
   const opened = first ? windowOf(first) : undefined
@@ -114,8 +119,9 @@ export async function main(p: Params): Promise<Draft> {
         draft.steps.push({ menu, intent: `choose ${menu}` })
         continue
       }
-      const again = (e.count ?? 1) > 1 && clicked && draft.steps.at(-1) === clicked.step && Math.hypot((e.x ?? 0) - (clicked.e.x ?? 0), (e.y ?? 0) - (clicked.e.y ?? 0)) <= 4
+      const again = (e.count ?? 1) > 1 && clicked && draft.steps.at(-1) === clicked.step && near(e, clicked.e)
       if (again) draft.steps.pop()
+      else if (clicked && unnamed(clicked.e) && !captions.has(clicked.e)) Object.assign(clicked.step, click(clicked.e, templ, await captionOf(clicked.e)))
       clicked = { e, step: click(e, templ, await captions.get(e)) }
       draft.steps.push(clicked.step)
       filled = !!e.secret
@@ -144,6 +150,10 @@ function windowOf(e: Event) {
   return (typeof e.window === 'object' ? e.window.title : e.focus?.window) || undefined
 }
 
+function near(a: Event, b: Event) {
+  return Math.hypot((a.x ?? 0) - (b.x ?? 0), (a.y ?? 0) - (b.y ?? 0)) <= 4
+}
+
 function own(e: Event) {
   return !e.root && e.element?.name ? e.element.name : ''
 }
@@ -170,11 +180,15 @@ function click(e: Event, templ: (s: string) => string, captioned = ''): Step {
   }
 }
 
-async function caption(crop: string, scale: number, [dx, dy]: [number, number], role?: string): Promise<string> {
+async function caption(crop: string, scale: number, [dx, dy]: [number, number], until: number, role?: string): Promise<string> {
+  const left = until - Date.now()
+  if (left <= 0) return ''
+  let timer: NodeJS.Timeout | undefined
   try {
     const img = unpng(Buffer.from(crop, 'base64'))
     const marked = ring(img, Math.round(img.w / 2 + dx * scale), Math.round(img.h / 2 + dy * scale), Math.round(RING_PT * scale))
     const kind = role && role !== 'generic' && role !== 'document' ? ` The accessibility tree calls it a ${role} with no name.` : ''
-    return ((await desk.ask(`${CAPTION}${kind}`, marked)).trim().split('\n')[0] ?? '').slice(0, 80).trim().replace(/[."]+$/g, '').replace(/^"/, '')
-  } catch { return '' }
+    const late = new Promise<string>((done) => { timer = setTimeout(done, left, '') })
+    return ((await Promise.race([desk.ask(`${CAPTION}${kind}`, marked), late])).trim().split('\n')[0] ?? '').slice(0, 80).trim().replace(/[."]+$/g, '').replace(/^"/, '')
+  } catch { return '' } finally { clearTimeout(timer) }
 }

@@ -8,6 +8,7 @@ use crate::model::{Access, Act, Extras, Frame, Node};
 pub(crate) const MENU_POLL: Duration = Duration::from_millis(30);
 pub(crate) const MENU_POLLS: u32 = 10;
 pub(crate) const BACKGROUND_NO_POINT: &str = "background input: the element shows no point to click in its window, and on Windows its UI Automation action would bring the window to the front";
+pub(crate) const ACT_TIMED_OUT: &str = "the app did not answer the action within 2 s, as when the action opens a modal dialog; it may have taken effect: read the window before acting again";
 
 const PRESSABLE_ROLES: [&str; 4] = ["button", "checkbox", "switch", "link"];
 const SELECTED_ROLES: [&str; 5] = ["tab", "option", "radio", "listitem", "treeitem"];
@@ -33,11 +34,7 @@ pub(crate) fn plan_press<B: Access>(
     let uia_behind = background && os == Os::Windows;
     let mut node = b.node(id, Extras::BOUNDS, 0)?;
     let click_first = os == Os::Windows && node.role == "treeitem";
-    if SELECTED_ROLES.contains(&node.role)
-        && !click_first
-        && !uia_behind
-        && b.act(id, Act::Select).unwrap_or(false)
-    {
+    if SELECTED_ROLES.contains(&node.role) && !click_first && !uia_behind && select(b, id)? {
         return Ok(Press::Selected);
     }
     if node.role.starts_with("menuitem") && !linux && !uia_behind {
@@ -72,7 +69,7 @@ pub(crate) fn plan_press<B: Access>(
     if uia_behind {
         return Err(BACKGROUND_NO_POINT.to_owned());
     }
-    if click_first && b.act(id, Act::Select).unwrap_or(false) {
+    if click_first && select(b, id)? {
         return Ok(Press::Selected);
     }
     Ok(Press::Acted(b.act(id, Act::Action)?))
@@ -126,6 +123,13 @@ fn open_menus<B: Access>(b: &mut B, chain: &[String]) -> bool {
         let _ = b.act(menu, Act::Action);
     }
     start < chain.len()
+}
+
+fn select<B: Access>(b: &mut B, id: &str) -> Result<bool, String> {
+    match b.act(id, Act::Select) {
+        Err(e) if e != ACT_TIMED_OUT => Ok(false),
+        r => r,
+    }
 }
 
 fn reachable<B: Access>(
@@ -572,6 +576,35 @@ mod tests {
         let err = plan_press(&mut f, "slow", Os::Mac, true).unwrap_err();
         assert!(err.contains("timed out"), "{err}");
         assert_eq!(f.acts, [("slow".to_owned(), Act::Action)]);
+    }
+
+    #[test]
+    fn a_windows_select_the_app_does_not_answer_stops_the_press_with_nothing_more_sent() {
+        let mut f = notepad();
+        f.add(
+            "stuck",
+            Some("w"),
+            "listitem",
+            &["showing"],
+            Some([10, 200, 60, 30]),
+        );
+        f.hits.insert((40, 215), "stuck".into());
+        assert_eq!(
+            plan_press(&mut f, "stuck", Os::Windows, false).unwrap_err(),
+            ACT_TIMED_OUT
+        );
+        f.add("stuck", Some("w"), "treeitem", &[], Some([10, 200, 60, 30]));
+        assert_eq!(
+            plan_press(&mut f, "stuck", Os::Windows, false).unwrap_err(),
+            ACT_TIMED_OUT
+        );
+        assert_eq!(
+            f.acts,
+            [
+                ("stuck".to_owned(), Act::Select),
+                ("stuck".to_owned(), Act::Select)
+            ]
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { test, type TestContext } from 'node:test'
 
-import { daemon, notepad, user } from './daemon.mts'
+import { daemon, gray, notepad, user } from './daemon.mts'
 import type { Call, W } from './daemon.mts'
 
 type Lib = typeof import('../lib/gui_plan.mts')
@@ -184,26 +184,71 @@ test('a field auto cannot read is never typed into again in the foreground', asy
   assert.equal(calls.filter((c) => c.tool === 'desk_type').length, 1)
 })
 
-test('a menu state that needs pixels is refused in the background under auto before any menu opens', { skip: process.platform === 'darwin' }, async (t) => {
+test('a menu state that needs pixels is refused in the background before any menu opens, and under auto brings the window to the front and is read by pixels', { skip: process.platform === 'darwin' }, async (t) => {
   const nodes = [
     { ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: 'Untitled - Notepad', states: [] },
     { ref: 1, id: 'mb', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
     { ref: 2, id: 'm', parent: 1, depth: 2, role: 'menu', name: 'View', states: ['showing'], bounds: [10, 0, 40, 20] },
     { ref: 3, id: 's', parent: 2, depth: 3, role: 'menuitem', name: 'Status bar', states: ['showing'], bounds: [10, 30, 80, 20] },
   ]
+  const plan = async (main: Plan) => {
+    const ws = [user(), notepad()]
+    const calls: Call[] = []
+    await daemon(t, (c) => {
+      calls.push(c)
+      if (c.tool === 'desk_windows') return JSON.stringify(ws)
+      if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
+      if (c.tool === 'desk_focus') { ws[0] = { ...user(), active: false }; ws[1] = { ...notepad(), active: true }; return JSON.stringify({ ok: true, title: ws[1].title, pid: 4 }) }
+      if (c.tool === 'desk_press') return JSON.stringify({ ok: true, how: 'action' })
+      if (c.tool === 'desk_read') return JSON.stringify(nodes.find((n) => n.id === c.args.id))
+      if (c.tool === 'desk_screen') return JSON.stringify({ width: 1280, height: 800 })
+      if (c.tool === 'desk_shot') return { text: '', image: gray(160, 28).toString('base64') }
+      if (c.tool === 'model_ask') return JSON.stringify({ text: '{"on": false}', usage: { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 } })
+      return '{"ok":true}'
+    })
+    return { r: await main({ steps: [{ app: 'Notepad' }, { menu: 'View > Status bar', on: true }] }), calls }
+  }
+  const bg = await plan(background)
+  assert.equal(bg.r.ok, false)
+  assert.match(String(bg.r.escalate?.reason), /does not read the screen/)
+  assert.deepEqual(bg.calls.filter((c) => c.tool === 'desk_press'), [])
+  assert.ok(!bg.calls.some((c) => c.tool === 'desk_focus' || c.tool === 'desk_shot'))
+  const au = await plan(auto)
+  assert.equal(au.r.ok, true, JSON.stringify(au.r))
+  const sent = au.calls.filter((c) => ['desk_key', 'desk_focus', 'desk_press', 'model_ask'].includes(c.tool)).map((c) => c.tool === 'desk_press' ? `press ${String(c.args.id)}` : c.tool)
+  assert.deepEqual(sent, ['desk_focus', 'press m', 'model_ask', 'press s'])
+  assert.deepEqual(au.calls.find((c) => c.tool === 'desk_focus')?.args, { window: 'Untitled - Notepad', pid: 4 })
+  assert.deepEqual(au.r.trace?.[1], { ...au.r.trace?.[1], input: 'foreground', was: 'off' })
+  assert.deepEqual(au.r.caveats?.map((c) => c.step), [1], JSON.stringify(au.r))
+})
+
+test('a Windows menu toggle that needs pixels is still refused under auto once a background press opened its menu, and the menu is closed', { skip: process.platform !== 'win32' }, async (t) => {
+  const state = { open: false }
+  const nodes = () => [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: notepad().title, states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menubar', name: 'Application', states: ['showing'] },
+    { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 0, 40, 20] },
+    ...(state.open ? [
+      { ref: 3, id: 'p/1', parent: 0, depth: 1, role: 'menu', name: 'View', states: ['showing'], bounds: [100, 20, 140, 44] },
+      { ref: 4, id: 'p/2', parent: 3, depth: 2, role: 'menuitem', name: 'Status Bar', states: ['showing'], bounds: [100, 20, 140, 22] },
+    ] : []),
+  ]
   const calls: Call[] = []
   await daemon(t, (c) => {
     calls.push(c)
     if (c.tool === 'desk_windows') return JSON.stringify([user(), notepad()])
-    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes, truncated: false })
-    if (c.tool === 'desk_press') return JSON.stringify({ ok: true, how: 'action' })
+    if (c.tool === 'desk_snapshot') return JSON.stringify({ window: notepad(), nodes: nodes(), truncated: false })
+    if (c.tool === 'desk_press') { state.open ||= c.args.id === '1/3'; return JSON.stringify({ ok: true, how: 'click' }) }
+    if (c.tool === 'desk_key' && c.args.keys === 'Escape') state.open = false
     return '{"ok":true}'
   })
-  const r = await auto({ steps: [{ app: 'Notepad' }, { menu: 'View > Status bar', on: true }] })
+  const r = await auto({ steps: [{ app: 'Notepad' }, { menu: 'View > Status Bar', on: false }] })
   assert.equal(r.ok, false)
-  assert.match(String(r.escalate?.reason), /does not read the screen/)
-  assert.deepEqual(calls.filter((c) => c.tool === 'desk_press'), [])
-  assert.ok(!calls.some((c) => c.tool === 'desk_focus' || c.tool === 'desk_shot'))
+  assert.match(String(r.escalate?.reason), /needs a look at the screen/)
+  assert.deepEqual(calls.filter((c) => c.tool === 'desk_press').map((c) => c.args.id), ['1/3'])
+  assert.deepEqual(pressed(calls), ['Escape'])
+  assert.ok(!calls.some((c) => c.tool === 'desk_focus' || c.tool === 'desk_shot' || c.tool === 'model_ask'))
+  assert.equal(state.open, false)
 })
 
 test('a window that shows auto no field to read is never typed into again in the foreground', async (t) => {

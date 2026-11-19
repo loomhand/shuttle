@@ -20,7 +20,7 @@ function screen(w: number, h: number, at: [number, number]): Buffer {
 
 type Seen = { clicks: string[]; grounds: number; shots: number }
 
-async function canvas(t: TestContext, o: { shown: Buffer; look?: number; title?: (s: Seen) => string; bounds?: [number, number, number, number] }): Promise<Seen> {
+async function canvas(t: TestContext, o: { shown: Buffer; look?: number; title?: (s: Seen) => string; bounds?: [number, number, number, number]; effect?: string }): Promise<Seen> {
   const seen: Seen = { clicks: [], grounds: 0, shots: 0 }
   const win = () => ({ id: '1/1', title: o.title?.(seen) ?? 'Canvas', role: 'window', pid: process.pid, active: true, app: 'Browser', bounds: o.bounds ?? [0, 0, 800, 600] })
   await daemon(t, ({ tool, args }) => {
@@ -37,7 +37,7 @@ async function canvas(t: TestContext, o: { shown: Buffer; look?: number; title?:
       const answers = Object.fromEntries(Object.keys(a.questions).map((k) => [k, a.questions[k]?.type === 'noul' ? { probability: o.look ?? 0.95 } : { choice: 'none', confidence: 1, probabilities: { none: 1 } }]))
       return JSON.stringify({ answers, served: { model: 'm', build: BUILD, id: null }, usage })
     }
-    if (tool === 'desk_click') seen.clicks.push(`${args.x},${args.y}`)
+    if (tool === 'desk_click') { seen.clicks.push(`${args.x},${args.y}`); if (o.effect) return JSON.stringify({ ok: true, effect: o.effect }) }
     return '{"ok":true}'
   })
   return seen
@@ -50,6 +50,14 @@ test('a recorded click with no element under it finds its recorded crop where th
   const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: crop(), at: [160, 130], size: [800, 600], root: true } }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([seen.clicks, seen.grounds, r.trace?.[0]?.how], [['360,280'], 0, 'crop'])
+})
+
+test('a click found on the screen that the driver suspects changed nothing carries the caveat', async (t) => {
+  const seen = await canvas(t, { shown: screen(800, 600, [300, 250]), effect: 'suspected_noop' })
+  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop: crop(), root: true } }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.clicks, r.trace?.[0]?.how], [['360,280'], 'crop'])
+  assert.deepEqual(r.caveats, [{ step: 0, note: 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect' }], JSON.stringify(r))
 })
 
 test('a recorded crop taken at twice the desk scale matches a screen at desk scale', async (t) => {

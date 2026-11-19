@@ -1009,6 +1009,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_click_in_a_sheet_keeps_its_window_and_no_crop() {
+        for (listed, named, bounds) in [
+            ("Save", "Save", Value::Null),
+            ("Untitled", "", json!([10, 20, 300, 200])),
+        ] {
+            let desk = Desk {
+                sheets: vec![
+                    json!({"id": "7/2", "title": listed, "role": "dialog", "pid": 7, "active": true, "app": "TextEdit", "owner": "7/1"}),
+                ],
+                ..Desk::new(Value::Null)
+            };
+            let save = Input::Click {
+                x: 100.0,
+                y: 80.0,
+                right: false,
+                count: 1,
+                mods: Vec::new(),
+                found: Some(Hit {
+                    role: "button",
+                    pid: Some(7),
+                    path: vec![("dialog", named.into()), ("window", "Untitled".into())],
+                    ..Hit::default()
+                }),
+            };
+            let r = run(&desk, &[], vec![save]).await;
+            let e = &r["events"][0];
+            assert_eq!(
+                e["window"],
+                json!({"title": listed, "bounds": bounds}),
+                "{e}"
+            );
+            assert!(e["crop"].is_null(), "{e}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_click_in_one_of_two_windows_of_one_title_keeps_the_window_under_it_and_no_crop() {
         let desk = Desk {
             more: vec![
@@ -1465,6 +1501,7 @@ mod tests {
     struct Desk {
         front: Mutex<&'static str>,
         hit: Value,
+        sheets: Vec<Value>,
         more: Vec<Value>,
         shots: Mutex<Vec<Value>>,
         webs: Mutex<Vec<Value>>,
@@ -1476,6 +1513,7 @@ mod tests {
             Self {
                 front: Mutex::new("Untitled"),
                 hit,
+                sheets: Vec::new(),
                 more: Vec::new(),
                 shots: Mutex::default(),
                 webs: Mutex::default(),
@@ -1489,16 +1527,14 @@ mod tests {
             let front = *lock(&self.front);
             match call.tool.as_str() {
                 "desk_windows" => {
-                    let mut listed = json!([
-                        {"id": "7/1", "title": front, "role": "window", "pid": 7, "active": true, "app": "TextEdit", "bounds": [10, 20, 300, 200]},
-                        {"id": "9/1", "title": "Vault", "role": "window", "pid": 9, "active": false, "app": "1Password"},
-                        {"id": "5/1", "title": "未命名", "role": "window", "pid": 5, "active": false, "app": "文本编辑", "bundle": "TextEdit"},
+                    let mut listed = self.sheets.clone();
+                    listed.extend([
+                        json!({"id": "7/1", "title": front, "role": "window", "pid": 7, "active": self.sheets.is_empty(), "app": "TextEdit", "bounds": [10, 20, 300, 200]}),
+                        json!({"id": "9/1", "title": "Vault", "role": "window", "pid": 9, "active": false, "app": "1Password"}),
+                        json!({"id": "5/1", "title": "未命名", "role": "window", "pid": 5, "active": false, "app": "文本编辑", "bundle": "TextEdit"}),
                     ]);
-                    listed
-                        .as_array_mut()
-                        .unwrap()
-                        .extend(self.more.iter().cloned());
-                    Output::text(listed.to_string())
+                    listed.extend(self.more.iter().cloned());
+                    Output::text(Value::Array(listed).to_string())
                 }
                 "desk_at" if call.args["x"].is_i64() && call.args["y"].is_i64() => {
                     match &self.hit {

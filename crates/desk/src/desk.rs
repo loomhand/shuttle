@@ -23,6 +23,7 @@ use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, frame_of};
 use crate::auto;
+use crate::computer::{own_popup_front, pid_at_point, window_pid};
 use crate::driver::{
     CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
 };
@@ -69,6 +70,7 @@ pub(crate) const RAISE_WAIT: Duration = Duration::from_millis(500);
 pub(crate) const WAIT_POLL: Duration = Duration::from_millis(10);
 pub(crate) const BUSY: &str = "desk busy: a previous action is still running";
 pub(crate) const CLOSE_UNANSWERED: &str = "the app was sent the close and did not answer within 500 ms, so the window may still be closing, be asking to save, or not respond: read the window list before closing again";
+pub(crate) const WINDOW_GONE: &str = "(0x80070578)";
 #[cfg(target_os = "linux")]
 pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
@@ -94,7 +96,6 @@ const TITLE_BAR: f64 = 48.0;
 
 const OTHER_DISPLAY: &str =
     "; name the window with `window` to capture a window on another display";
-const WINDOW_GONE: &str = "(0x80070578)";
 const OUTSIDE_WINDOW: &str = "the point is outside the window the call's pid or app picks, so nothing was sent: name the window the point is in, or leave pid and app out to reach the window under the point";
 const NO_WINDOW_UNDER: &str =
     "no window under the point, and the app allowlist admits only windows";
@@ -1081,14 +1082,26 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     times - left - 1
                 ));
             }
-            self.send(tool, req.clone(), to, &mut note)
-                .await
-                .map_err(|e| match times - left - 1 {
-                    0 => e,
-                    sent => format!(
-                        "{sent} of {times} presses were sent, then this stopped the rest: {e}"
-                    ),
-                })?;
+            match self.send(tool, req.clone(), to, &mut note).await {
+                Err(e) if left == 0 && e.contains(WINDOW_GONE) => {
+                    let gone = format!(
+                        "the window closed while {} was sent, so it may have reached it: {e}",
+                        a.keys
+                    );
+                    note = Some(match note.take() {
+                        Some(n) => format!("{n}; {gone}"),
+                        None => gone,
+                    });
+                }
+                done => {
+                    done.map_err(|e| match times - left - 1 {
+                        0 => e,
+                        sent => format!(
+                            "{sent} of {times} presses were sent, then this stopped the rest: {e}"
+                        ),
+                    })?;
+                }
+            }
         }
         Ok(ok_with(note))
     }
@@ -1608,8 +1621,13 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.bg() {
             return Err(BACKGROUND_NO_WINDOW.to_owned());
         }
-        self.call("click", desktop(req)).await?;
-        Ok(None)
+        let before = point
+            .filter(|_| self.os == Os::Windows)
+            .and_then(|(x, y)| pid_at_point(x, y));
+        match self.call("click", desktop(req)).await {
+            Err(e) => own_popup_front(&e, before, window_pid).map(Some).ok_or(e),
+            Ok(_) => Ok(None),
+        }
     }
 
     /// Refuses a point whose window, or the process on top there, the allowlist does not admit.
@@ -3369,6 +3387,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::model::{MAX_IDS, Tree, evict_ids, lookup};
+    use crate::press::ACT_TIMED_OUT;
     use crate::server::Handler;
 
     const PID_CALLS: [(&str, &str); 4] = [
@@ -4768,6 +4787,71 @@ pub(crate) mod tests {
                 .await
                 .unwrap_err();
             assert_eq!(err, want, "{key} {error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_windows_background_key_whose_last_press_meets_a_closed_window_says_it_may_have_reached_it()
+     {
+        let gone = "Invalid window handle. (0x80070578)";
+        let stale = "window_id 1 is closed, stale, or invalid.";
+        let note = format!(
+            "the window closed while escape was sent, so it may have reached it: press_key: {gone}"
+        );
+        for (repeat, from, error, want) in [
+            (1, 0, gone, Ok(note.clone())),
+            (2, 1, gone, Ok(note.clone())),
+            (1, 0, stale, Err(format!("press_key: {stale}"))),
+            (
+                2,
+                1,
+                stale,
+                Err(format!(
+                    "1 of 2 presses were sent, then this stopped the rest: press_key: {stale}"
+                )),
+            ),
+            (2, 0, gone, Err(format!("press_key: {gone}"))),
+            (
+                3,
+                1,
+                gone,
+                Err(format!(
+                    "1 of 3 presses were sent, then this stopped the rest: press_key: {gone}"
+                )),
+            ),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(notepad()),
+                GoneFrom(Behind(Arc::clone(&calls)), AtomicUsize::new(0), from, error),
+                Os::Windows,
+            )
+            .background(true);
+            let got = desk
+                .run(
+                    "desk_key",
+                    json!({"keys": "escape", "pid": 4, "repeat": repeat}),
+                )
+                .await
+                .map(|out| serde_json::from_str::<Value>(&out.text).unwrap());
+            match want {
+                Ok(note) => {
+                    let got = got.unwrap();
+                    assert_eq!(
+                        [&got["ok"], &got["unverified"]],
+                        [&json!(true), &json!(note)],
+                        "{repeat} {from} {error}: {got}"
+                    );
+                }
+                Err(want) => assert_eq!(got.unwrap_err(), want, "{repeat} {from} {error}"),
+            }
+            let presses = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(tool, _)| tool == "press_key")
+                .count();
+            assert_eq!(presses, from + 1, "{repeat} {from} {error}");
         }
     }
 
@@ -10569,6 +10653,9 @@ pub(crate) mod tests {
             if id == "slow" {
                 return Err("the action timed out".into());
             }
+            if id == "stuck" {
+                return Err(ACT_TIMED_OUT.into());
+            }
             if self.nodes.get(id).is_some_and(|(n, _)| n.role == "menu") {
                 self.opened = true;
             }
@@ -11076,6 +11163,18 @@ pub(crate) mod tests {
             let out = self.0.call(tool, args).await?;
             if tool == "press_key" && key {
                 return Err(format!("press_key: {}", self.2));
+            }
+            Ok(out)
+        }
+    }
+
+    struct GoneFrom(Behind, AtomicUsize, usize, &'static str);
+
+    impl Input for GoneFrom {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await?;
+            if tool == "press_key" && self.1.fetch_add(1, Ordering::SeqCst) >= self.2 {
+                return Err(format!("press_key: {}", self.3));
             }
             Ok(out)
         }
