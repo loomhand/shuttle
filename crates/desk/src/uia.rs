@@ -763,15 +763,17 @@ type Key = (i32, String, [i32; 4]);
 type Walked = (isize, bool, Vec<(String, Key)>);
 
 /// Whether the windows `a` and `b` belong to one process.
-pub(crate) fn same_process(a: i64, b: i64) -> bool {
-    let pid = |w: i64| {
-        let mut pid = 0u32;
-        // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
-        unsafe { GetWindowThreadProcessId(HWND(w as *mut core::ffi::c_void), Some(&raw mut pid)) };
-        pid
-    };
-    let (pa, pb) = (pid(a), pid(b));
-    pa != 0 && pa == pb
+pub(crate) fn window_pid(w: i64) -> u32 {
+    let mut pid = 0u32;
+    // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
+    unsafe { GetWindowThreadProcessId(HWND(w as *mut core::ffi::c_void), Some(&raw mut pid)) };
+    pid
+}
+
+pub(crate) fn pid_at_point(x: i32, y: i32) -> Option<u32> {
+    top_at(x, y)
+        .map(|w| window_pid(w as i64))
+        .filter(|&p| p != 0)
 }
 
 fn tried(r: windows::core::Result<()>) -> Option<Result<bool, String>> {
