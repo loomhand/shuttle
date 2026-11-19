@@ -181,9 +181,6 @@ tokio::task_local! {
     static SENT: Cell<usize>;
     static EFFECT: RefCell<Option<Value>>;
     static SCALE: Cell<Option<f64>>;
-}
-
-tokio::task_local! {
     pub(crate) static HUMAN: bool;
 }
 
@@ -279,7 +276,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     /// Runs desk call `tool`, a `desk_<verb>`; actions run one at a time, until their backend calls end, reads alongside them.
     pub async fn run(&self, tool: &str, args: Value) -> Result<Output, String> {
-        let human = args["human"] == true;
+        let human = match args.get("human") {
+            None => false,
+            Some(Value::Bool(b)) => *b,
+            Some(_) => return Err("human: expected a boolean".to_owned()),
+        };
         if !ACTIONS.contains(&tool) {
             return HUMAN.scope(human, self.run_one(tool, args)).await;
         }
@@ -2993,7 +2994,7 @@ pub(crate) async fn xtest(typer: Typer, text: &str, turn: Option<Turn>) -> Resul
     .map_err(|e| format!("XTest: {e}"))?
 }
 
-pub(crate) fn human() -> bool {
+fn human() -> bool {
     HUMAN.try_with(|h| *h).unwrap_or(false)
 }
 
@@ -8785,6 +8786,20 @@ pub(crate) mod tests {
                 ("click".to_owned(), click)
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_human_flag_that_is_no_boolean_is_refused_before_any_input() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux);
+        for human in [json!("true"), json!(1), json!(null)] {
+            let err = desk
+                .run("desk_click", json!({"x": 1.0, "y": 2.0, "human": human}))
+                .await
+                .unwrap_err();
+            assert_eq!(err, "human: expected a boolean");
+        }
+        assert!(calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
