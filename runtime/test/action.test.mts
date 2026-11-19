@@ -170,6 +170,27 @@ test('a foreground press or pointer click the driver suspects changed nothing ca
   assert.deepEqual(fell.caveats, NOOP, JSON.stringify(fell))
 })
 
+test('a foreground menu entry run by its shortcut that the driver suspects changed nothing carries the caveat', { skip: process.platform === 'darwin' }, async (t) => {
+  const doc = { id: '1', title: 'Untitled - Notepad', role: 'window', pid: 4, active: true }
+  const nodes = [
+    { ref: 0, id: '1/1', parent: -1, depth: 0, role: 'window', name: doc.title, states: ['showing'] },
+    { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'menubar', name: '', states: ['showing'] },
+    { ref: 2, id: '1/3', parent: 1, depth: 2, role: 'menu', name: 'File', states: ['showing'] },
+    { ref: 3, id: '1/4', parent: 2, depth: 3, role: 'menuitem', name: 'Export', states: ['showing'], shortcut: 'ctrl+e' },
+  ]
+  const keys: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([doc])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: doc, nodes, truncated: false })
+    if (tool === 'desk_key') { keys.push(String(args.keys)); if (args.keys === 'ctrl+e') return JSON.stringify({ ok: true, effect: 'suspected_noop' }) }
+    return '{"ok":true}'
+  })
+  const r = await plan({ steps: [{ click: 'Export' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(keys, ['Escape', 'ctrl+e'])
+  assert.deepEqual(r.caveats, [{ step: 0, note: 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect' }], JSON.stringify(r))
+})
+
 test('a dialog that opens half a second after the last step still stops the plan at its end', async (t) => {
   const doc = { id: '1', title: 'Untitled - Editor', role: 'window', pid: process.pid, active: true }
   const dialog = { id: '2', title: 'Confirm', role: 'dialog', pid: process.pid, active: true }
