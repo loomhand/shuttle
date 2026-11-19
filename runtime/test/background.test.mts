@@ -658,7 +658,7 @@ test('a Windows background name for a file chooser whose keyboard focus is on an
   for (const [focus, front, said] of [
     ['search', undefined, 'the keyboard focus of "Save as" is on searchbox "Search", not on its file name field, so nothing was typed'],
     ['none', 'owner', 'the keyboard focus of "Save as" is on no element it reports, not on its file name field, so nothing was typed'],
-    ['none', undefined, 'the file name field of "Save as" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it is clicked or comes back), so nothing was typed: run this step in the foreground or click the file name field first'],
+    ['none', undefined, 'the file name field of "Save as" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it comes back to the front), so nothing was typed: run this step in the foreground'],
   ] as const) {
     const d = saveAs('n93w7.txt', { focus, front })
     await daemon(t, d.reply)
