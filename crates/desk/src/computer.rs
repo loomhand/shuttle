@@ -32,6 +32,7 @@ use crate::model::Modal;
 #[cfg(target_os = "linux")]
 use crate::model::{Access, Extras, Node};
 use crate::press::{MENU_POLL, MENU_POLLS, libreoffice};
+use crate::screen::bgrx_rgb;
 #[cfg(target_os = "linux")]
 use crate::spi::Spi;
 use crate::still::{Block, VISIBLE_STEP};
@@ -274,8 +275,9 @@ impl Computer {
             }
         }
         // the capture comes last: a later get_window_state replaces the session's pixel-click context
-        let (image_b64, scale, screen) =
-            self.capture(&session, a.max_edge, a.workspace_only).await?;
+        let (image_b64, scale, screen) = self
+            .capture(&session, a.max_edge, a.workspace_only, true)
+            .await?;
         let mut head = String::from("Windows (frontmost first):\n");
         for w in &listed {
             let _ = writeln!(
@@ -520,7 +522,7 @@ impl Computer {
         let image_b64 = match session {
             Some(session) => {
                 self.touch();
-                self.capture(session, max_edge, shared).await?.0
+                self.capture(session, max_edge, shared, false).await?.0
             }
             None => self.screenshot_once(max_edge).await?,
         };
@@ -588,7 +590,7 @@ impl Computer {
         max_edge: Option<u32>,
     ) -> Result<Option<String>, String> {
         self.touch();
-        Ok(self.capture(session, max_edge, false).await?.0)
+        Ok(self.capture(session, max_edge, false, false).await?.0)
     }
 
     /// The screenshot after a settled input: the capture `still` held on, else a new one; a failed capture comes back as text.
@@ -636,26 +638,44 @@ impl Computer {
         session: &str,
         max_edge: Option<u32>,
         shared: bool,
+        keep: bool,
     ) -> Result<(Option<String>, f64, Option<Screen>), String> {
         let edge = max_edge.unwrap_or(DEFAULT_EDGE);
-        if let Some((w, h, rgb)) = self
-            .shm(|g| (!g.overlay_shown()?).then(|| g.rgb()).transpose())
+        if let Some((w, h, rgb, fitted)) = self
+            .shm(|g| {
+                if g.overlay_shown()? {
+                    return Ok(None);
+                }
+                if keep {
+                    return g.rgb().map(|(w, h, rgb)| Some((w, h, rgb, None)));
+                }
+                let (w, h) = g.size();
+                let (w, h) = (w as u32, h as u32);
+                Ok(Some((
+                    w,
+                    h,
+                    Vec::new(),
+                    Some(fit_bgrx(w, h, g.pixels()?, edge)),
+                )))
+            })
             .flatten()
         {
-            let image = if edge > 0 && edge < w.max(h) {
-                let (tw, th, small) = fit(w, h, &rgb, edge);
-                encode(tw, th, &small).map(|i| (i, f64::from(w) / f64::from(tw)))
-            } else {
-                encode(w, h, &rgb).map(|i| (i, 1.0))
+            let fitted =
+                fitted.or_else(|| (edge > 0 && edge < w.max(h)).then(|| fit(w, h, &rgb, edge)));
+            let image = match fitted {
+                Some((tw, th, small)) => {
+                    encode(tw, th, &small).map(|i| (i, f64::from(w) / f64::from(tw)))
+                }
+                None => encode(w, h, &rgb).map(|i| (i, 1.0)),
             };
             if let Some((image, scale)) = image {
                 self.keep_scale(session, scale, shared);
-                let screen = Screen {
+                let screen = keep.then_some(Screen {
                     width: w,
                     height: h,
                     rgb,
-                };
-                return Ok((Some(B64.encode(image)), scale, Some(screen)));
+                });
+                return Ok((Some(B64.encode(image)), scale, screen));
             }
         }
         let v = self.desktop_state(session).await?;
@@ -2410,6 +2430,23 @@ fn fit_size(width: u32, height: u32, edge: u32) -> (u32, u32) {
 
 /// RGB rows shrunk by area averaging so the long edge is `edge`.
 fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
+    average::<3>(width, height, rgb, edge, |s| s)
+}
+
+fn fit_bgrx(width: u32, height: u32, bgrx: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
+    if edge == 0 || edge >= width.max(height) {
+        return (width, height, bgrx_rgb(bgrx));
+    }
+    average::<4>(width, height, bgrx, edge, |[b, g, r]| [r, g, b])
+}
+
+fn average<const N: usize>(
+    width: u32,
+    height: u32,
+    px: &[u8],
+    edge: u32,
+    order: impl Fn([u32; 3]) -> [u32; 3],
+) -> (u32, u32, Vec<u8>) {
     let (tw, th) = fit_size(width, height, edge);
     let (w, h, ow, oh) = (width as usize, height as usize, tw as usize, th as usize);
     let mut out = Vec::with_capacity(ow * oh * 3);
@@ -2419,14 +2456,14 @@ fn fit(width: u32, height: u32, rgb: &[u8], edge: u32) -> (u32, u32, Vec<u8>) {
             let (x0, x1) = (ox * w / ow, ((ox + 1) * w / ow).max(ox * w / ow + 1));
             let mut sum = [0u32; 3];
             for y in y0..y1 {
-                for p in rgb[(y * w + x0) * 3..(y * w + x1) * 3].as_chunks::<3>().0 {
+                for p in px[(y * w + x0) * N..(y * w + x1) * N].as_chunks::<N>().0 {
                     for (s, c) in sum.iter_mut().zip(p) {
                         *s += u32::from(*c);
                     }
                 }
             }
             let n = u32::try_from((y1 - y0) * (x1 - x0)).unwrap_or(u32::MAX);
-            out.extend(sum.map(|s| u8::try_from(s / n).unwrap_or(u8::MAX)));
+            out.extend(order(sum).map(|s| u8::try_from(s / n).unwrap_or(u8::MAX)));
         }
     }
     (tw, th, out)
@@ -5200,6 +5237,34 @@ mod tests {
         let (tw, th, small) = fit(w, h, &rgb, 4);
         assert_eq!((tw, th), (4, 2));
         assert_eq!(small, [100, 100, 50].repeat(8));
+    }
+
+    #[test]
+    fn fit_bgrx_gives_the_bytes_of_fit_over_the_rgb_frame_and_the_whole_frame_unshrunk() {
+        let mut seed = 11u32;
+        for (w, h) in [(1920u32, 1080u32), (3840, 2160), (2561, 1441)] {
+            let bgrx: Vec<u8> = (0..w * h * 4)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    (seed >> 24) as u8
+                })
+                .collect();
+            let rgb = bgrx_rgb(&bgrx);
+            for edge in [DEFAULT_EDGE, 1000, 333] {
+                assert_eq!(
+                    fit_bgrx(w, h, &bgrx, edge),
+                    fit(w, h, &rgb, edge),
+                    "{w}x{h} to {edge}"
+                );
+            }
+            for edge in [0, w.max(h), w.max(h) + 1] {
+                assert_eq!(
+                    fit_bgrx(w, h, &bgrx, edge),
+                    (w, h, rgb.clone()),
+                    "{w}x{h} to {edge}"
+                );
+            }
+        }
     }
 
     #[test]
