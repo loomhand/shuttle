@@ -2355,6 +2355,30 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_whose_list_read_after_the_back_fails_says_the_back_was_sent() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.put(
+            "after-input.json",
+            "<error>java.lang.IllegalStateException: UiAutomation not connected</error>",
+        );
+        fake.windows("");
+        let err = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "UI server: java.lang.IllegalStateException: UiAutomation not connected; the closing back key was sent before it"
+        );
+        assert_eq!(log(&fake, "requests"), "windows\nkey 4\nwindows\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn an_action_that_ran_is_reported_even_when_the_screenshot_after_it_fails() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
