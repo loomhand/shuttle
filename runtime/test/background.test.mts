@@ -587,7 +587,7 @@ test('a Windows menu toggle read as already on passes with no note of the unconf
   assert.equal(state.open, false)
 })
 
-function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: boolean; focus?: 'search' | 'none'; keys?: 'field' | 'inner' | 'list' | 'drop'; front?: 'owner' | 'twin' } = {}) {
+function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: boolean; focus?: 'search' | 'none'; keys?: 'field' | 'inner' | 'list' | 'drop'; front?: 'owner' | 'twin' | 'open' } = {}) {
   const ws: W[] = [{ ...user(), active: !o.front }, notepad(), { id: 's', title: 'Save as', role: 'dialog', pid: 4, active: !!o.front, owner: '1' }]
   const on = (k: string) => o.keys === k ? ['showing', 'keyboard'] : ['showing']
   const field = { value: start, saved: '', typed: false }
@@ -596,7 +596,7 @@ function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: 
     if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[2], truncated: false, nodes: [root('dialog', 'Save as'), { ref: 1, id: 's/2', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing'], ...shown() }, { ref: 2, id: 's/3', parent: 1, depth: 2, role: 'textbox', name: o.keys === 'inner' ? '' : 'File name:', states: o.keys === 'field' || o.keys === 'inner' ? ['showing', 'keyboard'] : o.focus || o.keys ? ['showing'] : ['showing', 'focused'], ...shown() }, { ref: 6, id: 's/7', parent: 1, depth: 2, role: 'listitem', name: 'r1.txt', states: on('drop') }, { ref: 7, id: 's/8', parent: 0, depth: 1, role: 'list', name: 'Items View', states: on('list') }, ...(o.focus === 'search' ? [{ ref: 5, id: 's/6', parent: 0, depth: 1, role: 'searchbox', name: 'Search', states: ['showing', 'focused'], value: 'reports' }] : []), { ref: 3, id: 's/4', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] }, { ref: 4, id: 's/5', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }] })
     if (tool === 'desk_type') { field.value += String(args.text).replace(/\r+(?=\n|$)/g, ''); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
     if (tool === 'desk_key' && args.keys === 'backspace' && !o.stuck) field.value = field.value.slice(0, Math.max(0, field.value.length - Number(args.repeat ?? 1)))
-    if (tool === 'desk_key' && args.keys === 'Return' && ws.length > 2) { field.saved = field.value; ws.pop(); if (o.front === 'owner') ws[1] = { ...ws[1]!, active: true }; if (o.front === 'twin') ws.push({ id: '2', title: 'Untitled 2 - Notepad', role: 'window', pid: 4, active: true }) }
+    if (tool === 'desk_key' && args.keys === 'Return' && ws.length > 2) { field.saved = field.value; if (o.front === 'open') { ws[2] = { ...ws[2]!, active: false }; ws[1] = { ...ws[1]!, active: true } } else ws.pop(); if (o.front === 'owner') ws[1] = { ...ws[1]!, active: true }; if (o.front === 'twin') ws.push({ id: '2', title: 'Untitled 2 - Notepad', role: 'window', pid: 4, active: true }) }
     return undefined
   })
   return { ...d, field }
@@ -685,14 +685,14 @@ test('a Windows background file chooser behind the front window whose thread typ
   }
 })
 
-test('a Windows background file chooser that was the front window passes when its owner comes to the front as it closes, and stops when another window of the app does', { skip: process.platform !== 'win32' }, async (t) => {
-  for (const [front, ok] of [['owner', true], ['twin', false]] as const) {
+test('a Windows background file chooser that was the front window passes when its owner comes to the front as it closes, and stops when another window of the app does, or the owner does while the chooser stays open', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const [front, ok] of [['owner', true], ['twin', false], ['open', false]] as const) {
     const d = saveAs('n93w7.txt', { front })
     await daemon(t, d.reply)
     const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
     assert.equal(d.field.saved, 'r93.txt')
     assert.equal(r.ok, ok, JSON.stringify(r))
-    if (!ok) assert.match(String(r.escalate?.reason), /^"Untitled 2 - Notepad" brought itself to the front/)
+    if (!ok) assert.match(String(r.escalate?.reason), front === 'twin' ? /^"Untitled 2 - Notepad" brought itself to the front/ : /"Untitled - Notepad" brought itself to the front/)
   }
 })
 
