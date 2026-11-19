@@ -2785,6 +2785,14 @@ mod tests {
         assert_eq!(own_popup_front(e, None, closed), None);
     }
 
+    #[test]
+    fn the_click_owner_is_the_named_process_of_a_windows_click_only() {
+        let req = json!({"pid": 7});
+        assert_eq!(click_owner(Os::Windows, "click", &req), Some(7));
+        assert_eq!(click_owner(Os::Linux, "click", &req), None);
+        assert_eq!(click_owner(Os::Windows, "type_text", &req), None);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn computer_input_takes_the_same_user_check_and_counts_as_the_drivers_own() {
