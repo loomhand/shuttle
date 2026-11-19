@@ -35,6 +35,8 @@ use crate::press::{MENU_POLL, MENU_POLLS, libreoffice};
 #[cfg(target_os = "linux")]
 use crate::spi::Spi;
 use crate::still::{Block, VISIBLE_STEP};
+#[cfg(windows)]
+pub(crate) use crate::uia::{pid_at_point, window_pid};
 use crate::volatile::{Paused, Shown, Volatile};
 #[cfg(target_os = "linux")]
 use crate::worker::Worker;
@@ -432,17 +434,7 @@ impl Computer {
         if let Some(p) = pressed.as_mut().and_then(Value::as_object_mut) {
             p.remove("verify_hit");
         }
-        let owner = (self.os == Os::Windows && CLICK_TOOLS.contains(&tool))
-            .then(|| {
-                req["pid"]
-                    .as_u64()
-                    .and_then(|p| u32::try_from(p).ok())
-                    .or_else(|| {
-                        let (x, y) = req["x"].as_f64().zip(req["y"].as_f64())?;
-                        pid_at_point(x, y)
-                    })
-            })
-            .flatten();
+        let owner = click_owner(self.os, tool, &req);
         let mut refused = None;
         let mut result = match pressed {
             Some(mut pressed) if req.get("verify_hit").is_some() => {
@@ -2673,11 +2665,25 @@ fn required<'a>(v: &'a Option<String>, name: &str) -> Result<&'a str, String> {
 }
 
 /// The note for a Windows click the driver calls `foreground_unavailable` because a window of the target's own process, such as Explorer's context-menu host, took the foreground after it.
-pub(crate) fn own_popup_front(e: &str, before: Option<u32>, pid: fn(i64) -> u32) -> Option<String> {
+pub(crate) fn own_popup_front(
+    e: &str,
+    before: Option<u32>,
+    pid: fn(i64) -> Option<u32>,
+) -> Option<String> {
     let (target, actual) = front_pair(e)?;
     let tool = e.split(':').next()?;
-    let owner = before.unwrap_or_else(|| pid(target));
-    (owner != 0 && pid(actual) == owner).then(|| format!("{tool} {OWN_POPUP}"))
+    let owner = before.or_else(|| pid(target))?;
+    (pid(actual) == Some(owner)).then(|| format!("{tool} {OWN_POPUP}"))
+}
+
+pub(crate) fn click_owner(os: Os, tool: &str, req: &Value) -> Option<u32> {
+    if os != Os::Windows || !CLICK_TOOLS.contains(&tool) {
+        return None;
+    }
+    req["pid"]
+        .as_u64()
+        .and_then(|p| u32::try_from(p).ok())
+        .or_else(|| pid_at_point(req["x"].as_f64()?, req["y"].as_f64()?))
 }
 
 fn front_pair(e: &str) -> Option<(i64, i64)> {
@@ -2697,19 +2703,9 @@ fn front_pair(e: &str) -> Option<(i64, i64)> {
     Some((hex(FRONT_TARGET)?, hex(FRONT_ACTUAL)?))
 }
 
-#[cfg(windows)]
-pub(crate) fn window_pid(w: i64) -> u32 {
-    crate::uia::window_pid(w)
-}
-
 #[cfg(not(windows))]
-pub(crate) fn window_pid(_: i64) -> u32 {
-    0
-}
-
-#[cfg(windows)]
-pub(crate) fn pid_at_point(x: f64, y: f64) -> Option<u32> {
-    crate::uia::pid_at_point(x as i32, y as i32)
+pub(crate) fn window_pid(_: i64) -> Option<u32> {
+    None
 }
 
 #[cfg(not(windows))]
@@ -2753,23 +2749,23 @@ mod tests {
     fn a_windows_post_click_foreground_of_the_targets_own_process_reads_as_sent_and_any_other_stays_refused()
      {
         let e = "click: foreground_unavailable: exact target HWND 0x100f2 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x9029a)";
-        let live = |w: i64| if w == 0x100f2 || w == 0x9029a { 7 } else { 0 };
-        let other = |w: i64| if w == 0x100f2 { 7 } else { 9 };
+        let live = |w: i64| (w == 0x100f2 || w == 0x9029a).then_some(7);
+        let other = |w: i64| Some(if w == 0x100f2 { 7 } else { 9 });
         assert_eq!(
             own_popup_front(e, None, live),
             Some(format!("click {OWN_POPUP}"))
         );
         assert_eq!(own_popup_front(e, None, other), None);
-        assert_eq!(own_popup_front(e, None, |_| 0), None);
+        assert_eq!(own_popup_front(e, None, |_| None), None);
         let pre = "click: foreground_unavailable: Windows did not activate exact target HWND 0x100f2 (actual foreground HWND 0x9029a); no mouse input was sent";
-        assert_eq!(own_popup_front(pre, Some(7), |_| 7), None);
+        assert_eq!(own_popup_front(pre, Some(7), |_| Some(7)), None);
     }
 
     #[test]
     fn a_windows_post_click_foreground_whose_target_closed_reads_as_sent_only_for_the_process_clicked_before()
      {
         let e = "click: foreground_unavailable: exact target HWND 0x420264 or a verified same-process post-action window was not foreground after the click (actual foreground HWND 0x1f0236)";
-        let closed = |w: i64| if w == 0x1f0236 { 7 } else { 0 };
+        let closed = |w: i64| (w == 0x1f0236).then_some(7);
         assert_eq!(
             own_popup_front(e, Some(7), closed),
             Some(format!("click {OWN_POPUP}"))

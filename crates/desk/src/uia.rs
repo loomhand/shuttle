@@ -623,9 +623,8 @@ impl Access for Uia {
             return Ok(None);
         }
         Ok(Some(at.map_or((String::new(), None), |w| {
-            let pid = window_pid(w as i64);
             let hwnd = HWND(w as *mut core::ffi::c_void);
-            (title(hwnd).trim().to_owned(), (pid != 0).then_some(pid))
+            (title(hwnd).trim().to_owned(), window_pid(w as i64))
         })))
     }
 
@@ -788,17 +787,15 @@ enum Val {
 type Key = (i32, String, [i32; 4]);
 type Walked = (isize, bool, Vec<(String, Key)>);
 
-pub(crate) fn window_pid(w: i64) -> u32 {
+pub(crate) fn window_pid(w: i64) -> Option<u32> {
     let mut pid = 0u32;
     // SAFETY: GetWindowThreadProcessId takes any handle and writes the pid into a live u32; a stale handle writes nothing.
     unsafe { GetWindowThreadProcessId(HWND(w as *mut core::ffi::c_void), Some(&raw mut pid)) };
-    pid
+    (pid != 0).then_some(pid)
 }
 
-pub(crate) fn pid_at_point(x: i32, y: i32) -> Option<u32> {
-    top_at(x, y)
-        .map(|w| window_pid(w as i64))
-        .filter(|&p| p != 0)
+pub(crate) fn pid_at_point(x: f64, y: f64) -> Option<u32> {
+    top_at(x as i32, y as i32).and_then(|w| window_pid(w as i64))
 }
 
 fn tried(r: windows::core::Result<()>) -> Option<Result<bool, String>> {
