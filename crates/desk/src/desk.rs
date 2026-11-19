@@ -1462,10 +1462,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (named, (x, y), listed) =
             match self.pointed(a.window.as_deref(), a.pid, (a.x, a.y)).await? {
                 Some((w, point, listed)) => (Some(w), point, listed),
-                None => (None, (a.x, a.y), Vec::new()),
+                None => (None, (a.x, a.y), None),
             };
         if let Some(w) = named.as_ref().filter(|_| !self.bg() && self.os != Os::Mac) {
-            self.front(w, (x, y), Some(listed)).await?;
+            self.front(w, (x, y), listed).await?;
         }
         let mut req = json!({"x": x, "y": y});
         if let Some(button) = a.button {
@@ -1508,12 +1508,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         window: Option<&str>,
         pid: Option<u32>,
         at: (f64, f64),
-    ) -> Result<Option<(Value, (f64, f64), Vec<Value>)>, String> {
+    ) -> Result<Option<(Value, (f64, f64), Option<Vec<Value>>)>, String> {
         if window.is_none() && pid.is_none() {
             return Ok(None);
         }
         let mut listed = self.call("list_windows", json!({})).await?;
         let (_, w) = self.input_listed(&listed, window, pid, None).await?;
+        let key = window_key(&w)?;
+        let reads = window.is_some()
+            && lock(&self.read)
+                .filter(|r| r.full && r.key == key)
+                .is_none();
         let point = match window {
             Some(_) => self.desk_point(&w, at).await?,
             None => self.inside(&w, at).await?,
@@ -1522,7 +1527,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             Value::Array(windows) => windows,
             _ => Vec::new(),
         };
-        Ok(Some((w, point, all)))
+        Ok(Some((w, point, (!reads).then_some(all))))
     }
 
     async fn inside(&self, w: &Value, (x, y): (f64, f64)) -> Result<(f64, f64), String> {
@@ -1707,7 +1712,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (x, y) = match (a.x, a.y) {
             (Some(x), Some(y)) => match self.pointed(a.window.as_deref(), a.pid, (x, y)).await? {
                 Some((w, point, listed)) => {
-                    if self.front(&w, point, Some(listed)).await? && self.os == Os::Windows {
+                    if self.front(&w, point, listed).await? && self.os == Os::Windows {
                         tokio::time::sleep(WHEEL_SETTLE).await;
                     }
                     point
@@ -1846,7 +1851,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 to = self.desk_point(&w, to).await?;
             }
             from = point;
-            self.front(&w, from, Some(listed)).await?;
+            self.front(&w, from, listed).await?;
         }
         self.admit_point(from.0, from.1).await?;
         self.admit_point(to.0, to.1).await?;
@@ -7069,6 +7074,30 @@ pub(crate) mod tests {
                     .collect();
                 assert_eq!(lists, [json!({})], "{os:?} {tool}");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_named_point_that_reads_the_window_first_lists_the_windows_again() {
+        for os in [Os::Windows, Os::Linux] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
+            let out = desk
+                .run(
+                    "desk_click",
+                    json!({"x": 100.0, "y": 250.0, "window": "Inbox"}),
+                )
+                .await;
+            assert!(out.is_ok(), "{os:?}: {out:?}");
+            let lists: Vec<Value> = sent(&calls, "list_windows")
+                .into_iter()
+                .filter(|a| a["pid"].is_null())
+                .collect();
+            assert_eq!(
+                lists,
+                [json!({}), json!({"on_screen_only": true})],
+                "{os:?}"
+            );
         }
     }
 
