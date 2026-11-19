@@ -7102,6 +7102,49 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_window_off_the_screen_over_the_point_does_not_cover_it() {
+        for os in [Os::Windows, Os::Linux] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Cloaked(Behind(Arc::clone(&calls))), os);
+            let out = desk
+                .run("desk_click", json!({"x": 600.0, "y": 250.0, "pid": 8}))
+                .await;
+            assert!(out.is_ok(), "{os:?}: {out:?}");
+            let lists = sent(&calls, "list_windows")
+                .into_iter()
+                .filter(|a| a["pid"].is_null())
+                .count();
+            assert_eq!(lists, 1, "{os:?}");
+            assert!(sent(&calls, "bring_to_front").is_empty(), "{os:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_named_point_with_a_cached_read_lists_the_windows_once() {
+        for os in [Os::Windows, Os::Linux] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(|| Ok(Apps), Behind(Arc::clone(&calls)), os);
+            let _ = desk
+                .run("desk_shot", json!({"window": "Untitled - Notepad"}))
+                .await;
+            assert_eq!(sent(&calls, "get_window_state").len(), 1, "{os:?}");
+            calls.lock().unwrap().clear();
+            let out = desk
+                .run(
+                    "desk_click",
+                    json!({"x": 100.0, "y": 250.0, "window": "Untitled - Notepad"}),
+                )
+                .await;
+            assert!(out.is_ok(), "{os:?}: {out:?}");
+            let lists: Vec<Value> = sent(&calls, "list_windows")
+                .into_iter()
+                .filter(|a| a["pid"].is_null())
+                .collect();
+            assert_eq!(lists, [json!({})], "{os:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn named_foreground_pointer_input_lists_the_windows_again_after_a_raise() {
         let cases = [
             (
@@ -11531,6 +11574,20 @@ pub(crate) mod tests {
                 "press_key" => json!({"structuredContent": {"effect": "confirmed"}}),
                 _ => json!({}),
             })
+        }
+    }
+
+    struct Cloaked(Behind);
+
+    impl Input for Cloaked {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let mut v = self.0.call(tool, args).await?;
+            if tool == "list_windows"
+                && let Some(windows) = v["structuredContent"]["windows"].as_array_mut()
+            {
+                windows.push(json!({"pid": 9, "window_id": 3, "layer": 0, "z_index": 3, "title": "Ghost", "app_name": "Ghost", "is_on_screen": false, "bounds": {"x": 500.0, "y": 0.0, "width": 500.0, "height": 500.0}}));
+            }
+            Ok(v)
         }
     }
 
