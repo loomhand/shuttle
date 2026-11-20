@@ -592,7 +592,7 @@ async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(S
 function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'combobox' || n.role === 'textbox') && /^File name:?$/.test(n.name)) }
 async function eraseName(w: Win, read: { nodes?: Node[]; snap?: desk.Snap }) {
   const fields = nameFields(read.nodes ?? []); const els = read.snap?.nodes ?? []; const f = focusOf(els) ?? els.find((n) => n.states.includes('keyboard'))
-  if (!f && !w.active && fields.length) throw new Surprise(`the file name field of "${w.title}" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it is clicked or comes back), so nothing was typed: run this step in the foreground or click the file name field first`, await seen())
+  if (!f && !w.active && fields.length) throw new Surprise(`the file name field of "${w.title}" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it comes back to the front), so nothing was typed: run this step in the foreground`, await seen())
   if (!fields.some((n) => n.id === f?.id || (f?.role === 'textbox' && n.ref === f.parent))) throw new Surprise(`the keyboard focus of "${w.title}" is ${f ? `on ${f.role} "${f.name}"` : 'on no element it reports'}, not on its file name field, so nothing was typed`, await seen())
   const most = Math.max(0, ...fields.map((n) => n.value.length))
   await desk.key('end', at(w))
