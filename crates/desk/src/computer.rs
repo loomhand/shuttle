@@ -998,7 +998,7 @@ impl Computer {
         let (mut last, mut since): (Option<Frame>, Instant) = (None, Instant::now());
         let (mut seen, mut focus, mut hold) = (windows.clone(), active, first_hold);
         let (mut still, mut changed, mut quiet) = (false, false, true);
-        let (mut shown, mut prev) = (Shown::default(), None::<Vec<u64>>);
+        let (mut shown, mut prev, mut churned) = (Shown::default(), None::<Vec<u64>>, false);
         let mut capture = None;
         while !still && Instant::now() < deadline {
             let at = Instant::now();
@@ -1050,13 +1050,15 @@ impl Computer {
             }
             if differs && !changed {
                 base = base.max((Instant::now() + SETTLE).min(start + COMMIT_SETTLE));
+            } else if churned && !differs {
+                base = start + wait;
             }
             changed = differs;
             quiet &= !differs;
             let moved = last.as_ref().is_none_or(|l| l.changes(&frame, &volatile));
             if let Frame::Blocks(blocks) = &frame {
                 if let Frame::Blocks(first) = &first {
-                    shown.learn(
+                    churned |= shown.learn(
                         first,
                         prev.as_deref().unwrap_or(first),
                         blocks,
