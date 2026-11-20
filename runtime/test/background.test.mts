@@ -611,6 +611,17 @@ test('a Windows background name typed into a file chooser replaces the name in i
   assert.equal(r.ok, true, JSON.stringify(r))
 })
 
+test('a Windows background file chooser name with no extension replaces the name in its field and is read back before its Return', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const [o, ok] of [[{}, true], [{ stuck: true }, false]] as const) {
+    const d = saveAs('n93w7.txt', o)
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ wait: 'Save as' }, { type: 'README\n' }] })
+    assert.deepEqual(keysBefore(d.calls, 'desk_type').map((a) => [a.keys, a.repeat]), [['end', undefined], ['backspace', 9]])
+    assert.equal(d.field.saved, ok ? 'README' : '', JSON.stringify(r))
+    assert.equal(r.ok, ok, JSON.stringify(r))
+  }
+})
+
 test('a Windows background file chooser whose field reads no name gets no Backspace, and one whose name the desk cut gets 260', { skip: process.platform !== 'win32' }, async (t) => {
   for (const [start, keys] of [['', [['end', undefined]]], ['x'.repeat(230), [['end', undefined], ['backspace', 256], ['backspace', 4]]]] as const) {
     const d = saveAs(start)
