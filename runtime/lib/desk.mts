@@ -53,6 +53,8 @@ export const act = async (id: string, action: 'click' | 'action' | 'select' | 'f
 export const at = (x: number, y: number, window?: string, pid?: number | null): Promise<{ found: El | null; path?: { id: string; role: string; name: string }[]; pid?: number | null; covered?: { title: string; pid: number | null } }> => call('at', { x: Math.round(x), y: Math.round(y), window, pid: pid ?? undefined })
 export const key = async (keys: string, to: Target = {}, repeat?: number): Promise<Sent> => ran(await call('key', { keys, ...target(to), repeat }))
 export const typeText = async (text: string, to: Target = {}): Promise<Sent> => ran(await call('type', { text, ...target(to) }))
+/** Sets the File name field of a Windows file chooser, and with a final line break presses its Save or Open button, named in `pressed`. */
+export const chooserName = async (text: string, to: Target): Promise<Sent & { pressed?: string }> => ran(await call('type', { text, ...target(to), chooser: true }))
 export const click = async (x: number, y: number, o: { button?: string; count?: number; modifiers?: string[] } & Target = {}): Promise<Sent> => ran(await call('click', { x, y, ...o, pid: o.pid ?? undefined }))
 export const focus = (window: string, pid?: number | null, id?: string): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined, id })
 export const close = (window: string, pid?: number | null, id?: string): Promise<unknown> => call('close', { window, pid: pid ?? undefined, id })

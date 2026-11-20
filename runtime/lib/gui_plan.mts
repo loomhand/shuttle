@@ -592,11 +592,19 @@ async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(S
 function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'combobox' || n.role === 'textbox') && /^File name:?$/.test(n.name)) }
 async function eraseName(w: Win, read: { nodes?: Node[]; snap?: desk.Snap }) {
   const fields = nameFields(read.nodes ?? []); const els = read.snap?.nodes ?? []; const f = focusOf(els) ?? els.find((n) => n.states.includes('keyboard'))
-  if (!f && !w.active && fields.length) throw new Surprise(`the file name field of "${w.title}" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it comes back to the front), so nothing was typed: run this step in the foreground`, await seen())
+  if (!f && !w.active && fields.length) return false
   if (!fields.some((n) => n.id === f?.id || (f?.role === 'textbox' && n.ref === f.parent))) throw new Surprise(`the keyboard focus of "${w.title}" is ${f ? `on ${f.role} "${f.name}"` : 'on no element it reports'}, not on its file name field, so nothing was typed`, await seen())
   const most = Math.max(0, ...fields.map((n) => n.value.length))
   await desk.key('end', at(w))
   for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
+  return true
+}
+async function setName(w: Win, name: string, rec: Rec, sub: boolean, t0: number) {
+  const r = await desk.chooserName(sub ? `${name}\n` : name, at(w)); tick('act', t0)
+  rec.confirmed = true
+  if (!sub) return
+  rec.submit = true
+  if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after its file name was set and its ${r.pressed} button was pressed in the background, so the name may not have been taken: read the dialog before sending anything more`, await seen())
 }
 async function nameShown(w: Win, name: string, rec: Rec, secret: boolean) {
   const said = secret ? 'the password' : `"${name}"`; let got: Node[] = []
@@ -1403,8 +1411,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     // GTK preselects a file name only up to its last dot
     const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = chooser && OS === 'win32' && BG
     if (erase && /[\r\n]/.test(s.type.replace(/\r?\n$/, ''))) throw new Surprise(`the file name for "${w?.title}" holds a line break, and a file name never does, so nothing was typed`, await seen())
-    if (erase && w) await eraseName(w, pre ?? {}); else if (named) await selectLine(w)
     const text = erase ? s.type.replace(/\r?\n$/, '') : sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
+    if (erase && w) { if (!await eraseName(w, pre ?? {})) { await setName(w, text, rec, sub, t0); return } } else if (named) await selectLine(w)
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
     if (erase && w) await nameShown(w, text, rec, secure(s))
