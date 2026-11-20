@@ -12,6 +12,8 @@ pub use zeroize::Zeroizing;
 /// The text of a call that succeeds with nothing to report.
 pub const OK: &str = r#"{"ok":true}"#;
 pub const INTO_PASSWORD_FIELD: &str = " (into a password field)";
+pub const CHOOSER_WINDOWS: &str =
+    "chooser: true sets a file name through UI Automation on Windows only, so nothing was sent";
 
 const MAX_FRAME: usize = 64 << 20;
 
