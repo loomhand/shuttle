@@ -80,6 +80,7 @@ test('the first step takes the start window list only within 25 ms of its read, 
 })
 
 test('an untitled start window that is no alert is read once for the start check and the first step', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
   const popup = { id: '9', title: '', role: 'dialog', pid: 4, active: true }
   const calls: string[] = []
   await daemon(t, ({ tool }) => {
