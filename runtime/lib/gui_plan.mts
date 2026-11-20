@@ -1829,8 +1829,8 @@ function store(chain: Chain) {
   const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || SHORTCUT_VERBS[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? SHORTCUT_VERBS[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
   const base = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
   let auto = base
-  for (let n = 2; !chain.named && base && auto && auto !== chain.name && byName(auto); n++) auto = slug(`${base.slice(0, 39 - String(n).length)}-${n}`)
-  if (!chain.named && auto && chain.name && auto !== chain.name) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
+  for (let n = 2; !chain.named && base && auto && byName(auto); n++) auto = slug(`${base.slice(0, 39 - String(n).length)}-${n}`)
+  if (!chain.named && auto && chain.name && auto !== chain.name && !byName(chain.name)) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto
   if (chain.name) saveFlow({ name: chain.name, ...(chain.named ? { named: true } : {}), params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
@@ -1851,7 +1851,7 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   }
   const old = c.saved && !c.named ? c.name : undefined
   c.name = slug(name); c.named = true; c.params = { ...c.params, ...params }
-  if (old && old !== c.name) rmSync(`${FLOWS}/${old}.json`, { force: true })
+  if (old && old !== c.name && !byName(old)) rmSync(`${FLOWS}/${old}.json`, { force: true })
   store(c); c.saved = true; c.escalated = false
   putPending(c)
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }

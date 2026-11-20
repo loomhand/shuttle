@@ -486,6 +486,21 @@ test('an unnamed chain never overwrites a flow saved by name under its slug, and
   assert.equal(flow('notepad-2').params.text, 'draft')
 })
 
+test('a chain whose auto name another caller then saves by name neither continues into that flow nor deletes it when renamed', async (t) => {
+  const was = process.env.SHUTTLE_CALLER
+  t.after(() => { if (was === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = was })
+  const pad = { ...notepad, title: 'a.txt - Scratchpad' }
+  await daemon(t, answer(() => [pad]))
+  const as = (who: string, p: Parameters<typeof main>[0]) => { process.env.SHUTTLE_CALLER = who; return main(p) }
+  assert.equal((await as('mcp-a', { steps: [{ app: 'Scratchpad' }, { type: 'memo' }] })).saved, 'scratchpad')
+  assert.equal((await as('mcp-b', { steps: [{ app: 'Scratchpad' }, { type: 'theirs' }], save: 'scratchpad' })).saved, 'scratchpad')
+  const before = readFileSync(`${process.env.SHUTTLE_FLOWS}/scratchpad.json`, 'utf8')
+  assert.equal((await as('mcp-a', { steps: [{ type: ' more' }] })).saved, 'scratchpad-2')
+  assert.equal((await as('mcp-a', { save: 'a-flow' })).ok, true)
+  assert.equal(readFileSync(`${process.env.SHUTTLE_FLOWS}/scratchpad.json`, 'utf8'), before)
+  assert.deepEqual(flow('a-flow').params, { text: 'memo', text_2: ' more' })
+})
+
 test('a suffixed auto name stays within the slug length, so it never names the flow it stepped around', async (t) => {
   const app = 'Supercalifragilisticexpialidocious Notebook Editor'
   const long = { id: '1', title: `a.txt - ${app}`, role: 'window', pid: process.pid, active: true }
