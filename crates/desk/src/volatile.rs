@@ -32,14 +32,14 @@ impl Shown {
             if p == n {
                 continue;
             }
+            let Some(b) = blocks.get_mut(i).filter(|b| **b != Block::Churning) else {
+                continue;
+            };
             let states = self.states.entry(i).or_insert_with(|| vec![*f]);
             if !states.contains(n) {
                 states.push(*n);
             }
-            let Some(b) = blocks.get_mut(i) else {
-                continue;
-            };
-            if states.len() >= CHURN_STATES && *b != Block::Churning {
+            if states.len() >= CHURN_STATES {
                 (*b, churned) = (Block::Churning, true);
             } else if n == f {
                 *b = merge(std::mem::take(b), Block::Toggling(states.clone()));

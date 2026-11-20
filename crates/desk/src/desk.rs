@@ -3297,15 +3297,13 @@ fn labeled<'a>(elements: &'a [Value], role: &str, names: &[&str]) -> Option<(&'a
         })
     };
     names.iter().find_map(|name| {
-        elements
-            .iter()
-            .filter(|e| e["role"] == role && (role != "Button" || !in_combo(e)))
-            .find_map(|e| {
-                let label = e["label"].as_str()?;
-                (label.replace('&', "").trim_end_matches(':') == *name)
-                    .then(|| e["element_token"].as_str().map(|t| (t, label)))
-                    .flatten()
-            })
+        elements.iter().find_map(|e| {
+            let (label, token) = (e["label"].as_str()?, e["element_token"].as_str()?);
+            (e["role"] == role
+                && label.replace('&', "").trim_end_matches(':') == *name
+                && (role != "Button" || !in_combo(e)))
+            .then_some((token, label))
+        })
     })
 }
 
