@@ -35,6 +35,8 @@ const ENDING: &str = "the daemon is stopping, so nothing ran: call again in a fe
 const PLAN_BACKGROUND: &str = "background gui_plan is not measured on Linux: set [desk] input = \"foreground\" for plans, or use the desk verbs with a window";
 const NO_ASK: &str = "confirm needs the menu-bar controls, which this OS does not have yet: set confirm = \"off\" under [safety] in config.toml";
 const CONFIRM_OPEN: &str = "a confirm dialog is open: answer it first";
+const ANDROID_LIST: &str =
+    "Android computer_act takes one action, not an actions list; nothing was sent";
 const QUESTION_CHARS: usize = 200;
 const PREVIEW_CHARS: usize = 120;
 const STEP_CHARS: usize = 40;
@@ -271,6 +273,9 @@ impl<H: Handler> Daemon<H> {
     }
 
     async fn act(&self, call: Call) -> Output {
+        if self.guard.android && call.tool == COMPUTER_ACT && call.args.get("actions").is_some() {
+            return Output::error(ANDROID_LIST);
+        }
         let asker = match (self.asks(&call), &self.guard.asker) {
             (false, _) => None,
             (true, Some(ask)) => Some(ask),
@@ -956,12 +961,18 @@ mod tests {
         for action in ["action", "select", "focus"] {
             assert_eq!(device.answer(act(action)).await.text, DECLINED, "{action}");
         }
-        for swiped in [
+        let swipe = call(
+            "desk_computer_act",
             json!({"action": "scroll", "element": 4, "direction": "left"}),
+        );
+        assert_eq!(device.answer(swipe).await.text, DECLINED);
+        for listed in [
+            json!({"action": "tap", "x": 5, "y": 6, "actions": [{"action": "key", "key": "back"}]}),
             json!({"actions": [{"action": "key", "key": "back"}, {"action": "scroll", "direction": "down"}]}),
+            json!({"action": "key", "key": "back", "actions": [{"action": "tap", "x": 5, "y": 6}]}),
         ] {
-            let swipe = call("desk_computer_act", swiped);
-            assert_eq!(device.answer(swipe).await.text, DECLINED);
+            let out = device.answer(call("desk_computer_act", listed)).await;
+            assert_eq!((out.is_error, out.text.as_str()), (true, ANDROID_LIST));
         }
         let drag = call("desk_drag", json!({"x": 1, "y": 2, "to_x": 30, "to_y": 40}));
         assert_eq!(no.answer(drag).await.text, DECLINED);
