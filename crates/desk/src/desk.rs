@@ -3289,12 +3289,23 @@ fn typed_tail(text: &str) -> Option<String> {
 }
 
 fn labeled<'a>(elements: &'a [Value], role: &str, names: &[&str]) -> Option<(&'a str, &'a str)> {
-    elements.iter().filter(|e| e["role"] == role).find_map(|e| {
-        let label = e["label"].as_str()?;
-        names
-            .contains(&label.replace('&', "").trim_end_matches(':'))
-            .then(|| e["element_token"].as_str().map(|t| (t, label)))
-            .flatten()
+    let in_combo = |e: &Value| {
+        e["parent_index"].as_u64().is_some_and(|p| {
+            elements
+                .iter()
+                .any(|x| x["element_index"] == p && x["role"] == "ComboBox")
+        })
+    };
+    names.iter().find_map(|name| {
+        elements
+            .iter()
+            .filter(|e| e["role"] == role && (role != "Button" || !in_combo(e)))
+            .find_map(|e| {
+                let label = e["label"].as_str()?;
+                (label.replace('&', "").trim_end_matches(':') == *name)
+                    .then(|| e["element_token"].as_str().map(|t| (t, label)))
+                    .flatten()
+            })
     })
 }
 
@@ -11841,7 +11852,8 @@ pub(crate) mod tests {
                 "get_window_state" => json!({"structuredContent": {"elements": [
                     {"element_index": 40, "element_token": "t40", "role": "ComboBox", "label": "File name:"},
                     {"element_index": 41, "element_token": "t41", "role": "Edit", "label": "File name:", "value": "w98pre.txt"},
-                    {"element_index": 42, "element_token": "t42", "role": "ListItem", "label": "Save"},
+                    {"element_index": 42, "element_token": "t42", "role": "Button", "label": "Open", "parent_index": 40},
+                    {"element_index": 43, "element_token": "t43", "role": "ListItem", "label": "Save"},
                     {"element_index": 50, "element_token": "t50", "role": "Button", "label": "Save"},
                     {"element_index": 51, "element_token": "t51", "role": "Button", "label": "Cancel"}
                 ]}}),
