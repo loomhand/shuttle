@@ -18,7 +18,7 @@ use desk_core::diff::{Baselines, SINCE_TEXT};
 use desk_core::shot::{OFF_SCREEN, crop_png, rgb_png};
 use desk_core::text::{MAX_FOUND, NAME_CHARS, READ_CHARS, READ_TAIL, cut_read, matches, ms, quote};
 use desk_core::window::{self, TITLE_TIERS, title_matches};
-use desk_core::wire::{OK, Output, into_password_field};
+use desk_core::wire::{CHOOSER_WINDOWS, OK, Output, into_password_field};
 use serde_json::{Map, Value, json};
 
 use crate::allow::{Allow, app_key, frame_of};
@@ -167,6 +167,17 @@ const PROTOCOL_TAGS: [&str; 10] = [
     "antml:invoke",
     "antml:function_calls",
 ];
+
+const CHOOSER_ELEMENTS: u32 = 3000;
+const CHOOSER_FIELD: [&str; 1] = ["File name"];
+const CHOOSER_BUTTONS: [&str; 2] = ["Save", "Open"];
+const CHOOSER_FOREGROUND: &str = "chooser: true sets a file name with background input only, so nothing was sent: with foreground input, type the name into the focused field";
+const CHOOSER_LINE: &str = "a file name holds no line break, so nothing was sent";
+const CHOOSER_NO_FIELD: &str =
+    "cua-driver lists no File name edit field in the window, so nothing was sent";
+const CHOOSER_NO_BUTTON: &str =
+    "cua-driver lists no Save or Open button in the window, so nothing was sent";
+const CHOOSER_UNREAD: &str = "cua-driver set the File name field and did not read the same name back, so nothing more was sent: read the dialog before sending anything";
 
 const FIELD_ROLES: [&str; 2] = ["textbox", "searchbox"];
 const FOCUS_UNREAD: &str = "type refused, nothing was typed: the keyboard focus cannot be read in this window, so the text could go into another field than the one clicked; confirm the focused field in a screenshot, then call type again with focus: \"unverified\"";
@@ -1126,6 +1137,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     async fn type_text(&self, a: TypeArgs, turn: Option<Turn>) -> Result<String, String> {
+        if a.chooser {
+            return self.chooser_name(a).await;
+        }
         let text = without_protocol_tail(&a.text);
         let to = self.target(a.window.as_deref(), a.pid).await?;
         let focus = match to {
@@ -1313,6 +1327,74 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         if protected {
             out["protected"] = true.into();
+        }
+        Ok(out.to_string())
+    }
+
+    async fn chooser_name(&self, a: TypeArgs) -> Result<String, String> {
+        if self.os != Os::Windows {
+            return Err(CHOOSER_WINDOWS.to_owned());
+        }
+        if !self.bg() {
+            return Err(CHOOSER_FOREGROUND.to_owned());
+        }
+        let text = without_protocol_tail(&a.text);
+        let (name, submit) = match text.strip_suffix('\n') {
+            Some(name) => (name.strip_suffix('\r').unwrap_or(name), true),
+            None => (text, false),
+        };
+        if name.contains(['\n', '\r']) {
+            return Err(CHOOSER_LINE.to_owned());
+        }
+        let ((pid, window_id), _) = self.background_window(a.window.as_deref(), a.pid).await?;
+        let state = self
+            .call(
+                "get_window_state",
+                json!({
+                    "pid": pid,
+                    "window_id": window_id,
+                    "session": WINDOW_SESSION,
+                    "tree_format": "elements",
+                    "include_screenshot": false,
+                    "max_elements": CHOOSER_ELEMENTS,
+                }),
+            )
+            .await?;
+        let elements = state["structuredContent"]["elements"]
+            .as_array()
+            .map_or(&[][..], Vec::as_slice);
+        let field = labeled(elements, "Edit", &CHOOSER_FIELD).ok_or(CHOOSER_NO_FIELD)?;
+        let button = submit
+            .then(|| labeled(elements, "Button", &CHOOSER_BUTTONS).ok_or(CHOOSER_NO_BUTTON))
+            .transpose()?;
+        let set = self
+            .call(
+                "set_value",
+                json!({
+                    "pid": pid,
+                    "element_token": field.0,
+                    "value": name,
+                    "session": WINDOW_SESSION,
+                    "delivery_mode": "background",
+                }),
+            )
+            .await?;
+        if !read_back(&set, name) {
+            return Err(CHOOSER_UNREAD.to_owned());
+        }
+        let mut out = json!({"ok": true, "chars": name.chars().count()});
+        if let Some((token, label)) = button {
+            self.call(
+                "click",
+                json!({
+                    "pid": pid,
+                    "element_token": token,
+                    "session": WINDOW_SESSION,
+                    "delivery_mode": "background",
+                }),
+            )
+            .await?;
+            out["pressed"] = label.into();
         }
         Ok(out.to_string())
     }
@@ -3206,6 +3288,35 @@ fn typed_tail(text: &str) -> Option<String> {
     (n > 0).then(|| line.chars().skip(n.saturating_sub(TYPE_TAIL)).collect())
 }
 
+fn labeled<'a>(elements: &'a [Value], role: &str, names: &[&str]) -> Option<(&'a str, &'a str)> {
+    let in_combo = |e: &Value| {
+        e["parent_index"].as_u64().is_some_and(|p| {
+            elements
+                .iter()
+                .any(|x| x["element_index"] == p && x["role"] == "ComboBox")
+        })
+    };
+    names.iter().find_map(|name| {
+        elements.iter().find_map(|e| {
+            let (label, token) = (e["label"].as_str()?, e["element_token"].as_str()?);
+            (e["role"] == role
+                && label.replace('&', "").trim_end_matches(':') == *name
+                && (role != "Button" || !in_combo(e)))
+            .then_some((token, label))
+        })
+    })
+}
+
+fn read_back(set: &Value, name: &str) -> bool {
+    let c = &set["structuredContent"];
+    let quoted = format!("'{name}'");
+    c["effect"] == "confirmed"
+        && c["evidence"].as_array().into_iter().flatten().any(|e| {
+            e["kind"] == "value_readback"
+                && e["detail"].as_str().is_some_and(|d| d.contains(&quoted))
+        })
+}
+
 fn at_lock(os: Os, e: String) -> String {
     if os == Os::Mac && e.contains("cannot receive input: the screen is locked") {
         format!("{e}; {LOCKED_SCREEN}")
@@ -4706,6 +4817,159 @@ pub(crate) mod tests {
             "1 of 3 lines and the Return after line 1 were typed, then the window left the front, so the rest were not sent"
         );
         assert_eq!(sent(&calls, "press_key").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_windows_background_chooser_name_is_set_on_its_file_name_field_and_its_save_button_invoked_without_a_key()
+     {
+        for (text, pressed) in [("r98s.txt\n", Some("Save")), ("r98s.txt", None)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(notepad()),
+                Chooser(Behind(Arc::clone(&calls)), "r98s.txt", true),
+                Os::Windows,
+            )
+            .background(true);
+            let out = desk
+                .run(
+                    "desk_type",
+                    json!({"text": text, "pid": 4, "chooser": true}),
+                )
+                .await
+                .unwrap();
+            let out: Value = serde_json::from_str(&out.text).unwrap();
+            assert_eq!(out["ok"], true, "{out}");
+            assert_eq!(out["chars"], 8, "{out}");
+            assert_eq!(out["pressed"].as_str(), pressed, "{out}");
+            assert_eq!(
+                sent(&calls, "get_window_state"),
+                [
+                    json!({"pid": 4, "window_id": 1, "session": WINDOW_SESSION, "tree_format": "elements", "include_screenshot": false, "max_elements": CHOOSER_ELEMENTS})
+                ]
+            );
+            assert_eq!(
+                sent(&calls, "set_value"),
+                [
+                    json!({"pid": 4, "element_token": "t41", "value": "r98s.txt", "session": WINDOW_SESSION, "delivery_mode": "background"})
+                ]
+            );
+            let clicks = sent(&calls, "click");
+            match pressed {
+                Some(_) => {
+                    assert_eq!(
+                        clicks,
+                        [
+                            json!({"pid": 4, "element_token": "t50", "session": WINDOW_SESSION, "delivery_mode": "background"})
+                        ]
+                    );
+                    assert_eq!(out["effect"], "unverifiable", "{out}");
+                }
+                None => assert!(clicks.is_empty(), "{clicks:?}"),
+            }
+            let tools: Vec<String> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(t, _)| t.clone())
+                .collect();
+            let at = |tool: &str| tools.iter().position(|t| t == tool);
+            assert!(
+                at("set_value") < at("click").or(Some(usize::MAX)),
+                "{tools:?}"
+            );
+            assert!(order(&calls).is_empty(), "{:?}", order(&calls));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chooser_name_the_field_does_not_read_back_presses_no_button() {
+        for (readback, confirmed) in [("w98pre.txt", true), ("r98s.txt", false)] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(notepad()),
+                Chooser(Behind(Arc::clone(&calls)), readback, confirmed),
+                Os::Windows,
+            )
+            .background(true);
+            let err = desk
+                .run(
+                    "desk_type",
+                    json!({"text": "r98s.txt\n", "pid": 4, "chooser": true}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err, CHOOSER_UNREAD);
+            assert_eq!(sent(&calls, "set_value").len(), 1);
+            assert!(sent(&calls, "click").is_empty(), "{readback}");
+            assert!(order(&calls).is_empty(), "{:?}", order(&calls));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chooser_name_is_refused_with_nothing_sent_off_windows_in_the_foreground_with_a_line_break_inside_or_outside_the_allowlist()
+     {
+        let refused = [
+            (Os::Mac, true, "r.txt\n", None, CHOOSER_WINDOWS),
+            (Os::Linux, true, "r.txt\n", None, CHOOSER_WINDOWS),
+            (Os::Windows, false, "r.txt\n", None, CHOOSER_FOREGROUND),
+            (Os::Windows, true, "r1.txt\nr2.txt\n", None, CHOOSER_LINE),
+            (Os::Windows, true, "r1.txt\rr2.txt", None, CHOOSER_LINE),
+            (Os::Windows, true, "r.txt\n", Some("Mail"), "allowlist"),
+        ];
+        for (os, background, text, allowed, want) in refused {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut desk = Desk::new(
+                || Ok(notepad()),
+                Chooser(Behind(Arc::clone(&calls)), "r.txt", true),
+                os,
+            )
+            .background(background);
+            if let Some(app) = allowed {
+                desk = desk.allow(&[app.to_owned()]);
+            }
+            let err = desk
+                .run(
+                    "desk_type",
+                    json!({"text": text, "pid": 4, "chooser": true}),
+                )
+                .await
+                .unwrap_err();
+            assert!(err.contains(want), "{os:?} {text:?}: {err}");
+            for tool in [
+                "get_window_state",
+                "set_value",
+                "click",
+                "type_text",
+                "press_key",
+            ] {
+                assert!(sent(&calls, tool).is_empty(), "{os:?} {text:?}: {tool}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chooser_with_no_file_name_field_or_no_save_button_for_a_line_break_gets_no_value() {
+        for (text, field, want) in [
+            ("r.txt", false, CHOOSER_NO_FIELD),
+            ("r.txt\n", true, CHOOSER_NO_BUTTON),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let desk = Desk::new(
+                || Ok(notepad()),
+                Bare(Behind(Arc::clone(&calls)), field),
+                Os::Windows,
+            )
+            .background(true);
+            let err = desk
+                .run(
+                    "desk_type",
+                    json!({"text": text, "pid": 4, "chooser": true}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(err, want);
+            assert!(sent(&calls, "set_value").is_empty() && sent(&calls, "click").is_empty());
+        }
     }
 
     #[tokio::test]
@@ -11573,6 +11837,49 @@ pub(crate) mod tests {
                 }),
                 "press_key" => json!({"structuredContent": {"effect": "confirmed"}}),
                 _ => json!({}),
+            })
+        }
+    }
+
+    struct Chooser(Behind, &'static str, bool);
+
+    impl Input for Chooser {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await?;
+            Ok(match tool {
+                "get_window_state" => json!({"structuredContent": {"elements": [
+                    {"element_index": 40, "element_token": "t40", "role": "ComboBox", "label": "File name:"},
+                    {"element_index": 41, "element_token": "t41", "role": "Edit", "label": "File name:", "value": "w98pre.txt"},
+                    {"element_index": 42, "element_token": "t42", "role": "Button", "label": "Open", "parent_index": 40},
+                    {"element_index": 43, "element_token": "t43", "role": "ListItem", "label": "Save"},
+                    {"element_index": 50, "element_token": "t50", "role": "Button", "label": "Save"},
+                    {"element_index": 51, "element_token": "t51", "role": "Button", "label": "Cancel"}
+                ]}}),
+                "set_value" if self.2 => json!({"structuredContent": {
+                    "effect": "confirmed",
+                    "evidence": [{"kind": "value_readback", "detail": format!("combo box reads back '{}' (index None)", self.1)}]
+                }}),
+                "set_value" | "click" => json!({"structuredContent": {"effect": "unverifiable"}}),
+                _ => out,
+            })
+        }
+    }
+
+    struct Bare(Behind, bool);
+
+    impl Input for Bare {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            let out = self.0.call(tool, args).await?;
+            Ok(match tool {
+                "get_window_state" if self.1 => json!({"structuredContent": {"elements": [
+                    {"element_index": 41, "element_token": "t41", "role": "Edit", "label": "File name:"},
+                    {"element_index": 51, "element_token": "t51", "role": "Button", "label": "Cancel"}
+                ]}}),
+                "get_window_state" => json!({"structuredContent": {"elements": [
+                    {"element_index": 41, "element_token": "t41", "role": "Edit", "label": "Search"},
+                    {"element_index": 50, "element_token": "t50", "role": "Button", "label": "Save"}
+                ]}}),
+                _ => out,
             })
         }
     }

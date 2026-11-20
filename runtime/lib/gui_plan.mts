@@ -176,8 +176,8 @@ async function perform(p: Params): Promise<Result> {
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
   if (p.save && !slug(p.save)) return { ok: false, error: 'save needs a name with an ASCII letter or digit; nothing ran' }
-  const odd = Object.entries(p.params ?? {}).find(([, v]: [string, unknown]) => v === null || typeof v === 'object')?.[0]
-  if (odd !== undefined) return { ok: false, error: `param "${odd}" must be a string, not an object; nothing ran` }
+  const odd = Object.entries(p.params ?? {}).find(([, v]: [string, unknown]) => typeof v !== 'string')?.[0]
+  if (odd !== undefined) return { ok: false, error: `param "${odd}" must be a string; nothing ran` }
   if (p.save && !p.steps?.length && !p.flow) return await promote(p.save, p.params)
   let flow: Flow | null = null
   try { if (p.flow) flow = loadFlow(p.flow) } catch (e: unknown) { return { ok: false, done: 0, ms: 0, escalate: { reason: e instanceof Error ? e.message : String(e) } } }
@@ -592,11 +592,19 @@ async function selectLine(w: Win | null) { if (OS === 'darwin') await desk.key(S
 function nameFields(nodes: Node[]) { return nodes.filter((n) => (n.role === 'combobox' || n.role === 'textbox') && /^File name:?$/.test(n.name)) }
 async function eraseName(w: Win, read: { nodes?: Node[]; snap?: desk.Snap }) {
   const fields = nameFields(read.nodes ?? []); const els = read.snap?.nodes ?? []; const f = focusOf(els) ?? els.find((n) => n.states.includes('keyboard'))
-  if (!f && !w.active && fields.length) throw new Surprise(`the file name field of "${w.title}" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it comes back to the front), so nothing was typed: run this step in the foreground`, await seen())
+  if (!f && !w.active && fields.length) return false
   if (!fields.some((n) => n.id === f?.id || (f?.role === 'textbox' && n.ref === f.parent))) throw new Surprise(`the keyboard focus of "${w.title}" is ${f ? `on ${f.role} "${f.name}"` : 'on no element it reports'}, not on its file name field, so nothing was typed`, await seen())
   const most = Math.max(0, ...fields.map((n) => n.value.length))
   await desk.key('end', at(w))
   for (let n = most < VALUE_CHARS ? most : NAME_MAX; n > 0; n -= MAX_REPEAT) await desk.key('backspace', at(w), Math.min(n, MAX_REPEAT))
+  return true
+}
+async function setName(w: Win, name: string, rec: Rec, sub: boolean, t0: number) {
+  const r = await desk.chooserName(sub ? `${name}\n` : name, at(w)); tick('act', t0)
+  rec.confirmed = true
+  if (!sub) return
+  rec.submit = true
+  if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after its file name was set and its ${r.pressed} button was pressed in the background, so the name may not have been taken: read the dialog before sending anything more`, await seen())
 }
 async function nameShown(w: Win, name: string, rec: Rec, secret: boolean) {
   const said = secret ? 'the password' : `"${name}"`; let got: Node[] = []
@@ -1401,10 +1409,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (secretIn(was)) sealStep()
     if (s.blank && w && await holdsText(w, s.blank)) throw new Surprise(`"${w.title}" already holds text where this flow typed into an empty field, and typing would add to it: open a new document (for example {key: "ctrl+n"}) or empty the field in a plan that continues the flow from this step, which saves the fix into the flow`, await seen())
     // GTK preselects a file name only up to its last dot
-    const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = named && OS === 'win32' && BG
+    const named = chooser && /[/\\]|\.[a-z][a-z0-9]{0,7}\n?$/i.test(s.type); const erase = chooser && OS === 'win32' && BG
     if (erase && /[\r\n]/.test(s.type.replace(/\r?\n$/, ''))) throw new Surprise(`the file name for "${w?.title}" holds a line break, and a file name never does, so nothing was typed`, await seen())
-    if (erase && w) await eraseName(w, pre ?? {}); else if (named) await selectLine(w)
     const text = erase ? s.type.replace(/\r?\n$/, '') : sub ? s.type.slice(0, -1) : s.type; const line = held ? text.slice(0, -1) : text; let quiet: boolean | undefined
+    if (erase && w) { if (!await eraseName(w, pre ?? {})) { await setName(w, text, rec, sub, t0); return } } else if (named) await selectLine(w)
     let sent: desk.Sent | undefined
     if (BG && w && text.includes('\n')) quiet = await byLine(s, text, w, was, rec); else heard(sent = await desk.typeText(line, lined(w, ws, line)), rec, s, line)
     if (erase && w) await nameShown(w, text, rec, secure(s))
@@ -1829,8 +1837,8 @@ function store(chain: Chain) {
   const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || SHORTCUT_VERBS[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? SHORTCUT_VERBS[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
   const base = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
   let auto = base
-  for (let n = 2; !chain.named && base && auto && auto !== chain.name && byName(auto); n++) auto = slug(`${base.slice(0, 39 - String(n).length)}-${n}`)
-  if (!chain.named && auto && chain.name && auto !== chain.name) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
+  for (let n = 2; !chain.named && base && auto && byName(auto); n++) auto = slug(`${base.slice(0, 39 - String(n).length)}-${n}`)
+  if (!chain.named && auto && chain.name && auto !== chain.name && !byName(chain.name)) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto
   if (chain.name) saveFlow({ name: chain.name, ...(chain.named ? { named: true } : {}), params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
@@ -1851,7 +1859,7 @@ async function promote(name: string, params: Record<string, string> = {}, rerun 
   }
   const old = c.saved && !c.named ? c.name : undefined
   c.name = slug(name); c.named = true; c.params = { ...c.params, ...params }
-  if (old && old !== c.name) rmSync(`${FLOWS}/${old}.json`, { force: true })
+  if (old && old !== c.name && !byName(old)) rmSync(`${FLOWS}/${old}.json`, { force: true })
   store(c); c.saved = true; c.escalated = false
   putPending(c)
   return { ok: true, saved: c.name, params: templated(c.steps, c.params).params, ...(idempotent(c.steps) ? {} : { note: 'a replay of this flow types again' }) }

@@ -15,7 +15,7 @@ use desk_core::text::{
     MAX_FOUND, NAME_CHARS, Named, READ_TAIL, cut_read, matches, ms, one_line, quote,
 };
 use desk_core::window::{self, Window};
-use desk_core::wire::{OK, Output};
+use desk_core::wire::{CHOOSER_WINDOWS, OK, Output};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -338,6 +338,9 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
         }
         "desk_type" => {
             let a: TypeArgs = parse(args)?;
+            if a.chooser {
+                return Err(CHOOSER_WINDOWS.to_owned());
+            }
             let pin = std::sync::Mutex::new(None);
             let (typed, protected) = android
                 .type_text(&a.text, None, || async {

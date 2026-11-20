@@ -2407,6 +2407,22 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_chooser_type_is_refused_before_any_input() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        let err = desk(
+            &fake,
+            "desk_type",
+            serde_json::json!({"text": "r.txt\n", "chooser": true}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, desk_core::wire::CHOOSER_WINDOWS);
+        assert_eq!(log(&fake, "requests"), "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_crlf_text_types_its_lines_without_the_carriage_returns() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");

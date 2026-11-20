@@ -10,6 +10,7 @@ use crate::xshm::Grabber;
 const SAMPLE_EVERY: Duration = Duration::from_millis(200);
 const WINDOW: Duration = Duration::from_secs(2);
 const IDLE: Duration = Duration::from_secs(30);
+const CHURN_STATES: usize = 4;
 
 /// The contents each block showed during a settle; a block back at its contents from before the action toggles among them from then on, like a caret or a flicker the sampler did not catch.
 #[derive(Default)]
@@ -18,22 +19,33 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// Records the blocks that changed from `prev` to `now` and turns those back at `first` into toggling ones.
-    pub fn learn(&mut self, first: &[u64], prev: &[u64], now: &[u64], blocks: &mut [Block]) {
+    /// Records the blocks that changed from `prev` to `now`, turns those back at `first` into toggling ones and those that showed four contents into churning ones, and says whether one turned churning.
+    pub fn learn(
+        &mut self,
+        first: &[u64],
+        prev: &[u64],
+        now: &[u64],
+        blocks: &mut [Block],
+    ) -> bool {
+        let mut churned = false;
         for (i, ((f, p), n)) in first.iter().zip(prev).zip(now).enumerate() {
             if p == n {
                 continue;
             }
+            let Some(b) = blocks.get_mut(i).filter(|b| **b != Block::Churning) else {
+                continue;
+            };
             let states = self.states.entry(i).or_insert_with(|| vec![*f]);
             if !states.contains(n) {
                 states.push(*n);
             }
-            if n == f
-                && let Some(b) = blocks.get_mut(i)
-            {
+            if states.len() >= CHURN_STATES {
+                (*b, churned) = (Block::Churning, true);
+            } else if n == f {
                 *b = merge(std::mem::take(b), Block::Toggling(states.clone()));
             }
         }
+        churned
     }
 }
 
@@ -275,6 +287,19 @@ mod tests {
         assert!(volatile.shared.lock().acting);
         drop(paused);
         assert!(!volatile.shared.lock().acting);
+    }
+
+    #[test]
+    fn a_block_that_shows_a_fourth_contents_during_one_wait_churns_once() {
+        let first = [1, 1];
+        let mut blocks = vec![Block::Quiet, Block::Quiet];
+        let mut shown = Shown::default();
+        assert!(!shown.learn(&first, &[1, 1], &[2, 2], &mut blocks));
+        assert!(!shown.learn(&first, &[2, 2], &[3, 1], &mut blocks));
+        assert!(shown.learn(&first, &[3, 1], &[4, 2], &mut blocks));
+        assert_eq!(blocks, [Block::Churning, Block::Toggling(vec![1, 2])]);
+        assert!(!shown.learn(&first, &[4, 2], &[5, 2], &mut blocks));
+        assert!(!blocks[0].counts(6));
     }
 
     #[test]

@@ -28,6 +28,7 @@ const sent = (calls: Call[], tool: string) => calls.filter((c) => c.tool === too
 const keysBefore = (calls: Call[], tool: string) => calls.slice(0, calls.findIndex((c) => c.tool === tool)).filter((c) => c.tool === 'desk_key').map((c) => c.args)
 
 const TEXT = 'an untitled dialog of "R89Kit" is in front of "r89aN3" and takes all of its app\'s input until it closes, and a plan never presses a button of such a dialog: press its button with the desk tool (snapshot with the dialog\'s id from desk windows, then press with the button\'s id), or close it with {close: true} when it has a Cancel button; nothing was sent'
+const UNREAD = 'cua-driver set the File name field and did not read the same name back, so nothing more was sent: read the dialog before sending anything'
 const SEVERAL = '2 untitled dialogs of "R89Kit" are open, and a plan never picks one of them: press the button meant with the desk tool (snapshot with that dialog\'s id from desk windows, then press with the button\'s id); nothing was sent'
 
 test('a background plan types into its app window behind the front one, names it on every input and fronts nothing', async (t) => {
@@ -587,14 +588,21 @@ test('a Windows menu toggle read as already on passes with no note of the unconf
   assert.equal(state.open, false)
 })
 
-function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: boolean; focus?: 'search' | 'none'; keys?: 'field' | 'inner' | 'list' | 'drop'; front?: 'owner' | 'twin' | 'open' } = {}) {
+function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: boolean; focus?: 'search' | 'none'; keys?: 'field' | 'inner' | 'list' | 'drop'; front?: 'owner' | 'twin' | 'open'; set?: 'unread' | 'open' } = {}) {
   const ws: W[] = [{ ...user(), active: !o.front }, notepad(), { id: 's', title: 'Save as', role: 'dialog', pid: 4, active: !!o.front, owner: '1' }]
   const on = (k: string) => o.keys === k ? ['showing', 'keyboard'] : ['showing']
   const field = { value: start, saved: '', typed: false }
   const shown = () => field.value && !o.opaque && (field.typed || !o.hidden) ? { value: field.value.slice(0, 200) } : {}
   const d = desktop(ws, ({ tool, args }) => {
     if (tool === 'desk_snapshot') return JSON.stringify({ window: ws[2], truncated: false, nodes: [root('dialog', 'Save as'), { ref: 1, id: 's/2', parent: 0, depth: 1, role: 'combobox', name: 'File name:', states: ['showing'], ...shown() }, { ref: 2, id: 's/3', parent: 1, depth: 2, role: 'textbox', name: o.keys === 'inner' ? '' : 'File name:', states: o.keys === 'field' || o.keys === 'inner' ? ['showing', 'keyboard'] : o.focus || o.keys ? ['showing'] : ['showing', 'focused'], ...shown() }, { ref: 6, id: 's/7', parent: 1, depth: 2, role: 'listitem', name: 'r1.txt', states: on('drop') }, { ref: 7, id: 's/8', parent: 0, depth: 1, role: 'list', name: 'Items View', states: on('list') }, ...(o.focus === 'search' ? [{ ref: 5, id: 's/6', parent: 0, depth: 1, role: 'searchbox', name: 'Search', states: ['showing', 'focused'], value: 'reports' }] : []), { ref: 3, id: 's/4', parent: 0, depth: 1, role: 'button', name: 'Save', states: ['showing'] }, { ref: 4, id: 's/5', parent: 0, depth: 1, role: 'button', name: 'Cancel', states: ['showing'] }] })
-    if (tool === 'desk_type') { field.value += String(args.text).replace(/\r+(?=\n|$)/g, ''); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
+    if (tool === 'desk_type' && args.chooser) {
+      if (o.set === 'unread') return { text: UNREAD, error: true }
+      const text = String(args.text); const name = text.replace(/\n$/, ''); const sub = text !== name
+      field.value = name; field.typed = true
+      if (sub && o.set !== 'open') { field.saved = name; ws.pop() }
+      return JSON.stringify({ ok: true, chars: name.length, ...(sub ? { pressed: 'Save', effect: 'unverifiable' } : {}) })
+    }
+    if (tool === 'desk_type') { field.value +=String(args.text).replace(/\r+(?=\n|$)/g, ''); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
     if (tool === 'desk_key' && args.keys === 'backspace' && !o.stuck) field.value = field.value.slice(0, Math.max(0, field.value.length - Number(args.repeat ?? 1)))
     if (tool === 'desk_key' && args.keys === 'Return' && ws.length > 2) { field.saved = field.value; if (o.front === 'open') { ws[2] = { ...ws[2]!, active: false }; ws[1] = { ...ws[1]!, active: true } } else ws.pop(); if (o.front === 'owner') ws[1] = { ...ws[1]!, active: true }; if (o.front === 'twin') ws.push({ id: '2', title: 'Untitled 2 - Notepad', role: 'window', pid: 4, active: true }) }
     return undefined
@@ -609,6 +617,17 @@ test('a Windows background name typed into a file chooser replaces the name in i
   assert.deepEqual(keysBefore(d.calls, 'desk_type'), [{ keys: 'end', window: 'Save as', pid: 4 }, { keys: 'backspace', window: 'Save as', pid: 4, repeat: 9 }])
   assert.equal(d.field.saved, 'r93.txt')
   assert.equal(r.ok, true, JSON.stringify(r))
+})
+
+test('a Windows background file chooser name with no extension replaces the name in its field and is read back before its Return', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const [o, ok] of [[{}, true], [{ stuck: true }, false]] as const) {
+    const d = saveAs('n93w7.txt', o)
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ wait: 'Save as' }, { type: 'README\n' }] })
+    assert.deepEqual(keysBefore(d.calls, 'desk_type').map((a) => [a.keys, a.repeat]), [['end', undefined], ['backspace', 9]])
+    assert.equal(d.field.saved, ok ? 'README' : '', JSON.stringify(r))
+    assert.equal(r.ok, ok, JSON.stringify(r))
+  }
 })
 
 test('a Windows background file chooser whose field reads no name gets no Backspace, and one whose name the desk cut gets 260', { skip: process.platform !== 'win32' }, async (t) => {
@@ -658,13 +677,40 @@ test('a Windows background name for a file chooser whose keyboard focus is on an
   for (const [focus, front, said] of [
     ['search', undefined, 'the keyboard focus of "Save as" is on searchbox "Search", not on its file name field, so nothing was typed'],
     ['none', 'owner', 'the keyboard focus of "Save as" is on no element it reports, not on its file name field, so nothing was typed'],
-    ['none', undefined, 'the file name field of "Save as" does not hold the keyboard while the dialog is behind (a dialog that was in front and lost it keeps no focus until it comes back to the front), so nothing was typed: run this step in the foreground'],
   ] as const) {
     const d = saveAs('n93w7.txt', { focus, front })
     await daemon(t, d.reply)
     const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r93.txt\n' }] })
     assert.equal(r.escalate?.reason, said, JSON.stringify(r))
     assert.deepEqual([sent(d.calls, 'desk_key'), sent(d.calls, 'desk_type')], [[], []])
+  }
+})
+
+test('a Windows background file chooser that was in front and then covered gets its name set by the desk and its Save button pressed, with no key and nothing fronted', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const [type, saved] of [['r98s.txt\n', 'r98s.txt'], ['C:\\dir\\r98s.txt\r\n', 'C:\\dir\\r98s.txt'], ['r98s.txt', '']] as const) {
+    const d = saveAs('n93w7.txt', { focus: 'none' })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ wait: 'Save as' }, { type }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.deepEqual(sent(d.calls, 'desk_type'), [{ text: type.endsWith('\n') ? `${saved}\n` : type, window: 'Save as', pid: 4, chooser: true }])
+    assert.deepEqual(sent(d.calls, 'desk_key'), [])
+    assert.ok(!d.calls.some((c) => c.tool === 'desk_focus'), JSON.stringify(d.calls))
+    assert.deepEqual([d.field.value, d.field.saved], [type.endsWith('\n') ? saved : type, saved])
+  }
+})
+
+test('a Windows background covered file chooser whose field does not read the name back, or that stays open after its Save button, stops and says so', { skip: process.platform !== 'win32' }, async (t) => {
+  for (const [set, said] of [
+    ['unread', UNREAD],
+    ['open', '"Save as" is still open after its file name was set and its Save button was pressed in the background, so the name may not have been taken: read the dialog before sending anything more'],
+  ] as const) {
+    const d = saveAs('n93w7.txt', { focus: 'none', set })
+    await daemon(t, d.reply)
+    const r = await main({ steps: [{ wait: 'Save as' }, { type: 'r98s.txt\n' }] })
+    assert.equal(r.ok, false, JSON.stringify(r))
+    assert.equal(r.escalate?.reason, said, JSON.stringify(r))
+    assert.equal(sent(d.calls, 'desk_type').length, 1)
+    assert.deepEqual([sent(d.calls, 'desk_key'), d.field.saved], [[], ''])
   }
 })
 

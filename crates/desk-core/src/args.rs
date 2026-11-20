@@ -106,6 +106,9 @@ pub struct TypeArgs {
     pub pid: Option<u32>,
     /// `unverified` types after a background click into a window whose keyboard focus cannot be read.
     pub focus: Option<Focus>,
+    /// Sets `text` as the file name of a Windows file chooser without the keyboard; a final line break presses its Save or Open button.
+    #[serde(default)]
+    pub chooser: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
