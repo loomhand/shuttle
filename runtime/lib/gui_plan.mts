@@ -176,8 +176,8 @@ async function perform(p: Params): Promise<Result> {
   if (p.find) return await find(p.find)
   if (p.locate) return await locate(p.locate.target, p.locate.press ?? false)
   if (p.save && !slug(p.save)) return { ok: false, error: 'save needs a name with an ASCII letter or digit; nothing ran' }
-  const odd = Object.entries(p.params ?? {}).find(([, v]: [string, unknown]) => v === null || typeof v === 'object')?.[0]
-  if (odd !== undefined) return { ok: false, error: `param "${odd}" must be a string, not an object; nothing ran` }
+  const odd = Object.entries(p.params ?? {}).find(([, v]: [string, unknown]) => typeof v !== 'string')?.[0]
+  if (odd !== undefined) return { ok: false, error: `param "${odd}" must be a string; nothing ran` }
   if (p.save && !p.steps?.length && !p.flow) return await promote(p.save, p.params)
   let flow: Flow | null = null
   try { if (p.flow) flow = loadFlow(p.flow) } catch (e: unknown) { return { ok: false, done: 0, ms: 0, escalate: { reason: e instanceof Error ? e.message : String(e) } } }

@@ -171,15 +171,17 @@ test('a timeout_ms past the run, or a gone that is no boolean or comes with a st
   assert.deepEqual(calls, [])
 })
 
-test('a save name with no ASCII letter or digit and a param that is an object are refused before anything runs', async (t) => {
+test('a save name with no ASCII letter or digit and a param that is not a string are refused before anything runs', async (t) => {
   const calls: string[] = []
   await daemon(t, ({ tool }) => { calls.push(tool); return '{"ok":true}' })
   const named = await main({ steps: [{ app: 'Notepad' }], save: '\u53d1\u7968' })
   assert.equal(named.error, 'save needs a name with an ASCII letter or digit; nothing ran')
-  const params = { name: { example: 'Ada' } } as unknown as Record<string, string>
-  const typed = await main({ steps: [{ app: 'Notepad' }, { type: '{{name}}' }], params })
-  assert.equal(typed.error, 'param "name" must be a string, not an object; nothing ran')
-  const saved = await main({ save: 'x', params })
-  assert.equal(saved.error, typed.error)
+  for (const value of [{ example: 'Ada' }, null, 42, true]) {
+    const params = { name: value } as unknown as Record<string, string>
+    const typed = await main({ steps: [{ app: 'Notepad' }, { wait: 'Notepad' }, { type: '{{name}}' }], params })
+    assert.equal(typed.error, 'param "name" must be a string; nothing ran')
+    const saved = await main({ save: 'x', params })
+    assert.equal(saved.error, typed.error)
+  }
   assert.deepEqual(calls, [])
 })
