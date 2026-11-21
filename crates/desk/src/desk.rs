@@ -1393,7 +1393,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     "delivery_mode": "background",
                 }),
             )
-            .await?;
+            .await
+            .map_err(|e| {
+                format!("cua-driver set the File name field and read the name back, then pressing the {label} button failed, so the dialog may still be open: {e}")
+            })?;
             out["pressed"] = label.into();
         }
         Ok(out.to_string())
@@ -4820,13 +4823,17 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_windows_background_chooser_name_is_set_on_its_file_name_field_and_its_save_button_invoked_without_a_key()
+    async fn a_windows_background_chooser_name_is_set_on_its_file_name_field_and_its_save_or_open_button_invoked_without_a_key()
      {
-        for (text, pressed) in [("r98s.txt\n", Some("Save")), ("r98s.txt", None)] {
+        for (text, button, pressed) in [
+            ("r98s.txt\n", "Save", Some("Save")),
+            ("r98s.txt\n", "Open", Some("Open")),
+            ("r98s.txt", "Save", None),
+        ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(
                 || Ok(notepad()),
-                Chooser(Behind(Arc::clone(&calls)), "r98s.txt", true),
+                Chooser(Behind(Arc::clone(&calls)), "r98s.txt", true, button),
                 Os::Windows,
             )
             .background(true);
@@ -4887,7 +4894,7 @@ pub(crate) mod tests {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let desk = Desk::new(
                 || Ok(notepad()),
-                Chooser(Behind(Arc::clone(&calls)), readback, confirmed),
+                Chooser(Behind(Arc::clone(&calls)), readback, confirmed, "Save"),
                 Os::Windows,
             )
             .background(true);
@@ -4906,6 +4913,35 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_chooser_button_that_fails_after_the_name_is_set_says_the_field_holds_it_without_the_name()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(notepad()),
+            Unpressed(Chooser(
+                Behind(Arc::clone(&calls)),
+                "r98s.txt",
+                true,
+                "Save",
+            )),
+            Os::Windows,
+        )
+        .background(true);
+        let err = desk
+            .run(
+                "desk_type",
+                json!({"text": "r98s.txt\n", "pid": 4, "chooser": true}),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "cua-driver set the File name field and read the name back, then pressing the Save button failed, so the dialog may still be open: element click timed out"
+        );
+        assert_eq!(sent(&calls, "set_value").len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_chooser_name_is_refused_with_nothing_sent_off_windows_in_the_foreground_with_a_line_break_inside_or_outside_the_allowlist()
      {
         let refused = [
@@ -4920,7 +4956,7 @@ pub(crate) mod tests {
             let calls = Arc::new(Mutex::new(Vec::new()));
             let mut desk = Desk::new(
                 || Ok(notepad()),
-                Chooser(Behind(Arc::clone(&calls)), "r.txt", true),
+                Chooser(Behind(Arc::clone(&calls)), "r.txt", true, "Save"),
                 os,
             )
             .background(background);
@@ -11841,7 +11877,7 @@ pub(crate) mod tests {
         }
     }
 
-    struct Chooser(Behind, &'static str, bool);
+    struct Chooser(Behind, &'static str, bool, &'static str);
 
     impl Input for Chooser {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
@@ -11852,7 +11888,7 @@ pub(crate) mod tests {
                     {"element_index": 41, "element_token": "t41", "role": "Edit", "label": "File name:", "value": "w98pre.txt"},
                     {"element_index": 42, "element_token": "t42", "role": "Button", "label": "Open", "parent_index": 40},
                     {"element_index": 43, "element_token": "t43", "role": "ListItem", "label": "Save"},
-                    {"element_index": 50, "element_token": "t50", "role": "Button", "label": "Save"},
+                    {"element_index": 50, "element_token": "t50", "role": "Button", "label": self.3},
                     {"element_index": 51, "element_token": "t51", "role": "Button", "label": "Cancel"}
                 ]}}),
                 "set_value" if self.2 => json!({"structuredContent": {
@@ -11862,6 +11898,17 @@ pub(crate) mod tests {
                 "set_value" | "click" => json!({"structuredContent": {"effect": "unverifiable"}}),
                 _ => out,
             })
+        }
+    }
+
+    struct Unpressed(Chooser);
+
+    impl Input for Unpressed {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if tool == "click" {
+                return Err("element click timed out".to_owned());
+            }
+            self.0.call(tool, args).await
         }
     }
 
