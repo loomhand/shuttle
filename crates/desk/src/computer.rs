@@ -479,7 +479,7 @@ impl Computer {
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
         }
         if let Err(e) = &result
-            && tool == "press_key"
+            && matches!(tool, "press_key" | "hotkey")
             && e.contains(WINDOW_GONE)
         {
             let key = a.key.as_deref().unwrap_or_default();
@@ -3143,7 +3143,11 @@ mod tests {
      {
         let gone = "Invalid window handle. (0x80070578)";
         let stale = "window_id 9 is closed, stale, or invalid.";
-        for (error, ok) in [(gone, true), (stale, false)] {
+        for (error, ok, key, tool) in [
+            (gone, true, "Return", "press_key"),
+            (stale, false, "Return", "press_key"),
+            (gone, true, "ctrl+w", "hotkey"),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let socket = endpoint(dir.path());
             let listener = Fake::bind(&socket).unwrap();
@@ -3155,7 +3159,7 @@ mod tests {
                     "get_window_state" => {
                         json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": "Button", "label": "Save", "enabled": true, "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
-                    "press_key" => {
+                    "press_key" | "hotkey" => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": error}]}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
@@ -3164,16 +3168,17 @@ mod tests {
             let cua = cua_on(&socket, Os::Windows);
             cua.state(json!({"pid": 7})).await.unwrap();
             let out = cua
-                .act(json!({"action": "key", "key": "Return", "element": 0}))
+                .act(json!({"action": "key", "key": key, "element": 0}))
                 .await
                 .unwrap();
             driver.abort();
             let want = if ok {
                 format!(
-                    "the window closed while return was sent, so it may have reached it: press_key: {gone}"
+                    "the window closed while {} was sent, so it may have reached it: {tool}: {gone}",
+                    key.to_lowercase()
                 )
             } else {
-                format!("press_key: {stale}")
+                format!("{tool}: {stale}")
             };
             assert_eq!(out.is_error, !ok, "{}", out.text);
             assert!(out.text.starts_with(&want), "{}", out.text);
