@@ -1023,6 +1023,7 @@ impl Computer {
                         Frame::Blocks(before) => {
                             before.iter().zip(&blocks).enumerate().any(|(i, (x, y))| {
                                 x != y
+                                    && !shown.churns(i)
                                     && volatile.get(i).is_none_or(|v| v.counts(*y))
                                     && xshm::visible(
                                         &pixels,
