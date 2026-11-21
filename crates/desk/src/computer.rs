@@ -482,7 +482,11 @@ impl Computer {
             && matches!(tool, "press_key" | "hotkey")
             && e.contains(WINDOW_GONE)
         {
-            let key = a.key.as_deref().unwrap_or_default();
+            let key = a
+                .key
+                .clone()
+                .or_else(|| a.keys.as_ref().map(|k| k.join("+")))
+                .unwrap_or_default();
             let note =
                 format!("the window closed while {key} was sent, so it may have reached it: {e}");
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
@@ -3143,10 +3147,35 @@ mod tests {
      {
         let gone = "Invalid window handle. (0x80070578)";
         let stale = "window_id 9 is closed, stale, or invalid.";
-        for (error, ok, key, tool) in [
-            (gone, true, "Return", "press_key"),
-            (stale, false, "Return", "press_key"),
-            (gone, true, "ctrl+w", "hotkey"),
+        for (error, ok, act, said, tool) in [
+            (
+                gone,
+                true,
+                json!({"action": "key", "key": "Return", "element": 0}),
+                "return",
+                "press_key",
+            ),
+            (
+                stale,
+                false,
+                json!({"action": "key", "key": "Return", "element": 0}),
+                "return",
+                "press_key",
+            ),
+            (
+                gone,
+                true,
+                json!({"action": "key", "key": "ctrl+w", "element": 0}),
+                "ctrl+w",
+                "hotkey",
+            ),
+            (
+                gone,
+                true,
+                json!({"action": "hotkey", "keys": ["ctrl", "w"], "element": 0}),
+                "ctrl+w",
+                "hotkey",
+            ),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let socket = endpoint(dir.path());
@@ -3167,15 +3196,11 @@ mod tests {
             }));
             let cua = cua_on(&socket, Os::Windows);
             cua.state(json!({"pid": 7})).await.unwrap();
-            let out = cua
-                .act(json!({"action": "key", "key": key, "element": 0}))
-                .await
-                .unwrap();
+            let out = cua.act(act).await.unwrap();
             driver.abort();
             let want = if ok {
                 format!(
-                    "the window closed while {} was sent, so it may have reached it: {tool}: {gone}",
-                    key.to_lowercase()
+                    "the window closed while {said} was sent, so it may have reached it: {tool}: {gone}"
                 )
             } else {
                 format!("{tool}: {stale}")

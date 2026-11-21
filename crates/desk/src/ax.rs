@@ -460,7 +460,7 @@ impl Access for Ax {
         };
         let mut truncated = self.walk(&mut w, &el, None, 0);
         let walked = started.elapsed().as_micros();
-        if frame.role == "window" && !truncated && extras.menus {
+        if frame.role == "window" && !truncated && !w.cut && extras.menus {
             let app = frame.pid.map(|p| application(p as i32));
             if let Some(bar) = app.as_ref().and_then(|a| attr(a, "AXMenuBar")) {
                 let root = (!w.nodes.is_empty()).then_some(0);
