@@ -602,7 +602,7 @@ function saveAs(start: string, o: { stuck?: boolean; hidden?: boolean; opaque?: 
       if (sub && o.set !== 'open') { field.saved = name; ws.pop() }
       return JSON.stringify({ ok: true, chars: name.length, ...(sub ? { pressed: 'Save', effect: 'unverifiable' } : {}) })
     }
-    if (tool === 'desk_type') { field.value +=String(args.text).replace(/\r+(?=\n|$)/g, ''); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
+    if (tool === 'desk_type') { field.value += String(args.text).replace(/\r+(?=\n|$)/g, ''); field.typed = true; return JSON.stringify({ ok: true, chars: String(args.text).length, unverified: `unverifiable: Sent ${String(args.text).length} char(s) via PostMessage (not verified).` }) }
     if (tool === 'desk_key' && args.keys === 'backspace' && !o.stuck) field.value = field.value.slice(0, Math.max(0, field.value.length - Number(args.repeat ?? 1)))
     if (tool === 'desk_key' && args.keys === 'Return' && ws.length > 2) { field.saved = field.value; if (o.front === 'open') { ws[2] = { ...ws[2]!, active: false }; ws[1] = { ...ws[1]!, active: true } } else ws.pop(); if (o.front === 'owner') ws[1] = { ...ws[1]!, active: true }; if (o.front === 'twin') ws.push({ id: '2', title: 'Untitled 2 - Notepad', role: 'window', pid: 4, active: true }) }
     return undefined
