@@ -594,7 +594,7 @@ fn steps(list: &[Value]) -> String {
     out
 }
 
-/// Whether the computer action `a` can end in a click at a screen point: a pointer action, or typing at an element or a point, which clicks it first.
+/// Whether the computer action `a` can end in a click at a screen point: a pointer action, typing at an element or a point, which clicks it first, or on an Android device a scroll, which is a swipe.
 fn points(a: &Value, android: bool) -> bool {
     let action = a["action"].as_str().unwrap_or_default();
     POINTER_ACTIONS.contains(&action)

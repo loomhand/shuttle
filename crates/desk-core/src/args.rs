@@ -80,7 +80,7 @@ pub struct AtArgs {
 #[derive(Deserialize)]
 pub struct KeyArgs {
     pub keys: String,
-    /// The window that background input goes to, by title; foreground input brings it to the front first, except by title alone on Linux.
+    /// The window that background input goes to, by title; foreground input brings it to the front first.
     pub window: Option<String>,
     pub pid: Option<u32>,
     /// How many times the combination is pressed, 1 by default.
@@ -101,7 +101,7 @@ impl KeyArgs {
 #[derive(Deserialize)]
 pub struct TypeArgs {
     pub text: String,
-    /// The window that background input goes to, by title; foreground input brings it to the front first, except by title alone on Linux.
+    /// The window that background input goes to, by title; foreground input brings it to the front first.
     pub window: Option<String>,
     pub pid: Option<u32>,
     /// `unverified` types after a background click into a window whose keyboard focus cannot be read.
