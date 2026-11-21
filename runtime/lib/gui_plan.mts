@@ -126,6 +126,7 @@ const SELECT_ALL = OS === 'darwin' ? 'cmd+a' : 'ctrl+a'
 const ACTION_ONLY = 'an accessibility action ran, and on Linux its success does not show its effect; no later step read it back'
 const NOOP = 'the input was sent, and the driver saw nothing change where it expected a change; no later step read its effect'
 const UNCHECKED = 'the text was sent, and the device did not check that it showed, as for a web view, a field that changes what is typed, or a first line pasted where no field reports the input focus; no later step read it back'
+const UNCHECKED_SECRET = 'the password was sent, and the device did not check that it showed, as for a web view: do not type it again; no later step read what it unlocks'
 const UNREAD_SECRET = 'the value was sent to the password field, and the field reads back nothing, so it was not checked: do not set it again; no later step read what it unlocks'
 const OFF_SPACE = 'is on another Space'
 const MAY_HAVE_RUN = ['input_delivery_stalled:', 'closed the connection without an answer', 'timed out']
@@ -512,7 +513,7 @@ function traced(i: number, rec: Rec, s: Step, escalated: boolean): Trace {
   }
 }
 
-function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null && !secure(s)) rec.caveat ??= UNCHECKED; if (nooped(r)) rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
+function heard(r: desk.Sent, rec: Rec, s: Step, sent?: string) { if (r.protected) sealStep(); if (r.typed === false) throw new Surprise(`${typedText(s)} did not show in the focused field${sent?.includes('\n') ? ', after all its lines and the Returns between them were sent' : ''}`, {}); if (r.typed === null) rec.caveat ??= secure(s) ? UNCHECKED_SECRET : UNCHECKED; if (nooped(r)) rec.caveat ??= NOOP; if (BG && r.unverified && (!rec.unverified || (r.unverified.includes(TERMINAL) && !rec.unverified.includes(TERMINAL)))) rec.unverified = secure(s) ? hush(r.unverified) : r.unverified }
 function nooped(r: { input?: string; effect?: string }) { return (!BG || r.input === 'foreground') && r.effect === 'suspected_noop' }
 function hush(note: string) { return `unverifiable: the password was sent and the target did not confirm it${note.includes(TERMINAL) ? ` (${TERMINAL})` : ''}; do not type it again` }
 async function until(ok: (ws: Win[]) => boolean, ms: number, seed?: Win[]) {
@@ -1421,7 +1422,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (held) heard(await desk.key('Return', at(w)), rec, s)
     tick('act', t0)
     if (BG && rec.unverified && w && !sub && quiet !== undefined) rec.confirmed = !quiet
-    else if (BG && rec.unverified && w && !sub) {
+    else if (BG && rec.unverified && w && !sub && !erase) {
       const now = await texts(w); const left = !now && nl && isDialog(o) && await closed(w.title, w.pid); if (left) rec.submit = true
       const tty = !!sent?.terminal || rec.unverified.includes(TERMINAL); const dark = !now && tty && !rec.unverified.includes(TERMINAL); const shown = shows(was, now, s.type, tty) || (!tty && secure(s) && masked(was, now, s.type.replace(/\n/g, '')))
       if (tty && secure(s) && shown) throw await echoed(w, s.type, now)
