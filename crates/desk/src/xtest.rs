@@ -8,11 +8,14 @@ use x11rb::connection::{Connection as _, RequestConnection as _};
 use x11rb::cookie::VoidCookie;
 use x11rb::protocol::xkb::{ConnectionExt as _, ID};
 use x11rb::protocol::xproto::{
-    ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, ModMask,
+    BUTTON_PRESS_EVENT, BUTTON_RELEASE_EVENT, ConnectionExt as _, KEY_PRESS_EVENT,
+    KEY_RELEASE_EVENT, MOTION_NOTIFY_EVENT, ModMask, Window,
 };
 use x11rb::protocol::xtest::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
+
+use crate::desk::{Clicks, Gesture};
 
 const SHIFT_L: u32 = 0xffe1;
 const TAB: u32 = 0xff09;
@@ -20,12 +23,16 @@ const HOLD_MS: (u64, u64) = (30, 70);
 const GAP_MS: (u64, u64) = (40, 120);
 const MODIFIER_MS: (u64, u64) = (10, 30);
 const SETTLE_MS: (u64, u64) = (40, 120);
-const PATH_STEP_PX: f64 = 12.0;
-const PATH_STEPS: (usize, usize) = (8, 60);
-const PATH_MS: (f64, f64) = (150.0, 650.0);
-const PATH_MS_PER_PX: f64 = 0.5;
-const PATH_BEND: f64 = 0.25;
-const PATH_BEND_MAX_PX: f64 = 120.0;
+const RELEASE_MS: (u64, u64) = (20, 50);
+const CLICK_HOLD_MS: (u64, u64) = (60, 120);
+const MULTI_HOLD_MS: (u64, u64) = (40, 80);
+const MULTI_GAP_MS: (u64, u64) = (60, 110);
+const PATH_STEPS: (u64, u64) = (35, 60);
+const PATH_STEP_MS: (u64, u64) = (8, 20);
+const PATH_BEND_PX: (f64, f64) = (120.0, 80.0);
+
+/// One XTest event, its keycode or button, and the pause after it.
+type Step = (u8, u8, Option<(u64, u64)>);
 
 /// Types `text` with the keyboard map's own keycodes; false, typing nothing, when a character or modifier state needs the driver or X is unreachable.
 pub fn type_mapped(text: &str, human: bool, stop: &AtomicBool) -> Result<bool, String> {
@@ -117,49 +124,182 @@ pub fn type_mapped(text: &str, human: bool, stop: &AtomicBool) -> Result<bool, S
     Ok(true)
 }
 
-/// Moves the pointer from where it is to `to`, in root-window pixels, along a curved path with a person's speed; best effort, since the click that follows goes out either way.
-pub fn glide(to: (f64, f64), stop: &AtomicBool) {
+pub(crate) fn hand(gesture: Gesture, stop: &AtomicBool) -> Result<bool, String> {
+    match gesture {
+        Gesture::Point(to, clicks) => glide(to, clicks, stop),
+        Gesture::Keys(keysyms) => press_keys(&keysyms, stop),
+    }
+}
+
+/// Presses `keysyms` in order, each held, and releases them in reverse; false, pressing nothing, when one has no unshifted keycode or X is unreachable.
+fn press_keys(keysyms: &[u32], stop: &AtomicBool) -> Result<bool, String> {
     let Ok((conn, n)) = x11rb::connect(None) else {
-        return;
+        return Ok(false);
+    };
+    let root = conn.setup().roots[n].root;
+    let codes: Option<Vec<u8>> = keysyms.iter().map(|&k| keycode(&conn, k)).collect();
+    let Some(codes) = codes else {
+        return Ok(false);
+    };
+    send_plan(&conn, root, &key_plan(&codes), &mut Rng::seeded(), stop)?;
+    Ok(true)
+}
+
+/// Keycodes `codes` pressed in order, each held, and released in reverse.
+fn key_plan(codes: &[u8]) -> Vec<Step> {
+    let mut plan: Vec<Step> = codes
+        .iter()
+        .map(|&c| (KEY_PRESS_EVENT, c, Some(HOLD_MS)))
+        .collect();
+    plan.extend(codes.iter().rev().enumerate().map(|(i, &c)| {
+        (
+            KEY_RELEASE_EVENT,
+            c,
+            (i + 1 < codes.len()).then_some(RELEASE_MS),
+        )
+    }));
+    plan
+}
+
+/// Moves the pointer from where it is to `to`, in root-window pixels, along a curved path with a person's speed, then presses `clicks` there with a person's timing; true once it pressed, false when it sent no press and leaves the click to the driver.
+fn glide(to: (f64, f64), clicks: Option<Clicks>, stop: &AtomicBool) -> Result<bool, String> {
+    let Ok((conn, n)) = x11rb::connect(None) else {
+        return Ok(false);
     };
     let root = conn.setup().roots[n].root;
     let Some(at) = conn.query_pointer(root).ok().and_then(|c| c.reply().ok()) else {
-        return;
+        return Ok(false);
     };
     let from = (f64::from(at.root_x), f64::from(at.root_y));
     let mut rng = Rng::seeded();
     let points = path(from, to, &mut rng);
-    if points.is_empty() {
-        return;
-    }
-    let ms = ((to.0 - from.0).hypot(to.1 - from.1) * PATH_MS_PER_PX).clamp(PATH_MS.0, PATH_MS.1);
-    let step = Duration::from_secs_f64(ms / 1000.0 / points.len() as f64);
-    for (x, y) in points {
-        if stop.load(Ordering::Relaxed)
-            || conn
-                .xtest_fake_input(MOTION_NOTIFY_EVENT, 0, x11rb::CURRENT_TIME, root, x, y, 0)
-                .is_err()
-            || conn.flush().is_err()
-        {
-            return;
+    if !points.is_empty() {
+        for (x, y) in points {
+            if stop.load(Ordering::Relaxed)
+                || conn
+                    .xtest_fake_input(MOTION_NOTIFY_EVENT, 0, x11rb::CURRENT_TIME, root, x, y, 0)
+                    .is_err()
+                || conn.flush().is_err()
+            {
+                return Ok(false);
+            }
+            thread::sleep(rng.ms(PATH_STEP_MS));
         }
-        thread::sleep(step);
     }
     thread::sleep(rng.ms(SETTLE_MS));
+    let Some(clicks) = clicks else {
+        return Ok(false);
+    };
+    let mods: Option<Vec<u8>> = clicks
+        .modifiers
+        .iter()
+        .map(|&m| keycode(&conn, m))
+        .collect();
+    let Some(mods) = mods else {
+        return Ok(false);
+    };
+    if stop.load(Ordering::Relaxed) {
+        return Ok(false);
+    }
+    let plan = press_plan(&clicks, &mods);
+    send_plan(&conn, root, &plan, &mut rng, stop)?;
+    Ok(true)
 }
 
-/// The points after `from` on an eased quadratic curve to `to`, bent to a random side, each but the last a pixel off the curve at most.
+/// The events of `clicks` with modifier keycodes `mods` held around them, each with the pause after it.
+fn press_plan(clicks: &Clicks, mods: &[u8]) -> Vec<Step> {
+    let (hold, gap) = if clicks.count > 1 {
+        (MULTI_HOLD_MS, MULTI_GAP_MS)
+    } else {
+        (CLICK_HOLD_MS, MULTI_GAP_MS)
+    };
+    let mut plan: Vec<_> = mods
+        .iter()
+        .map(|&m| (KEY_PRESS_EVENT, m, Some(MODIFIER_MS)))
+        .collect();
+    for i in 0..clicks.count {
+        let last = i + 1 == clicks.count;
+        let after = if !last {
+            Some(gap)
+        } else if mods.is_empty() {
+            None
+        } else {
+            Some(MODIFIER_MS)
+        };
+        plan.push((BUTTON_PRESS_EVENT, clicks.button, Some(hold)));
+        plan.push((BUTTON_RELEASE_EVENT, clicks.button, after));
+    }
+    plan.extend(mods.iter().rev().map(|&m| (KEY_RELEASE_EVENT, m, None)));
+    plan
+}
+
+/// Sends `plan` and releases whatever it still holds when it stops early.
+fn send_plan(
+    conn: &RustConnection,
+    root: Window,
+    plan: &[Step],
+    rng: &mut Rng,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    let mut sent: Vec<VoidCookie<'_, RustConnection>> = Vec::new();
+    let mut held: Vec<(u8, u8)> = Vec::new();
+    let done = (|| {
+        for &(kind, detail, pause) in plan {
+            if stop.load(Ordering::Relaxed) {
+                return Err("stopped by the user".to_owned());
+            }
+            sent.push(
+                conn.xtest_fake_input(kind, detail, x11rb::CURRENT_TIME, root, 0, 0, 0)
+                    .map_err(|e| format!("XTest: {e}"))?,
+            );
+            match kind {
+                KEY_PRESS_EVENT => held.push((KEY_RELEASE_EVENT, detail)),
+                BUTTON_PRESS_EVENT => held.push((BUTTON_RELEASE_EVENT, detail)),
+                _ => held.retain(|h| *h != (kind, detail)),
+            }
+            conn.flush().map_err(|e| format!("XTest: {e}"))?;
+            if let Some(pause) = pause {
+                thread::sleep(rng.ms(pause));
+            }
+        }
+        Ok(())
+    })();
+    for &(kind, detail) in held.iter().rev() {
+        let _ = conn.xtest_fake_input(kind, detail, x11rb::CURRENT_TIME, root, 0, 0, 0);
+    }
+    conn.sync().map_err(|e| format!("XTest: {e}"))?;
+    done?;
+    for cookie in sent {
+        cookie.check().map_err(|e| format!("XTest: {e}"))?;
+    }
+    Ok(())
+}
+
+fn keycode(conn: &RustConnection, keysym: u32) -> Option<u8> {
+    let setup = conn.setup();
+    let (min, max) = (setup.min_keycode, setup.max_keycode);
+    let map = conn
+        .get_keyboard_mapping(min, max - min + 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    let per = usize::from(map.keysyms_per_keycode.max(1));
+    let i = map
+        .keysyms
+        .chunks(per)
+        .position(|syms| syms.first() == Some(&keysym))?;
+    min.checked_add(u8::try_from(i).ok()?)
+}
+
+/// The points after `from` on an eased quadratic curve to `to` through a control point a random offset from the midpoint, each but the last a pixel off the curve at most.
 fn path(from: (f64, f64), to: (f64, f64), rng: &mut Rng) -> Vec<(i16, i16)> {
-    let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-    let dist = dx.hypot(dy);
-    if dist < 1.0 {
+    if (to.0 - from.0).hypot(to.1 - from.1) < 1.0 {
         return Vec::new();
     }
-    let steps = ((dist / PATH_STEP_PX).round() as usize).clamp(PATH_STEPS.0, PATH_STEPS.1);
-    let bend = rng.between(-1.0, 1.0) * (dist * PATH_BEND).min(PATH_BEND_MAX_PX);
+    let steps = rng.int(PATH_STEPS);
     let (cx, cy) = (
-        (from.0 + to.0) / 2.0 - dy / dist * bend,
-        (from.1 + to.1) / 2.0 + dx / dist * bend,
+        (from.0 + to.0) / 2.0 + rng.between(-PATH_BEND_PX.0, PATH_BEND_PX.0),
+        (from.1 + to.1) / 2.0 + rng.between(-PATH_BEND_PX.1, PATH_BEND_PX.1),
     );
     (1..=steps)
         .map(|i| {
@@ -202,8 +342,12 @@ impl Rng {
         lo + (hi - lo) * ((self.next() >> 11) as f64 / (1u64 << 53) as f64)
     }
 
-    fn ms(&mut self, (lo, hi): (u64, u64)) -> Duration {
-        Duration::from_millis(lo + self.next() % (hi - lo + 1))
+    fn int(&mut self, (lo, hi): (u64, u64)) -> u64 {
+        lo + self.next() % (hi - lo + 1)
+    }
+
+    fn ms(&mut self, range: (u64, u64)) -> Duration {
+        Duration::from_millis(self.int(range))
     }
 }
 
@@ -251,15 +395,62 @@ mod tests {
         for _ in 0..200 {
             let p = path((10.0, 10.0), (610.0, 410.0), &mut rng);
             assert_eq!(p.last(), Some(&(610, 410)));
-            assert!((PATH_STEPS.0..=PATH_STEPS.1).contains(&p.len()));
+            assert!((PATH_STEPS.0..=PATH_STEPS.1).contains(&(p.len() as u64)));
             assert!(
                 p.iter()
                     .all(|&(x, y)| (-112..=732).contains(&x) && (-112..=532).contains(&y)),
                 "{p:?}"
             );
         }
-        assert_eq!(path((0.0, 0.0), (3.0, 4.0), &mut rng).len(), PATH_STEPS.0);
+        let short = path((0.0, 0.0), (3.0, 4.0), &mut rng);
+        assert!((PATH_STEPS.0..=PATH_STEPS.1).contains(&(short.len() as u64)));
+        assert_eq!(short.last(), Some(&(3, 4)));
         assert_eq!(path((5.0, 5.0), (5.4, 5.0), &mut rng), []);
+    }
+
+    #[test]
+    fn a_click_holds_its_button_and_modifiers_wrap_a_double_click() {
+        let one = Clicks {
+            button: 1,
+            count: 1,
+            modifiers: vec![],
+        };
+        assert_eq!(
+            press_plan(&one, &[]),
+            [
+                (BUTTON_PRESS_EVENT, 1, Some(CLICK_HOLD_MS)),
+                (BUTTON_RELEASE_EVENT, 1, None)
+            ]
+        );
+        let two = Clicks {
+            button: 3,
+            count: 2,
+            modifiers: vec![0xffe3],
+        };
+        assert_eq!(
+            press_plan(&two, &[37]),
+            [
+                (KEY_PRESS_EVENT, 37, Some(MODIFIER_MS)),
+                (BUTTON_PRESS_EVENT, 3, Some(MULTI_HOLD_MS)),
+                (BUTTON_RELEASE_EVENT, 3, Some(MULTI_GAP_MS)),
+                (BUTTON_PRESS_EVENT, 3, Some(MULTI_HOLD_MS)),
+                (BUTTON_RELEASE_EVENT, 3, Some(MODIFIER_MS)),
+                (KEY_RELEASE_EVENT, 37, None)
+            ]
+        );
+    }
+
+    #[test]
+    fn keys_are_held_in_order_and_released_in_reverse() {
+        assert_eq!(
+            key_plan(&[37, 38]),
+            [
+                (KEY_PRESS_EVENT, 37, Some(HOLD_MS)),
+                (KEY_PRESS_EVENT, 38, Some(HOLD_MS)),
+                (KEY_RELEASE_EVENT, 38, Some(RELEASE_MS)),
+                (KEY_RELEASE_EVENT, 37, None)
+            ]
+        );
     }
 
     #[test]

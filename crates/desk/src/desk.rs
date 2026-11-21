@@ -27,7 +27,7 @@ use crate::computer::{click_owner, own_popup_front, window_pid};
 use crate::driver::{
     CAPTURE_SESSION, INPUT_TOOLS, Input, WINDOW_SESSION, background, desktop, image_of, text_of,
 };
-use crate::keys::{Os, hid_plus, key_names, keystroke};
+use crate::keys::{Os, hid_plus, key_names, keystroke, x_keysym};
 use crate::lock;
 use crate::model::{Access, Act, Capture, Extras, Frame, Node};
 use crate::press::{Press, hit_centre, plan_press};
@@ -76,9 +76,12 @@ pub(crate) const TYPER: Typer = crate::xtest::type_mapped;
 #[cfg(not(target_os = "linux"))]
 pub(crate) const TYPER: Typer = |_, _, _| Ok(false);
 #[cfg(target_os = "linux")]
-pub(crate) const GLIDER: Glider = crate::xtest::glide;
+pub(crate) const HAND: Hand = crate::xtest::hand;
 #[cfg(not(target_os = "linux"))]
-pub(crate) const GLIDER: Glider = |_, _| {};
+pub(crate) const HAND: Hand = |_, _| Ok(false);
+const CONTROL_L: u32 = 0xffe3;
+const SHIFT_L: u32 = 0xffe1;
+const ALT_L: u32 = 0xffe9;
 
 const APP_INPUT: [&str; 5] = [
     "desk_key",
@@ -198,7 +201,24 @@ tokio::task_local! {
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
 /// Types a line on the core keyboard, at a person's pace when asked; false leaves the line to the driver.
 pub(crate) type Typer = fn(&str, bool, &AtomicBool) -> Result<bool, String>;
-pub(crate) type Glider = fn((f64, f64), &AtomicBool);
+/// Sends a gesture at a person's pace; false when it pressed nothing and leaves the press to the driver.
+pub(crate) type Hand = fn(Gesture, &AtomicBool) -> Result<bool, String>;
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Gesture {
+    /// The pointer to a desktop point along a person's path, and the clicks to press there.
+    Point((f64, f64), Option<Clicks>),
+    /// Keysyms pressed in order and released in reverse.
+    Keys(Vec<u32>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Clicks {
+    pub(crate) button: u8,
+    pub(crate) count: u32,
+    /// Keysyms held during the clicks.
+    pub(crate) modifiers: Vec<u32>,
+}
 
 /// The desk of one OS: `B` reads and acts on elements, `D` sends input.
 pub struct Desk<B, D> {
@@ -219,7 +239,7 @@ pub struct Desk<B, D> {
     webs: std::sync::Mutex<HashMap<u32, Held>>,
     bases: std::sync::Mutex<Baselines>,
     typer: Typer,
-    glider: Glider,
+    hand: Hand,
     #[cfg(test)]
     skew: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -245,7 +265,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             webs: std::sync::Mutex::new(HashMap::new()),
             bases: std::sync::Mutex::new(Baselines::default()),
             typer: TYPER,
-            glider: GLIDER,
+            hand: HAND,
             #[cfg(test)]
             skew: Arc::default(),
         }
@@ -353,8 +373,8 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
     }
 
     #[cfg(test)]
-    fn with_glider(mut self, glider: Glider) -> Self {
-        self.glider = glider;
+    fn with_hand(mut self, hand: Hand) -> Self {
+        self.hand = hand;
         self
     }
 
@@ -567,8 +587,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
             *lock(&self.read) = None;
         }
-        glide(self.glider, tool, &args).await;
-        let out = self.driver.call(tool, args).await?;
+        let out = match human_input(self.hand, tool, &args).await? {
+            Some(out) => out,
+            None => self.driver.call(tool, args).await?,
+        };
         if INPUT_TOOLS.contains(&tool) {
             let _ = SENT.try_with(|n| n.set(n.get() + 1));
             let _ = EFFECT.try_with(|seen| weakest(&mut seen.borrow_mut(), &out));
@@ -3122,14 +3144,88 @@ fn human() -> bool {
     HUMAN.try_with(|h| *h).unwrap_or(false)
 }
 
-/// On a `human` call, moves the pointer to the desktop point of a click, scroll or drag along a person's path before the driver sends it.
-pub(crate) async fn glide(glider: Glider, tool: &str, req: &Value) {
-    let Some(to) = pointer_point(tool, req).filter(|_| human()) else {
-        return;
+/// On a `human` call, moves the pointer to the desktop point of a click, scroll or drag along a person's path, and presses a click or desktop keys it can press itself at a person's pace, answering for them in place of the driver.
+pub(crate) async fn human_input(
+    hand: Hand,
+    tool: &str,
+    req: &Value,
+) -> Result<Option<Value>, String> {
+    if !human() {
+        return Ok(None);
+    }
+    let (gesture, text) = if let Some(to) = pointer_point(tool, req) {
+        let clicks = (tool == "click").then(|| clicks(req)).flatten();
+        // the computer verbs turn "Sent screen-absolute click at (x, y)" into screenshot pixels, as for the driver's own reply
+        let text = format!(
+            "Sent screen-absolute click at ({}, {}) at a person's pace.",
+            to.0, to.1
+        );
+        (Gesture::Point(to, clicks), text)
+    } else if let Some((keysyms, names)) = desktop_keys(tool, req) {
+        let kind = if tool == "hotkey" { "hotkey" } else { "key" };
+        let text = format!("Pressed desktop {kind} {names} at a person's pace.");
+        (Gesture::Keys(keysyms), text)
+    } else {
+        return Ok(None);
     };
     let stop = Arc::new(AtomicBool::new(false));
     let _cancel = Cancel(stop.clone());
-    let _ = tokio::task::spawn_blocking(move || glider(to, &stop)).await;
+    let pressed = tokio::task::spawn_blocking(move || hand(gesture, &stop))
+        .await
+        .map_err(|e| format!("XTest: {e}"))??;
+    Ok(pressed.then(|| json!({"content": [{"type": "text", "text": text}]})))
+}
+
+/// The keysyms of a desktop key or hotkey request and its key names; none for a key without one.
+fn desktop_keys(tool: &str, req: &Value) -> Option<(Vec<u32>, String)> {
+    if req["scope"] != "desktop" && req["target"]["kind"] != "desktop" {
+        return None;
+    }
+    let names: Vec<&str> = match tool {
+        "press_key" => vec![req["key"].as_str()?],
+        "hotkey" => req["keys"]
+            .as_array()?
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    let keysyms = names.iter().map(|n| x_keysym(n)).collect::<Option<_>>()?;
+    Some((keysyms, names.join("+")))
+}
+
+/// The clicks of a desktop click request that XTest can press as the driver would; none for a button or modifier it does not map.
+fn clicks(req: &Value) -> Option<Clicks> {
+    let button = match req["button"].as_str().unwrap_or("left") {
+        "left" => 1,
+        "middle" => 2,
+        "right" => 3,
+        _ => return None,
+    };
+    let count = match &req["count"] {
+        Value::Null => 1,
+        c => u32::try_from(c.as_u64()?)
+            .ok()
+            .filter(|c| (1..=3).contains(c))?,
+    };
+    let modifiers = match &req["modifier"] {
+        Value::Null => Vec::new(),
+        Value::Array(m) => m
+            .iter()
+            .map(|m| match m.as_str()? {
+                "ctrl" | "control" => Some(CONTROL_L),
+                "shift" => Some(SHIFT_L),
+                "alt" | "option" => Some(ALT_L),
+                _ => None,
+            })
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    Some(Clicks {
+        button,
+        count,
+        modifiers,
+    })
 }
 
 fn pointer_point(tool: &str, req: &Value) -> Option<(f64, f64)> {
@@ -3608,6 +3704,7 @@ pub(crate) mod tests {
     static GLIDES: Mutex<Vec<(f64, f64)>> = Mutex::new(Vec::new());
     static TYPED_HUMAN: Mutex<Vec<bool>> = Mutex::new(Vec::new());
     static SENT_ORDER: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static PRESSED: Mutex<Vec<Gesture>> = Mutex::new(Vec::new());
 
     #[test]
     fn an_outline_shows_a_linux_raw_key_binding_in_place_of_the_shortcut() {
@@ -9293,7 +9390,12 @@ pub(crate) mod tests {
     async fn only_a_human_call_glides_to_its_click_and_types_at_a_person_s_pace() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux)
-            .with_glider(|to, _| GLIDES.lock().unwrap().push(to))
+            .with_hand(|g, _| {
+                if let Gesture::Point(to, _) = g {
+                    GLIDES.lock().unwrap().push(to);
+                }
+                Ok(false)
+            })
             .with_typer(|_, human, _| {
                 TYPED_HUMAN.lock().unwrap().push(human);
                 Ok(true)
@@ -9337,8 +9439,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_human_click_glides_before_the_driver_sends_it() {
-        let desk = Desk::new(|| Ok(notepad()), Ordered, Os::Linux)
-            .with_glider(|_, _| SENT_ORDER.lock().unwrap().push("glide".to_owned()));
+        let desk = Desk::new(|| Ok(notepad()), Ordered, Os::Linux).with_hand(|_, _| {
+            SENT_ORDER.lock().unwrap().push("glide".to_owned());
+            Ok(false)
+        });
         desk.run("desk_click", json!({"x": 300.0, "y": 200.0}))
             .await
             .unwrap();
@@ -9346,6 +9450,75 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(*SENT_ORDER.lock().unwrap(), ["click", "glide", "click"]);
+    }
+
+    #[tokio::test]
+    async fn a_human_click_or_key_the_hand_presses_reaches_no_driver_and_others_still_do() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk =
+            Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Linux).with_hand(|g, _| {
+                let pressed = !matches!(g, Gesture::Point(_, None));
+                PRESSED.lock().unwrap().push(g);
+                Ok(pressed)
+            });
+        let human = |extra: Value| {
+            let mut a = json!({"x": 300.0, "y": 200.0, "human": true});
+            a.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            a
+        };
+        desk.run("desk_click", human(json!({}))).await.unwrap();
+        desk.run(
+            "desk_click",
+            human(json!({"button": "right", "count": 2, "modifiers": ["ctrl", "shift"]})),
+        )
+        .await
+        .unwrap();
+        desk.run("desk_click", human(json!({"modifiers": ["cmd"]})))
+            .await
+            .unwrap();
+        desk.run("desk_scroll", human(json!({"direction": "down"})))
+            .await
+            .unwrap();
+        desk.run("desk_key", json!({"keys": "ctrl+a", "human": true}))
+            .await
+            .unwrap();
+        desk.run("desk_key", json!({"keys": "return"}))
+            .await
+            .unwrap();
+        let point = (300.0, 200.0);
+        assert_eq!(
+            *PRESSED.lock().unwrap(),
+            [
+                Gesture::Point(
+                    point,
+                    Some(Clicks {
+                        button: 1,
+                        count: 1,
+                        modifiers: vec![]
+                    })
+                ),
+                Gesture::Point(
+                    point,
+                    Some(Clicks {
+                        button: 3,
+                        count: 2,
+                        modifiers: vec![CONTROL_L, SHIFT_L]
+                    })
+                ),
+                Gesture::Point(point, None),
+                Gesture::Point(point, None),
+                Gesture::Keys(vec![CONTROL_L, 0x61])
+            ]
+        );
+        let tools: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect();
+        assert_eq!(tools, ["click", "scroll", "press_key"]);
     }
 
     #[test]

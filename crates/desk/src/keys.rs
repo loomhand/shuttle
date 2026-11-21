@@ -118,6 +118,48 @@ pub enum Os {
     Linux,
 }
 
+/// The X keysym of a key in the driver's Linux names; none for one it does not map.
+pub(crate) fn x_keysym(name: &str) -> Option<u32> {
+    let keysym = match name {
+        "return" => 0xff0d,
+        "tab" => 0xff09,
+        "escape" => 0xff1b,
+        "space" => 0x20,
+        "backspace" => 0xff08,
+        "delete" => 0xffff,
+        "insert" => 0xff63,
+        "home" => 0xff50,
+        "end" => 0xff57,
+        "pageup" => 0xff55,
+        "pagedown" => 0xff56,
+        "up" => 0xff52,
+        "down" => 0xff54,
+        "left" => 0xff51,
+        "right" => 0xff53,
+        "shift" => 0xffe1,
+        "ctrl" => 0xffe3,
+        "alt" => 0xffe9,
+        "super" => 0xffeb,
+        "capslock" => 0xffe5,
+        "numlock" => 0xff7f,
+        _ => {
+            if let Some(n) = name
+                .strip_prefix('f')
+                .and_then(|n| n.parse::<u32>().ok())
+                .filter(|n| (1..=12).contains(n))
+            {
+                return Some(0xffbe + n - 1);
+            }
+            let mut chars = name.chars();
+            return match (chars.next(), chars.next()) {
+                (Some(c @ ' '..='~'), None) => Some(u32::from(c)),
+                _ => None,
+            };
+        }
+    };
+    Some(keysym)
+}
+
 /// The driver's key names of `combo`: `Ctrl+Shift+S` is `["ctrl", "shift", "s"]`; a name no driver knows fails.
 pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
     let mut parts: Vec<&str> = combo.split('+').collect();
@@ -245,6 +287,17 @@ mod tests {
         assert_eq!(key_names("super+l", Os::Mac).unwrap(), ["cmd", "l"]);
         assert_eq!(key_names("option+esc", Os::Mac).unwrap(), ["alt", "escape"]);
         assert!(key_names("ctrl+", Os::Mac).is_err());
+    }
+
+    #[test]
+    fn driver_key_names_have_x_keysyms_and_others_none() {
+        assert_eq!(x_keysym("return"), Some(0xff0d));
+        assert_eq!(x_keysym("f5"), Some(0xffc2));
+        assert_eq!(x_keysym("f"), Some(0x66));
+        assert_eq!(x_keysym("ctrl"), Some(0xffe3));
+        assert_eq!(x_keysym("+"), Some(0x2b));
+        assert_eq!(x_keysym("f13"), None);
+        assert_eq!(x_keysym("forward_delete"), None);
     }
 
     #[test]
