@@ -1049,9 +1049,10 @@ impl Computer {
                 (seen, focus, hold) = (now, now_focus, window_hold);
                 since = Instant::now();
             }
+            let placed = seen == windows && focus == active;
             if differs && !changed {
                 base = base.max((Instant::now() + SETTLE).min(start + COMMIT_SETTLE));
-            } else if churned && !differs {
+            } else if churned && !differs && placed {
                 base = start + wait;
             }
             changed = differs;
@@ -1077,7 +1078,7 @@ impl Computer {
             } else {
                 base
             };
-            still = changed && since.elapsed() >= hold;
+            still = (changed || churned && !placed) && since.elapsed() >= hold;
         }
         drop(paused);
         if quiet && (probe.is_some() || self.shm(|g| g.overlay_shown()).is_none_or(|shown| shown)) {

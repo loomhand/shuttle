@@ -48,7 +48,6 @@ impl Shown {
         churned
     }
 
-    /// Whether block `i` showed four contents during this settle: its changes still move the screen, but no longer differ from before the action.
     pub fn churns(&self, i: usize) -> bool {
         self.states.get(&i).is_some_and(|s| s.len() >= CHURN_STATES)
     }
