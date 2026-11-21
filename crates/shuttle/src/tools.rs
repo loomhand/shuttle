@@ -121,7 +121,7 @@ fn builtins() -> Value {
                 "properties": {
                     "steps": {"type": "array", "items": {"type": "object"}, "description": "The plan, one op per step"},
                     "flow": {"type": "string", "description": "Replay this saved flow instead of steps"},
-                    "params": {"type": "object", "description": "Values for the {{name}} slots"},
+                    "params": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Values for the {{name}} slots"},
                     "save": {"type": "string", "description": "Flow name for this plan"},
                     "start": {"type": "integer", "description": "First step to run, default 0"},
                     "find": {"type": "string", "description": "A request: returns the saved flow that does it"},

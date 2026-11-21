@@ -19,7 +19,7 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// Records the blocks that changed from `prev` to `now`, turns those back at `first` into toggling ones and those that showed four contents into churning ones, and says whether one turned churning.
+    /// Records the blocks that changed from `prev` to `now`, turns those back at `first` into toggling ones, and says whether one showed its fourth contents.
     pub fn learn(
         &mut self,
         first: &[u64],
@@ -29,7 +29,7 @@ impl Shown {
     ) -> bool {
         let mut churned = false;
         for (i, ((f, p), n)) in first.iter().zip(prev).zip(now).enumerate() {
-            if p == n {
+            if p == n || self.churns(i) {
                 continue;
             }
             let Some(b) = blocks.get_mut(i).filter(|b| **b != Block::Churning) else {
@@ -40,12 +40,17 @@ impl Shown {
                 states.push(*n);
             }
             if states.len() >= CHURN_STATES {
-                (*b, churned) = (Block::Churning, true);
+                churned = true;
             } else if n == f {
                 *b = merge(std::mem::take(b), Block::Toggling(states.clone()));
             }
         }
         churned
+    }
+
+    /// Whether block `i` showed four contents during this settle: its changes still move the screen, but no longer differ from before the action.
+    pub fn churns(&self, i: usize) -> bool {
+        self.states.get(&i).is_some_and(|s| s.len() >= CHURN_STATES)
     }
 }
 
@@ -297,9 +302,10 @@ mod tests {
         assert!(!shown.learn(&first, &[1, 1], &[2, 2], &mut blocks));
         assert!(!shown.learn(&first, &[2, 2], &[3, 1], &mut blocks));
         assert!(shown.learn(&first, &[3, 1], &[4, 2], &mut blocks));
-        assert_eq!(blocks, [Block::Churning, Block::Toggling(vec![1, 2])]);
+        assert_eq!(blocks, [Block::Quiet, Block::Toggling(vec![1, 2])]);
         assert!(!shown.learn(&first, &[4, 2], &[5, 2], &mut blocks));
-        assert!(!blocks[0].counts(6));
+        assert!(shown.churns(0) && !shown.churns(1));
+        assert!(blocks[0].counts(6));
     }
 
     #[test]
