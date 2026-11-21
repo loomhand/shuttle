@@ -1051,7 +1051,7 @@ impl Computer {
             }
             if differs && !changed {
                 base = base.max((Instant::now() + SETTLE).min(start + COMMIT_SETTLE));
-            } else if churned && !differs {
+            } else if churned && !differs && seen == windows && focus == active {
                 base = start + wait;
             }
             changed = differs;
