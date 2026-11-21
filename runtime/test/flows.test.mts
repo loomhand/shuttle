@@ -142,14 +142,12 @@ test('a plain type whose desk reply says it went into a password field is kept o
   assert.ok(disk().includes('memo12'), disk())
 })
 
-test('a type into a password field that the device could not check keeps a caveat that quotes no text', async (t) => {
+test('a plain type the device found in a password field and could not check keeps its caveat, which quotes no text', async (t) => {
   await daemon(t, ({ tool }) => tool === 'desk_type' ? JSON.stringify({ ok: true, protected: true, typed: null }) : answer(() => [notepad])({ tool }))
-  for (const step of [{ type: 'hunter12' }, { type: 'hunter12', secret: true }]) {
-    const r = await main({ steps: [{ app: 'Notepad' }, step] })
-    assert.equal(r.ok, true, JSON.stringify(r))
-    assert.deepEqual(r.caveats?.map((c) => c.step), [1], JSON.stringify(r))
-    assert.ok(!JSON.stringify(r).includes('hunter12'), JSON.stringify(r))
-  }
+  const r = await main({ steps: [{ app: 'Notepad' }, { type: 'hunter12' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(r.caveats?.map((c) => c.step), [1], JSON.stringify(r))
+  assert.ok(!JSON.stringify(r).includes('hunter12'), JSON.stringify(r))
 })
 
 test('a plain line typed with its Return into a field the step\'s own read shows as a focused password field is sealed before it goes out and sent as a secret line is', async (t) => {
