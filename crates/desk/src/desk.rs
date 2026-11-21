@@ -4828,6 +4828,7 @@ pub(crate) mod tests {
         for (text, button, pressed) in [
             ("r98s.txt\n", "Save", Some("Save")),
             ("r98s.txt\n", "Open", Some("Open")),
+            ("r98s.txt\r\n", "Save", Some("Save")),
             ("r98s.txt", "Save", None),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
