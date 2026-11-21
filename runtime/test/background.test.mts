@@ -630,6 +630,15 @@ test('a Windows background file chooser name with no extension replaces the name
   }
 })
 
+test('a Windows background file chooser name with no line break that the field already held is confirmed by its read-back, not refused as unchanged', { skip: process.platform !== 'win32' }, async (t) => {
+  const d = saveAs('notes.txt')
+  await daemon(t, d.reply)
+  const r = await main({ steps: [{ wait: 'Save as' }, { type: 'notes.txt' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(d.field.value, 'notes.txt')
+  assert.equal(sent(d.calls, 'desk_type').length, 1, JSON.stringify(sent(d.calls, 'desk_type')))
+})
+
 test('a Windows background file chooser whose field reads no name gets no Backspace, and one whose name the desk cut gets 260', { skip: process.platform !== 'win32' }, async (t) => {
   for (const [start, keys] of [['', [['end', undefined]]], ['x'.repeat(230), [['end', undefined], ['backspace', 256], ['backspace', 4]]]] as const) {
     const d = saveAs(start)

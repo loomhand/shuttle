@@ -479,10 +479,14 @@ impl Computer {
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
         }
         if let Err(e) = &result
-            && tool == "press_key"
+            && matches!(tool, "press_key" | "hotkey")
             && e.contains(WINDOW_GONE)
         {
-            let key = a.key.as_deref().unwrap_or_default();
+            let key = a
+                .key
+                .clone()
+                .or_else(|| a.keys.as_ref().map(|k| k.join("+")))
+                .unwrap_or_default();
             let note =
                 format!("the window closed while {key} was sent, so it may have reached it: {e}");
             result = Ok(json!({"content": [{"type": "text", "text": note}]}));
@@ -3143,7 +3147,36 @@ mod tests {
      {
         let gone = "Invalid window handle. (0x80070578)";
         let stale = "window_id 9 is closed, stale, or invalid.";
-        for (error, ok) in [(gone, true), (stale, false)] {
+        for (error, ok, act, said, tool) in [
+            (
+                gone,
+                true,
+                json!({"action": "key", "key": "Return", "element": 0}),
+                "return",
+                "press_key",
+            ),
+            (
+                stale,
+                false,
+                json!({"action": "key", "key": "Return", "element": 0}),
+                "return",
+                "press_key",
+            ),
+            (
+                gone,
+                true,
+                json!({"action": "key", "key": "ctrl+w", "element": 0}),
+                "ctrl+w",
+                "hotkey",
+            ),
+            (
+                gone,
+                true,
+                json!({"action": "hotkey", "keys": ["ctrl", "w"], "element": 0}),
+                "ctrl+w",
+                "hotkey",
+            ),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let socket = endpoint(dir.path());
             let listener = Fake::bind(&socket).unwrap();
@@ -3155,7 +3188,7 @@ mod tests {
                     "get_window_state" => {
                         json!({"ok": true, "result": {"structuredContent": {"window_id": 9, "elements": [{"element_index": 0, "element_token": "t0", "role": "Button", "label": "Save", "enabled": true, "frame": {"x": 100.0, "y": 100.0, "w": 200.0, "h": 40.0}}]}}})
                     }
-                    "press_key" => {
+                    "press_key" | "hotkey" => {
                         json!({"ok": true, "result": {"isError": true, "content": [{"type": "text", "text": error}]}})
                     }
                     _ => json!({"ok": true, "result": {"structuredContent": {}}}),
@@ -3163,17 +3196,14 @@ mod tests {
             }));
             let cua = cua_on(&socket, Os::Windows);
             cua.state(json!({"pid": 7})).await.unwrap();
-            let out = cua
-                .act(json!({"action": "key", "key": "Return", "element": 0}))
-                .await
-                .unwrap();
+            let out = cua.act(act).await.unwrap();
             driver.abort();
             let want = if ok {
                 format!(
-                    "the window closed while return was sent, so it may have reached it: press_key: {gone}"
+                    "the window closed while {said} was sent, so it may have reached it: {tool}: {gone}"
                 )
             } else {
-                format!("press_key: {stale}")
+                format!("{tool}: {stale}")
             };
             assert_eq!(out.is_error, !ok, "{}", out.text);
             assert!(out.text.starts_with(&want), "{}", out.text);

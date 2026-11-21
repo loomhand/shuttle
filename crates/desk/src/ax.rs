@@ -396,8 +396,12 @@ impl Ax {
         let silent = a.role.is_empty() && late(asked.elapsed());
         let node = self.node_of(el, &mut a, w.extras, VALUE_CHARS, w.scale);
         let (parent, depth) = place(&mut w.nodes, node, parent, depth);
+        if silent {
+            w.cut = true;
+            return false;
+        }
         w.path.push(el.clone());
-        let truncated = silent || a.children.iter().any(|c| self.walk(w, c, parent, depth));
+        let truncated = a.children.iter().any(|c| self.walk(w, c, parent, depth));
         w.path.pop();
         truncated
     }
@@ -452,10 +456,11 @@ impl Access for Ax {
             deadline,
             nodes: Vec::new(),
             path: Vec::new(),
+            cut: false,
         };
         let mut truncated = self.walk(&mut w, &el, None, 0);
         let walked = started.elapsed().as_micros();
-        if frame.role == "window" && !truncated && extras.menus {
+        if frame.role == "window" && !truncated && !w.cut && extras.menus {
             let app = frame.pid.map(|p| application(p as i32));
             if let Some(bar) = app.as_ref().and_then(|a| attr(a, "AXMenuBar")) {
                 let root = (!w.nodes.is_empty()).then_some(0);
@@ -469,7 +474,7 @@ impl Access for Ax {
         Ok(Tree {
             frame: frame.clone(),
             nodes: w.nodes,
-            truncated,
+            truncated: truncated || w.cut,
             phases,
         })
     }
@@ -717,6 +722,7 @@ struct Walk {
     deadline: Instant,
     nodes: Vec<Node>,
     path: Vec<CFType>,
+    cut: bool,
 }
 
 /// One element's attributes from a batched read; an attribute it lacks stays empty.

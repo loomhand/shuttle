@@ -997,7 +997,7 @@ impl Drop for Forward {
     }
 }
 
-/// The node with input focus, as the UI server's `focus` names it: its text is a length, a hash and its last 32 code points.
+/// The node with input focus, as the UI server's `focus` names it: its text is a length, a hash and its last 32 code points, or a password field's length alone.
 #[derive(Debug, Default, Deserialize)]
 struct Focus {
     editable: bool,
