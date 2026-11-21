@@ -602,7 +602,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             id: Some(w.id.clone()),
         };
         if self.focus(front, Some(window::BY_ID)).await.is_err() {
-            return Ok(None);
+            let Ok((f, _, _)) = self.pick_window(Some(&w.title), w.pid).await else {
+                return Ok(None);
+            };
+            let (Ok(id), Some(pid)) = (f.id.parse::<i64>(), f.pid) else {
+                return Ok(None);
+            };
+            if self.raise(Some((pid.into(), id))).await.is_err() {
+                return Ok(None);
+            }
         }
         let launched = format!("{app} is already running; brought its window to the front");
         let out = json!({"ok": true, "launched": launched, "running": true, "title": w.title, "pid": w.pid});
@@ -6502,6 +6510,25 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(sent(&calls, "launch_app").len(), 2);
         assert_eq!(sent(&calls, "bring_to_front").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_linux_launch_of_an_app_whose_window_id_cannot_be_told_from_a_twin_raises_it_by_title()
+     {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let driver = Twins(Arc::clone(&calls), 0.0, "Untitled - Notepad", 0.0);
+        let desk = Desk::new(|| Ok(TwinDocs::new(false, false, false)), driver, Os::Linux);
+        let raised: Value = serde_json::from_str(
+            &desk
+                .run("desk_launch", json!({"app": "Notepad"}))
+                .await
+                .unwrap()
+                .text,
+        )
+        .unwrap();
+        assert_eq!(raised["running"], json!(true), "{raised}");
+        assert_eq!(sent(&calls, "bring_to_front").len(), 1);
+        assert!(sent(&calls, "launch_app").is_empty());
     }
 
     #[tokio::test]
