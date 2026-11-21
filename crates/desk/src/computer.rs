@@ -22,7 +22,7 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, Glider, HUMAN, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, glide,
+    BUSY, HUMAN, Hand, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, human_input,
     launch_name, runs_app, text_runs, without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
@@ -134,7 +134,7 @@ pub struct Computer {
     driver: Arc<Driver>,
     os: Os,
     typer: Typer,
-    glider: Glider,
+    hand: Hand,
     last: Mutex<HashMap<String, Snapshot>>,
     input: Arc<Mutex<()>>,
     /// The MIT-SHM grabber, opened on first use and again after a failure.
@@ -161,7 +161,7 @@ impl Computer {
             driver,
             os,
             typer: crate::desk::TYPER,
-            glider: crate::desk::GLIDER,
+            hand: crate::desk::HAND,
             last: Mutex::new(HashMap::new()),
             input: Arc::new(Mutex::new(())),
             grabber: std::sync::Mutex::new(None),
@@ -1915,7 +1915,10 @@ impl Computer {
     /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
     async fn call(&self, session: &str, name: &str, mut args: Value) -> Result<Value, String> {
         args["session"] = session.into();
-        glide(self.glider, name, &args).await;
+        if let Some(pressed) = human_input(self.hand, name, &args).await? {
+            self.driver.stamp();
+            return Ok(pressed);
+        }
         let mut v = self.reply(name, &args).await?;
         if name != "end_session" && ended(&v) {
             self.reply("start_session", &json!({"session": session}))
@@ -2739,6 +2742,7 @@ mod tests {
 
     use super::*;
 
+    use crate::desk::Gesture;
     use crate::driver::CLICK_SPACING;
 
     static GLIDES: std::sync::Mutex<Vec<(f64, f64)>> = std::sync::Mutex::new(Vec::new());
@@ -4226,11 +4230,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_human_click_the_hand_presses_answers_in_screenshot_pixels_with_no_driver_click() {
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, clicks, driver) = scaling_driver(dir.path(), 640);
+        let mut cua = cua(&socket);
+        cua.hand = |g, _| {
+            Ok(g == Gesture::Point(
+                (62.5, 25.0),
+                Some(crate::desk::Clicks {
+                    button: 1,
+                    count: 1,
+                    modifiers: vec![],
+                }),
+            ))
+        };
+        cua.state(json!({})).await.unwrap();
+        let out = cua
+            .act(json!({"action": "click", "x": 100.0, "y": 40.0, "human": true}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text
+                .starts_with("Sent click at screenshot point (100,40) at a person's pace."),
+            "{}",
+            out.text
+        );
+        assert!(clicks.lock().unwrap().is_empty());
+        driver.abort();
+    }
+
+    #[tokio::test]
     async fn only_a_human_click_glides_to_its_screen_point_first() {
         let dir = tempfile::tempdir().unwrap();
         let (socket, clicks, driver) = scaling_driver(dir.path(), 640);
         let mut cua = cua(&socket);
-        cua.glider = |to, _| GLIDES.lock().unwrap().push(to);
+        cua.hand = |g, _| {
+            if let Gesture::Point(to, _) = g {
+                GLIDES.lock().unwrap().push(to);
+            }
+            Ok(false)
+        };
         cua.state(json!({})).await.unwrap();
         cua.act(json!({"action": "click", "x": 100.0, "y": 40.0}))
             .await
