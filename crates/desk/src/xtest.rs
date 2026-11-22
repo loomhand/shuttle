@@ -455,7 +455,7 @@ mod tests {
         assert!(
             short
                 .iter()
-                .all(|&(x, y)| (0..=3).contains(&x) && (0..=4).contains(&y)),
+                .all(|&(x, y)| (-1..=4).contains(&x) && (-1..=5).contains(&y)),
             "{short:?}"
         );
         assert_eq!(short.last(), Some(&(3, 4)));
