@@ -69,6 +69,14 @@ thread_local! {
 /// The driver calls the desk makes: input, windows, launch and capture.
 pub trait Input {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
+
+    fn spaced<T: Send>(
+        &self,
+        _point: (f64, f64),
+        click: impl Future<Output = T> + Send,
+    ) -> impl Future<Output = T> + Send {
+        click
+    }
 }
 
 /// A client of the cua-driver daemon at `endpoint`, in a desktop session, or the window session a call names; on Linux each call runs in a session of its own, except window reads, whose session the next window input shares and ends.
@@ -296,11 +304,27 @@ impl Input for Driver {
             None => sent.await,
         }
     }
+
+    fn spaced<T: Send>(
+        &self,
+        point: (f64, f64),
+        click: impl Future<Output = T> + Send,
+    ) -> impl Future<Output = T> + Send {
+        Driver::spaced(self, point, click)
+    }
 }
 
 impl Input for std::sync::Arc<Driver> {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send {
         Driver::call(self, tool, args)
+    }
+
+    fn spaced<T: Send>(
+        &self,
+        point: (f64, f64),
+        click: impl Future<Output = T> + Send,
+    ) -> impl Future<Output = T> + Send {
+        Driver::spaced(self, point, click)
     }
 }
 
