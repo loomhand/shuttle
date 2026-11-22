@@ -4,8 +4,8 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -193,7 +193,7 @@ tokio::task_local! {
     static EFFECT: RefCell<Option<Value>>;
     static SCALE: Cell<Option<f64>>;
     pub(crate) static HUMAN: bool;
-    pub(crate) static HAND_TURN: Option<Turn>;
+    pub(crate) static HAND_TURN: RefCell<Weak<tokio::sync::OwnedMutexGuard<()>>>;
 }
 
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
@@ -317,7 +317,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let out = self.run_one(tool, args).await?;
             Ok(EFFECT.with(|seen| with_effect(out, seen.borrow_mut().take())))
         });
-        HUMAN.scope(human, run).await
+        HUMAN
+            .scope(human, HAND_TURN.scope(RefCell::new(Weak::new()), run))
+            .await
     }
 
     async fn run_one(&self, tool: &str, mut args: Value) -> Result<Output, String> {
@@ -332,7 +334,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             if tool != "desk_type" {
                 *lock(&self.clicked) = None;
             }
-            Some(Arc::new(turn))
+            let turn = Arc::new(turn);
+            hold_for_hand(&turn);
+            Some(turn)
         } else {
             None
         };
@@ -345,17 +349,11 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let scale = Cell::new(None);
         if self.auto && !foreground && auto::VERBS.contains(&tool) {
             return SCALE
-                .scope(
-                    scale,
-                    HAND_TURN.scope(turn.clone(), self.auto_run(tool, args, turn)),
-                )
+                .scope(scale, self.auto_run(tool, args, turn))
                 .await
                 .map_err(|e| at_lock(self.os, e));
         }
-        let run = FOREGROUND.scope(
-            foreground,
-            HAND_TURN.scope(turn.clone(), self.dispatch(tool, args, turn)),
-        );
+        let run = FOREGROUND.scope(foreground, self.dispatch(tool, args, turn));
         SCALE
             .scope(scale, run)
             .await
@@ -3158,6 +3156,10 @@ fn human() -> bool {
     HUMAN.try_with(|h| *h).unwrap_or(false)
 }
 
+pub(crate) fn hold_for_hand(turn: &Turn) {
+    let _ = HAND_TURN.try_with(|t| *t.borrow_mut() = Arc::downgrade(turn));
+}
+
 /// On a `human` call, the gesture for the desktop point of a click, scroll or drag, or for desktop keys the hand can press itself, with the reply for when it does.
 pub(crate) fn human_gesture(tool: &str, req: &Value) -> Option<(Gesture, String)> {
     if !human() {
@@ -3188,7 +3190,7 @@ pub(crate) async fn human_press(
 ) -> Result<Option<Value>, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _cancel = Cancel(stop.clone());
-    let turn = HAND_TURN.try_with(Clone::clone).ok().flatten();
+    let turn = HAND_TURN.try_with(|t| t.borrow().upgrade()).ok().flatten();
     let pressed = tokio::task::spawn_blocking(move || {
         let _turn = turn;
         hand(gesture, &stop)
