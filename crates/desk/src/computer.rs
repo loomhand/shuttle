@@ -1,10 +1,11 @@
 //! The computer verbs for a vision agent, over cua-driver's line-delimited JSON in named driver sessions.
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use base64::Engine;
@@ -22,8 +23,9 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, HUMAN, Hand, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, human_gesture,
-    human_press, launch_name, runs_app, text_runs, without_protocol_tail, xtest,
+    BUSY, HAND_TURN, HUMAN, Hand, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE,
+    hold_for_hand, human_gesture, human_press, launch_name, runs_app, text_runs,
+    without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
@@ -383,7 +385,9 @@ impl Computer {
     }
 
     async fn act_one(&self, session: &str, a: ActArgs) -> Result<Output, String> {
-        HUMAN.scope(a.human, self.act_step(session, a)).await
+        let human = a.human;
+        let step = HAND_TURN.scope(RefCell::new(Weak::new()), self.act_step(session, a));
+        HUMAN.scope(human, step).await
     }
 
     async fn act_step(&self, session: &str, mut a: ActArgs) -> Result<Output, String> {
@@ -413,6 +417,7 @@ impl Computer {
                 .await
                 .map_err(|_| BUSY.to_owned())?,
         );
+        hold_for_hand(&input);
         if a.action == "type"
             && (a.text.as_deref().is_some_and(|t| !t.is_ascii())
                 || (a.element.is_none() && a.x.is_some() && a.y.is_some())
@@ -4259,6 +4264,59 @@ mod tests {
             out.text
         );
         assert!(clicks.lock().unwrap().is_empty());
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_dropped_human_click_holds_the_input_until_the_hand_lets_go() {
+        static LET_GO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, _, driver) = scaling_driver(dir.path(), 640);
+        let mut cua = cua(&socket);
+        cua.hand = |_, stop| {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            LET_GO.store(true, Ordering::SeqCst);
+            Ok(true)
+        };
+        cua.state(json!({})).await.unwrap();
+        let click = cua.act(json!({"action": "click", "x": 100.0, "y": 40.0, "human": true}));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), click)
+                .await
+                .is_err()
+        );
+        let _input = cua.input.clone().lock_owned().await;
+        assert!(LET_GO.load(Ordering::SeqCst));
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_human_type_dropped_in_its_focus_click_holds_the_input_until_the_hand_lets_go() {
+        static LET_GO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, _, driver) = scaling_driver(dir.path(), 640);
+        let mut cua = cua(&socket);
+        cua.hand = |_, stop| {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            LET_GO.store(true, Ordering::SeqCst);
+            Ok(true)
+        };
+        cua.state(json!({})).await.unwrap();
+        let typed =
+            cua.act(json!({"action": "type", "x": 100.0, "y": 40.0, "text": "hi", "human": true}));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), typed)
+                .await
+                .is_err()
+        );
+        let _input = cua.input.clone().lock_owned().await;
+        assert!(LET_GO.load(Ordering::SeqCst));
         driver.abort();
     }
 

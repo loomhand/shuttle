@@ -4,8 +4,8 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -193,6 +193,7 @@ tokio::task_local! {
     static EFFECT: RefCell<Option<Value>>;
     static SCALE: Cell<Option<f64>>;
     pub(crate) static HUMAN: bool;
+    pub(crate) static HAND_TURN: RefCell<Weak<tokio::sync::OwnedMutexGuard<()>>>;
 }
 
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
@@ -316,7 +317,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             let out = self.run_one(tool, args).await?;
             Ok(EFFECT.with(|seen| with_effect(out, seen.borrow_mut().take())))
         });
-        HUMAN.scope(human, run).await
+        HUMAN
+            .scope(human, HAND_TURN.scope(RefCell::new(Weak::new()), run))
+            .await
     }
 
     async fn run_one(&self, tool: &str, mut args: Value) -> Result<Output, String> {
@@ -331,7 +334,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             if tool != "desk_type" {
                 *lock(&self.clicked) = None;
             }
-            Some(Arc::new(turn))
+            let turn = Arc::new(turn);
+            hold_for_hand(&turn);
+            Some(turn)
         } else {
             None
         };
@@ -3151,6 +3156,10 @@ fn human() -> bool {
     HUMAN.try_with(|h| *h).unwrap_or(false)
 }
 
+pub(crate) fn hold_for_hand(turn: &Turn) {
+    let _ = HAND_TURN.try_with(|t| *t.borrow_mut() = Arc::downgrade(turn));
+}
+
 /// On a `human` call, the gesture for the desktop point of a click, scroll or drag, or for desktop keys the hand can press itself, with the reply for when it does.
 pub(crate) fn human_gesture(tool: &str, req: &Value) -> Option<(Gesture, String)> {
     if !human() {
@@ -3181,9 +3190,13 @@ pub(crate) async fn human_press(
 ) -> Result<Option<Value>, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _cancel = Cancel(stop.clone());
-    let pressed = tokio::task::spawn_blocking(move || hand(gesture, &stop))
-        .await
-        .map_err(|e| format!("XTest: {e}"))??;
+    let turn = HAND_TURN.try_with(|t| t.borrow().upgrade()).ok().flatten();
+    let pressed = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        hand(gesture, &stop)
+    })
+    .await
+    .map_err(|e| format!("XTest: {e}"))??;
     Ok(pressed.then(|| {
         json!({"content": [{"type": "text", "text": text}], "structuredContent": {"effect": "unverifiable"}})
     }))
@@ -9542,6 +9555,32 @@ pub(crate) mod tests {
             .map(|(t, _)| t.clone())
             .collect();
         assert_eq!(tools, ["spaced", "spaced", "click", "scroll", "press_key"]);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_human_key_holds_the_turn_until_the_hand_lets_go() {
+        static LET_GO: AtomicBool = AtomicBool::new(false);
+        let desk = Desk::new(
+            || Ok(notepad()),
+            Recorder(Arc::new(Mutex::new(Vec::new()))),
+            Os::Linux,
+        )
+        .with_hand(|_, stop| {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            LET_GO.store(true, Ordering::SeqCst);
+            Ok(true)
+        });
+        let key = desk.run("desk_key", json!({"keys": "ctrl+a", "human": true}));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), key)
+                .await
+                .is_err()
+        );
+        let _turn = desk.turn().lock_owned().await;
+        assert!(LET_GO.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

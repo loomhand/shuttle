@@ -113,17 +113,15 @@ impl Driver {
 
     /// Runs `click` at `(x, y)` once [`CLICK_SPACING`] has passed since a click within [`CLICK_DISTANCE`] of it, so two clicks never make a double click.
     pub(crate) async fn spaced<T>(&self, (x, y): (f64, f64), click: impl Future<Output = T>) -> T {
-        let mut last = self.last_click.lock().await;
+        let last = self.last_click.lock().await;
         let wait = last
             .filter(|(_, lx, ly)| (x - lx).hypot(y - ly) <= CLICK_DISTANCE)
             .map(|(at, _, _)| CLICK_SPACING.saturating_sub(at.elapsed()));
         if let Some(wait) = wait {
             tokio::time::sleep(wait).await;
         }
-        *last = Some((Instant::now(), x, y));
-        let done = click.await;
-        *last = Some((Instant::now(), x, y));
-        done
+        let _stamp = ClickStamp(last, (x, y));
+        click.await
     }
 
     pub(crate) async fn send(&self, tool: &str, args: &Value) -> Result<Value, String> {
@@ -325,6 +323,17 @@ impl Input for std::sync::Arc<Driver> {
         click: impl Future<Output = T> + Send,
     ) -> impl Future<Output = T> + Send {
         Driver::spaced(self, point, click)
+    }
+}
+
+struct ClickStamp<'a>(
+    tokio::sync::MutexGuard<'a, Option<(Instant, f64, f64)>>,
+    (f64, f64),
+);
+
+impl Drop for ClickStamp<'_> {
+    fn drop(&mut self) {
+        *self.0 = Some((Instant::now(), self.1.0, self.1.1));
     }
 }
 
@@ -1170,9 +1179,9 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_click_dropped_while_it_runs_still_spaces_the_next_near_one() {
+    async fn a_click_dropped_while_it_runs_spaces_the_next_near_one_from_the_drop() {
         let d = Driver::new(String::new());
-        let dropped = Duration::from_millis(100);
+        let dropped = CLICK_SPACING + Duration::from_millis(200);
         let _ = tokio::time::timeout(
             dropped,
             d.spaced((100.0, 100.0), std::future::pending::<()>()),
@@ -1180,7 +1189,7 @@ mod tests {
         .await;
         let started = Instant::now();
         d.spaced((104.0, 100.0), async {}).await;
-        assert_eq!(started.elapsed(), CLICK_SPACING - dropped);
+        assert_eq!(started.elapsed(), CLICK_SPACING);
     }
 
     #[tokio::test(start_paused = true)]
