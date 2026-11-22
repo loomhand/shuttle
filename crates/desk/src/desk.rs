@@ -79,9 +79,6 @@ pub(crate) const TYPER: Typer = |_, _, _| Ok(false);
 pub(crate) const HAND: Hand = crate::xtest::hand;
 #[cfg(not(target_os = "linux"))]
 pub(crate) const HAND: Hand = |_, _| Ok(false);
-const CONTROL_L: u32 = 0xffe3;
-const SHIFT_L: u32 = 0xffe1;
-const ALT_L: u32 = 0xffe9;
 
 const APP_INPUT: [&str; 5] = [
     "desk_key",
@@ -587,10 +584,15 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
             *lock(&self.read) = None;
         }
-        let human = human_input(self.hand, tool, &args);
-        let human = match human_click(tool, &args) {
-            Some(at) => self.driver.spaced(at, human).await?,
-            None => human.await?,
+        let human = match human_gesture(tool, &args) {
+            Some(g) => match &g.0 {
+                Gesture::Point(at, Some(_)) => {
+                    let at = *at;
+                    self.driver.spaced(at, human_press(self.hand, g)).await?
+                }
+                _ => human_press(self.hand, g).await?,
+            },
+            None => None,
         };
         let out = match human {
             Some(out) => out,
@@ -3149,32 +3151,32 @@ fn human() -> bool {
     HUMAN.try_with(|h| *h).unwrap_or(false)
 }
 
-/// On a `human` call, moves the pointer to the desktop point of a click, scroll or drag along a person's path, and presses a click or desktop keys it can press itself at a person's pace, answering for them in place of the driver.
-pub(crate) async fn human_input(
-    hand: Hand,
-    tool: &str,
-    req: &Value,
-) -> Result<Option<Value>, String> {
+/// On a `human` call, the gesture for the desktop point of a click, scroll or drag, or for desktop keys the hand can press itself, with the reply for when it does.
+pub(crate) fn human_gesture(tool: &str, req: &Value) -> Option<(Gesture, String)> {
     if !human() {
-        return Ok(None);
+        return None;
     }
-    let (gesture, text) = if let Some(to) = pointer_point(tool, req) {
-        let clicks = (tool == "click").then(|| clicks(req)).flatten();
+    if let Some(to) = pointer_point(tool, req) {
         // the computer verbs turn "Sent screen-absolute click at (x, y)" into screenshot pixels, as for the driver's own reply
         let text = format!(
             "Sent, effect not verified: Sent screen-absolute click at ({}, {}) at a person's pace.",
             to.0, to.1
         );
-        (Gesture::Point(to, clicks), text)
-    } else if let Some((keysyms, names)) = desktop_keys(tool, req) {
-        let kind = if tool == "hotkey" { "hotkey" } else { "key" };
-        let text = format!(
-            "Sent, effect not verified: Pressed desktop {kind} {names} at a person's pace."
-        );
-        (Gesture::Keys(keysyms), text)
-    } else {
-        return Ok(None);
-    };
+        let clicks = clicks(req).filter(|_| tool == "click");
+        return Some((Gesture::Point(to, clicks), text));
+    }
+    let (keysyms, names) = desktop_keys(tool, req)?;
+    let kind = if tool == "hotkey" { "hotkey" } else { "key" };
+    let text =
+        format!("Sent, effect not verified: Pressed desktop {kind} {names} at a person's pace.");
+    Some((Gesture::Keys(keysyms), text))
+}
+
+/// Moves the pointer along a person's path and presses what the hand can press itself at a person's pace, answering in place of the driver; none when it pressed nothing.
+pub(crate) async fn human_press(
+    hand: Hand,
+    (gesture, text): (Gesture, String),
+) -> Result<Option<Value>, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _cancel = Cancel(stop.clone());
     let pressed = tokio::task::spawn_blocking(move || hand(gesture, &stop))
@@ -3185,16 +3187,9 @@ pub(crate) async fn human_input(
     }))
 }
 
-/// The point of a `human` desktop click that the hand presses itself, which keeps the driver's spacing between clicks.
-fn human_click(tool: &str, req: &Value) -> Option<(f64, f64)> {
-    (tool == "click" && human() && clicks(req).is_some())
-        .then(|| pointer_point(tool, req))
-        .flatten()
-}
-
 /// The keysyms of a desktop key or hotkey request and its key names; none for a key without one.
 fn desktop_keys(tool: &str, req: &Value) -> Option<(Vec<u32>, String)> {
-    if req["scope"] != "desktop" && req["target"]["kind"] != "desktop" {
+    if !on_desktop(req) {
         return None;
     }
     let names: Vec<&str> = match tool {
@@ -3229,9 +3224,9 @@ fn clicks(req: &Value) -> Option<Clicks> {
         Value::Array(m) => m
             .iter()
             .map(|m| match m.as_str()? {
-                "ctrl" | "control" => Some(CONTROL_L),
-                "shift" => Some(SHIFT_L),
-                "alt" | "option" => Some(ALT_L),
+                "ctrl" | "control" => x_keysym("ctrl"),
+                "shift" => x_keysym("shift"),
+                "alt" | "option" => x_keysym("alt"),
                 _ => None,
             })
             .collect::<Option<_>>()?,
@@ -3250,8 +3245,14 @@ fn pointer_point(tool: &str, req: &Value) -> Option<(f64, f64)> {
         "drag" => ("from_x", "from_y"),
         _ => return None,
     };
-    let desktop = req["scope"] == "desktop" || req["target"]["kind"] == "desktop";
-    req[x].as_f64().zip(req[y].as_f64()).filter(|_| desktop)
+    req[x]
+        .as_f64()
+        .zip(req[y].as_f64())
+        .filter(|_| on_desktop(req))
+}
+
+fn on_desktop(req: &Value) -> bool {
+    req["scope"] == "desktop" || req["target"]["kind"] == "desktop"
 }
 
 fn opens(prelude: &str, name: &str) -> bool {
@@ -9524,12 +9525,12 @@ pub(crate) mod tests {
                     Some(Clicks {
                         button: 3,
                         count: 2,
-                        modifiers: vec![CONTROL_L, SHIFT_L]
+                        modifiers: vec![0xffe3, 0xffe1]
                     })
                 ),
                 Gesture::Point(point, None),
                 Gesture::Point(point, None),
-                Gesture::Keys(vec![CONTROL_L, 0x61])
+                Gesture::Keys(vec![0xffe3, 0x61])
             ]
         );
         let tools: Vec<String> = calls

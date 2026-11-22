@@ -86,7 +86,7 @@ pub fn type_mapped(text: &str, human: bool, stop: &AtomicBool) -> Result<bool, S
             };
             for (i, &(kind, key)) in events.iter().enumerate() {
                 if stop.load(Ordering::Relaxed) {
-                    return Err("stopped by the user".to_owned());
+                    return Err(STOPPED.to_owned());
                 }
                 sent.push(
                     conn.xtest_fake_input(kind, key, x11rb::CURRENT_TIME, root, 0, 0, 0)
@@ -138,8 +138,7 @@ fn press_keys(keysyms: &[u32], stop: &AtomicBool) -> Result<bool, String> {
         return Ok(false);
     };
     let root = conn.setup().roots[n].root;
-    let codes: Option<Vec<u8>> = keysyms.iter().map(|&k| keycode(&conn, k)).collect();
-    let Some(codes) = codes else {
+    let Some(codes) = keycodes(&conn, keysyms) else {
         return Ok(false);
     };
     send_plan(&conn, root, &key_plan(&codes), &mut Rng::seeded(), stop)?;
@@ -174,28 +173,26 @@ fn glide(to: (f64, f64), clicks: Option<Clicks>, stop: &AtomicBool) -> Result<bo
     let from = (f64::from(at.root_x), f64::from(at.root_y));
     let mut rng = Rng::seeded();
     let points = path(from, to, &mut rng);
-    if !points.is_empty() {
-        for (x, y) in points {
-            if stop.load(Ordering::Relaxed)
-                || conn
-                    .xtest_fake_input(MOTION_NOTIFY_EVENT, 0, x11rb::CURRENT_TIME, root, x, y, 0)
-                    .is_err()
-                || conn.flush().is_err()
-            {
-                return Ok(false);
-            }
-            thread::sleep(rng.ms(PATH_STEP_MS));
+    for (x, y) in points {
+        if stop.load(Ordering::Relaxed)
+            || conn
+                .xtest_fake_input(MOTION_NOTIFY_EVENT, 0, x11rb::CURRENT_TIME, root, x, y, 0)
+                .is_err()
+            || conn.flush().is_err()
+        {
+            return Ok(false);
         }
+        thread::sleep(rng.ms(PATH_STEP_MS));
     }
     thread::sleep(rng.ms(SETTLE_MS));
     let Some(clicks) = clicks else {
         return Ok(false);
     };
-    let mods: Option<Vec<u8>> = clicks
-        .modifiers
-        .iter()
-        .map(|&m| keycode(&conn, m))
-        .collect();
+    let mods = if clicks.modifiers.is_empty() {
+        Some(Vec::new())
+    } else {
+        keycodes(&conn, &clicks.modifiers)
+    };
     let Some(mods) = mods else {
         return Ok(false);
     };
@@ -209,10 +206,10 @@ fn glide(to: (f64, f64), clicks: Option<Clicks>, stop: &AtomicBool) -> Result<bo
 
 /// The events of `clicks` with modifier keycodes `mods` held around them, each with the pause after it.
 fn press_plan(clicks: &Clicks, mods: &[u8]) -> Vec<Step> {
-    let (hold, gap) = if clicks.count > 1 {
-        (MULTI_HOLD_MS, MULTI_GAP_MS)
+    let hold = if clicks.count > 1 {
+        MULTI_HOLD_MS
     } else {
-        (CLICK_HOLD_MS, MULTI_GAP_MS)
+        CLICK_HOLD_MS
     };
     let mut plan: Vec<_> = mods
         .iter()
@@ -221,7 +218,7 @@ fn press_plan(clicks: &Clicks, mods: &[u8]) -> Vec<Step> {
     for i in 0..clicks.count {
         let last = i + 1 == clicks.count;
         let after = if !last {
-            Some(gap)
+            Some(MULTI_GAP_MS)
         } else if mods.is_empty() {
             None
         } else {
@@ -286,7 +283,7 @@ fn send_plan(
     })
 }
 
-fn keycode(conn: &RustConnection, keysym: u32) -> Option<u8> {
+fn keycodes(conn: &RustConnection, keysyms: &[u32]) -> Option<Vec<u8>> {
     let setup = conn.setup();
     let (min, max) = (setup.min_keycode, setup.max_keycode);
     let map = conn
@@ -295,11 +292,16 @@ fn keycode(conn: &RustConnection, keysym: u32) -> Option<u8> {
         .reply()
         .ok()?;
     let per = usize::from(map.keysyms_per_keycode.max(1));
-    let i = map
-        .keysyms
-        .chunks(per)
-        .position(|syms| syms.first() == Some(&keysym))?;
-    min.checked_add(u8::try_from(i).ok()?)
+    keysyms
+        .iter()
+        .map(|keysym| {
+            let i = map
+                .keysyms
+                .chunks(per)
+                .position(|syms| syms.first() == Some(keysym))?;
+            min.checked_add(u8::try_from(i).ok()?)
+        })
+        .collect()
 }
 
 /// The points after `from` on an eased quadratic curve to `to` through a control point a random offset from the midpoint, each but the last a pixel off the curve at most.

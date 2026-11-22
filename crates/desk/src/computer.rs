@@ -22,8 +22,8 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, HUMAN, Hand, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, human_input,
-    launch_name, runs_app, text_runs, without_protocol_tail, xtest,
+    BUSY, HUMAN, Hand, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, human_gesture,
+    human_press, launch_name, runs_app, text_runs, without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
@@ -1915,7 +1915,9 @@ impl Computer {
     /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
     async fn call(&self, session: &str, name: &str, mut args: Value) -> Result<Value, String> {
         args["session"] = session.into();
-        if let Some(pressed) = human_input(self.hand, name, &args).await? {
+        if let Some(g) = human_gesture(name, &args)
+            && let Some(pressed) = human_press(self.hand, g).await?
+        {
             self.driver.stamp();
             return Ok(pressed);
         }
