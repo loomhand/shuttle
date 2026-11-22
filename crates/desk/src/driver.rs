@@ -70,7 +70,6 @@ thread_local! {
 pub trait Input {
     fn call(&self, tool: &str, args: Value) -> impl Future<Output = Result<Value, String>> + Send;
 
-    /// Runs `click` at `point` as the driver spaces its own clicks; an input that keeps no click times runs it at once.
     fn spaced<T: Send>(
         &self,
         _point: (f64, f64),
