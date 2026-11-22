@@ -1915,7 +1915,7 @@ impl Computer {
     /// One driver call, sent once more after starting `session` again when the driver had ended it; a result the driver marks isError comes back as is.
     async fn call(&self, session: &str, name: &str, mut args: Value) -> Result<Value, String> {
         args["session"] = session.into();
-        if let Some(g) = human_gesture(name, &args)
+        if let Some(g) = human_gesture(name, &args).filter(|_| self.os == Os::Linux)
             && let Some(pressed) = human_press(self.hand, g).await?
         {
             self.driver.stamp();

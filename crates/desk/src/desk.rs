@@ -201,7 +201,7 @@ pub(crate) type Typer = fn(&str, bool, &AtomicBool) -> Result<bool, String>;
 /// Sends a gesture at a person's pace; false when it pressed nothing and leaves the press to the driver.
 pub(crate) type Hand = fn(Gesture, &AtomicBool) -> Result<bool, String>;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum Gesture {
     /// The pointer to a desktop point along a person's path, and the clicks to press there.
     Point((f64, f64), Option<Clicks>),
@@ -209,7 +209,7 @@ pub(crate) enum Gesture {
     Keys(Vec<u32>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct Clicks {
     pub(crate) button: u8,
     pub(crate) count: u32,
@@ -584,7 +584,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
             *lock(&self.read) = None;
         }
-        let human = match human_gesture(tool, &args) {
+        let human = match human_gesture(tool, &args).filter(|_| self.os == Os::Linux) {
             Some(g) => match &g.0 {
                 Gesture::Point(at, Some(_)) => {
                     let at = *at;
@@ -3157,12 +3157,14 @@ pub(crate) fn human_gesture(tool: &str, req: &Value) -> Option<(Gesture, String)
         return None;
     }
     if let Some(to) = pointer_point(tool, req) {
-        // the computer verbs turn "Sent screen-absolute click at (x, y)" into screenshot pixels, as for the driver's own reply
-        let text = format!(
-            "Sent, effect not verified: Sent screen-absolute click at ({}, {}) at a person's pace.",
-            to.0, to.1
-        );
         let clicks = clicks(req).filter(|_| tool == "click");
+        // the computer verbs turn "Sent screen-absolute click at (x, y)" into screenshot pixels, as for the driver's own reply
+        let text = clicks.as_ref().map_or_else(String::new, |_| {
+            format!(
+                "Sent, effect not verified: Sent screen-absolute click at ({}, {}) at a person's pace.",
+                to.0, to.1
+            )
+        });
         return Some((Gesture::Point(to, clicks), text));
     }
     let (keysyms, names) = desktop_keys(tool, req)?;
@@ -3224,9 +3226,9 @@ fn clicks(req: &Value) -> Option<Clicks> {
         Value::Array(m) => m
             .iter()
             .map(|m| match m.as_str()? {
-                "ctrl" | "control" => x_keysym("ctrl"),
+                "ctrl" => x_keysym("ctrl"),
                 "shift" => x_keysym("shift"),
-                "alt" | "option" => x_keysym("alt"),
+                "alt" => x_keysym("alt"),
                 _ => None,
             })
             .collect::<Option<_>>()?,
@@ -9540,6 +9542,24 @@ pub(crate) mod tests {
             .map(|(t, _)| t.clone())
             .collect();
         assert_eq!(tools, ["spaced", "spaced", "click", "scroll", "press_key"]);
+    }
+
+    #[tokio::test]
+    async fn a_human_click_off_linux_goes_to_the_driver_unspaced_and_unpressed() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), Recorder(calls.clone()), Os::Windows)
+            .with_hand(|_, _| panic!("the hand runs on Linux only"));
+        desk.run("desk_click", json!({"x": 300.0, "y": 200.0, "human": true}))
+            .await
+            .unwrap();
+        let tools: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .collect();
+        assert!(!tools.contains(&"spaced".to_owned()), "{tools:?}");
+        assert!(tools.contains(&"click".to_owned()), "{tools:?}");
     }
 
     #[test]

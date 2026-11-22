@@ -30,6 +30,7 @@ const MULTI_HOLD_MS: (u64, u64) = (40, 80);
 const MULTI_GAP_MS: (u64, u64) = (60, 110);
 const PATH_STEPS: (u64, u64) = (35, 60);
 const PATH_STEP_MS: (u64, u64) = (8, 20);
+const PATH_BEND: f64 = 0.25;
 const PATH_BEND_PX: (f64, f64) = (120.0, 80.0);
 
 /// One XTest event, its keycode or button, and the pause after it.
@@ -138,10 +139,20 @@ fn press_keys(keysyms: &[u32], stop: &AtomicBool) -> Result<bool, String> {
         return Ok(false);
     };
     let root = conn.setup().roots[n].root;
+    if !plain(&conn) {
+        return Ok(false);
+    }
     let Some(codes) = keycodes(&conn, keysyms) else {
         return Ok(false);
     };
-    send_plan(&conn, root, &key_plan(&codes), &mut Rng::seeded(), stop)?;
+    send_plan(
+        &conn,
+        root,
+        &key_plan(&codes),
+        None,
+        &mut Rng::seeded(),
+        stop,
+    )?;
     Ok(true)
 }
 
@@ -196,11 +207,15 @@ fn glide(to: (f64, f64), clicks: Option<Clicks>, stop: &AtomicBool) -> Result<bo
     let Some(mods) = mods else {
         return Ok(false);
     };
-    if stop.load(Ordering::Relaxed) {
-        return Ok(false);
-    }
     let plan = press_plan(&clicks, &mods);
-    send_plan(&conn, root, &plan, &mut rng, stop)?;
+    send_plan(
+        &conn,
+        root,
+        &plan,
+        Some((pixel(to.0), pixel(to.1))),
+        &mut rng,
+        stop,
+    )?;
     Ok(true)
 }
 
@@ -231,11 +246,12 @@ fn press_plan(clicks: &Clicks, mods: &[u8]) -> Vec<Step> {
     plan
 }
 
-/// Sends `plan` and releases whatever it still holds when it stops early.
+/// Sends `plan`, putting the pointer back on `at` before each button press, and releases whatever it still holds when it stops early.
 fn send_plan(
     conn: &RustConnection,
     root: Window,
     plan: &[Step],
+    at: Option<(i16, i16)>,
     rng: &mut Rng,
     stop: &AtomicBool,
 ) -> Result<(), String> {
@@ -245,6 +261,20 @@ fn send_plan(
         for &(kind, detail, pause) in plan {
             if stop.load(Ordering::Relaxed) {
                 return Err(STOPPED.to_owned());
+            }
+            if let (BUTTON_PRESS_EVENT, Some((x, y))) = (kind, at) {
+                sent.push(
+                    conn.xtest_fake_input(
+                        MOTION_NOTIFY_EVENT,
+                        0,
+                        x11rb::CURRENT_TIME,
+                        root,
+                        x,
+                        y,
+                        0,
+                    )
+                    .map_err(|e| format!("XTest: {e}"))?,
+                );
             }
             sent.push(
                 conn.xtest_fake_input(kind, detail, x11rb::CURRENT_TIME, root, 0, 0, 0)
@@ -306,13 +336,18 @@ fn keycodes(conn: &RustConnection, keysyms: &[u32]) -> Option<Vec<u8>> {
 
 /// The points after `from` on an eased quadratic curve to `to` through a control point a random offset from the midpoint, each but the last a pixel off the curve at most.
 fn path(from: (f64, f64), to: (f64, f64), rng: &mut Rng) -> Vec<(i16, i16)> {
-    if (to.0 - from.0).hypot(to.1 - from.1) < 1.0 {
+    let dist = (to.0 - from.0).hypot(to.1 - from.1);
+    if dist < 1.0 {
         return Vec::new();
     }
     let steps = rng.int(PATH_STEPS);
+    let (bx, by) = (
+        (dist * PATH_BEND).min(PATH_BEND_PX.0),
+        (dist * PATH_BEND).min(PATH_BEND_PX.1),
+    );
     let (cx, cy) = (
-        (from.0 + to.0) / 2.0 + rng.between(-PATH_BEND_PX.0, PATH_BEND_PX.0),
-        (from.1 + to.1) / 2.0 + rng.between(-PATH_BEND_PX.1, PATH_BEND_PX.1),
+        (from.0 + to.0) / 2.0 + rng.between(-bx, bx),
+        (from.1 + to.1) / 2.0 + rng.between(-by, by),
     );
     (1..=steps)
         .map(|i| {
@@ -417,6 +452,12 @@ mod tests {
         }
         let short = path((0.0, 0.0), (3.0, 4.0), &mut rng);
         assert!((PATH_STEPS.0..=PATH_STEPS.1).contains(&(short.len() as u64)));
+        assert!(
+            short
+                .iter()
+                .all(|&(x, y)| (0..=3).contains(&x) && (0..=4).contains(&y)),
+            "{short:?}"
+        );
         assert_eq!(short.last(), Some(&(3, 4)));
         assert_eq!(path((5.0, 5.0), (5.4, 5.0), &mut rng), []);
     }
