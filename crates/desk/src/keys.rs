@@ -118,48 +118,6 @@ pub enum Os {
     Linux,
 }
 
-/// The X keysym of a key in the driver's Linux names; none for one it does not map.
-pub(crate) fn x_keysym(name: &str) -> Option<u32> {
-    let keysym = match name {
-        "return" => 0xff0d,
-        "tab" => 0xff09,
-        "escape" => 0xff1b,
-        "space" => 0x20,
-        "backspace" => 0xff08,
-        "delete" => 0xffff,
-        "insert" => 0xff63,
-        "home" => 0xff50,
-        "end" => 0xff57,
-        "pageup" => 0xff55,
-        "pagedown" => 0xff56,
-        "up" => 0xff52,
-        "down" => 0xff54,
-        "left" => 0xff51,
-        "right" => 0xff53,
-        "shift" => 0xffe1,
-        "ctrl" => 0xffe3,
-        "alt" => 0xffe9,
-        "super" => 0xffeb,
-        "capslock" => 0xffe5,
-        "numlock" => 0xff7f,
-        _ => {
-            if let Some(n) = name
-                .strip_prefix('f')
-                .and_then(|n| n.parse::<u32>().ok())
-                .filter(|n| (1..=12).contains(n))
-            {
-                return Some(0xffbe + n - 1);
-            }
-            let mut chars = name.chars();
-            return match (chars.next(), chars.next()) {
-                (Some(c @ ' '..='~'), None) => Some(u32::from(c)),
-                _ => None,
-            };
-        }
-    };
-    Some(keysym)
-}
-
 /// The driver's key names of `combo`: `Ctrl+Shift+S` is `["ctrl", "shift", "s"]`; a name no driver knows fails.
 pub fn key_names(combo: &str, os: Os) -> Result<Vec<String>, String> {
     let mut parts: Vec<&str> = combo.split('+').collect();
@@ -220,6 +178,48 @@ pub(crate) fn hid_plus(req: &mut Value) {
             keys.insert(i, "shift".into());
         }
     }
+}
+
+/// The X keysym of a key in the driver's Linux names; none for one it does not map.
+pub(crate) fn x_keysym(name: &str) -> Option<u32> {
+    let keysym = match name {
+        "return" => 0xff0d,
+        "tab" => 0xff09,
+        "escape" => 0xff1b,
+        "space" => 0x20,
+        "backspace" => 0xff08,
+        "delete" => 0xffff,
+        "insert" => 0xff63,
+        "home" => 0xff50,
+        "end" => 0xff57,
+        "pageup" => 0xff55,
+        "pagedown" => 0xff56,
+        "up" => 0xff52,
+        "down" => 0xff54,
+        "left" => 0xff51,
+        "right" => 0xff53,
+        "shift" => 0xffe1,
+        "ctrl" => 0xffe3,
+        "alt" => 0xffe9,
+        "super" => 0xffeb,
+        "capslock" => 0xffe5,
+        "numlock" => 0xff7f,
+        _ => {
+            if let Some(n) = name
+                .strip_prefix('f')
+                .and_then(|n| n.parse::<u32>().ok())
+                .filter(|n| (1..=12).contains(n))
+            {
+                return Some(0xffbe + n - 1);
+            }
+            let mut chars = name.chars();
+            return match (chars.next(), chars.next()) {
+                (Some(c @ ' '..='~'), None) => Some(u32::from(c)),
+                _ => None,
+            };
+        }
+    };
+    Some(keysym)
 }
 
 fn key_name(key: &str, os: Os, combo: &str) -> Result<String, String> {
