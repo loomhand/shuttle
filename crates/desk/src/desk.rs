@@ -193,6 +193,7 @@ tokio::task_local! {
     static EFFECT: RefCell<Option<Value>>;
     static SCALE: Cell<Option<f64>>;
     pub(crate) static HUMAN: bool;
+    pub(crate) static HAND_TURN: Option<Turn>;
 }
 
 pub(crate) type Turn = Arc<tokio::sync::OwnedMutexGuard<()>>;
@@ -344,11 +345,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let scale = Cell::new(None);
         if self.auto && !foreground && auto::VERBS.contains(&tool) {
             return SCALE
-                .scope(scale, self.auto_run(tool, args, turn))
+                .scope(
+                    scale,
+                    HAND_TURN.scope(turn.clone(), self.auto_run(tool, args, turn)),
+                )
                 .await
                 .map_err(|e| at_lock(self.os, e));
         }
-        let run = FOREGROUND.scope(foreground, self.dispatch(tool, args, turn));
+        let run = FOREGROUND.scope(
+            foreground,
+            HAND_TURN.scope(turn.clone(), self.dispatch(tool, args, turn)),
+        );
         SCALE
             .scope(scale, run)
             .await
@@ -3181,9 +3188,13 @@ pub(crate) async fn human_press(
 ) -> Result<Option<Value>, String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _cancel = Cancel(stop.clone());
-    let pressed = tokio::task::spawn_blocking(move || hand(gesture, &stop))
-        .await
-        .map_err(|e| format!("XTest: {e}"))??;
+    let turn = HAND_TURN.try_with(Clone::clone).ok().flatten();
+    let pressed = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        hand(gesture, &stop)
+    })
+    .await
+    .map_err(|e| format!("XTest: {e}"))??;
     Ok(pressed.then(|| {
         json!({"content": [{"type": "text", "text": text}], "structuredContent": {"effect": "unverifiable"}})
     }))
@@ -9542,6 +9553,32 @@ pub(crate) mod tests {
             .map(|(t, _)| t.clone())
             .collect();
         assert_eq!(tools, ["spaced", "spaced", "click", "scroll", "press_key"]);
+    }
+
+    #[tokio::test]
+    async fn a_dropped_human_key_holds_the_turn_until_the_hand_lets_go() {
+        static LET_GO: AtomicBool = AtomicBool::new(false);
+        let desk = Desk::new(
+            || Ok(notepad()),
+            Recorder(Arc::new(Mutex::new(Vec::new()))),
+            Os::Linux,
+        )
+        .with_hand(|_, stop| {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            LET_GO.store(true, Ordering::SeqCst);
+            Ok(true)
+        });
+        let key = desk.run("desk_key", json!({"keys": "ctrl+a", "human": true}));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), key)
+                .await
+                .is_err()
+        );
+        let _turn = desk.turn().lock_owned().await;
+        assert!(LET_GO.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

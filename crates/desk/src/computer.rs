@@ -22,8 +22,8 @@ use tokio::time::Instant;
 #[cfg(target_os = "linux")]
 use crate::desk::CALL_LIMIT;
 use crate::desk::{
-    BUSY, HUMAN, Hand, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE, human_gesture,
-    human_press, launch_name, runs_app, text_runs, without_protocol_tail, xtest,
+    BUSY, HAND_TURN, HUMAN, Hand, RAISE_WAIT, TURN_WAIT, Turn, Typer, WAIT_POLL, WINDOW_GONE,
+    human_gesture, human_press, launch_name, runs_app, text_runs, without_protocol_tail, xtest,
 };
 use crate::driver::{CONNECT_RETRY, Driver, ended, image_of, text_of, without_name};
 use crate::keys::{Os, hid_plus, key_names};
@@ -1488,7 +1488,9 @@ impl Computer {
         {
             return Ok(json!({"content": [{"type": "text", "text": XTEST_TYPED}]}));
         }
-        self.request(session, tool, req).await
+        HAND_TURN
+            .scope(Some(input.clone()), self.request(session, tool, req))
+            .await
     }
 
     async fn front_for_typing(&self, session: &str, req: &Value) -> Result<(), String> {
@@ -4259,6 +4261,32 @@ mod tests {
             out.text
         );
         assert!(clicks.lock().unwrap().is_empty());
+        driver.abort();
+    }
+
+    #[tokio::test]
+    async fn a_dropped_human_click_holds_the_input_until_the_hand_lets_go() {
+        static LET_GO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let dir = tempfile::tempdir().unwrap();
+        let (socket, _, driver) = scaling_driver(dir.path(), 640);
+        let mut cua = cua(&socket);
+        cua.hand = |_, stop| {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            LET_GO.store(true, Ordering::SeqCst);
+            Ok(true)
+        };
+        cua.state(json!({})).await.unwrap();
+        let click = cua.act(json!({"action": "click", "x": 100.0, "y": 40.0, "human": true}));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), click)
+                .await
+                .is_err()
+        );
+        let _input = cua.input.clone().lock_owned().await;
+        assert!(LET_GO.load(Ordering::SeqCst));
         driver.abort();
     }
 
