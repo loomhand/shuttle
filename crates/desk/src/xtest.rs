@@ -24,6 +24,7 @@ const GAP_MS: (u64, u64) = (40, 120);
 const MODIFIER_MS: (u64, u64) = (10, 30);
 const SETTLE_MS: (u64, u64) = (40, 120);
 const RELEASE_MS: (u64, u64) = (20, 50);
+const STOPPED: &str = "stopped by the user";
 const CLICK_HOLD_MS: (u64, u64) = (60, 120);
 const MULTI_HOLD_MS: (u64, u64) = (40, 80);
 const MULTI_GAP_MS: (u64, u64) = (60, 110);
@@ -246,7 +247,7 @@ fn send_plan(
     let done = (|| {
         for &(kind, detail, pause) in plan {
             if stop.load(Ordering::Relaxed) {
-                return Err("stopped by the user".to_owned());
+                return Err(STOPPED.to_owned());
             }
             sent.push(
                 conn.xtest_fake_input(kind, detail, x11rb::CURRENT_TIME, root, 0, 0, 0)
@@ -267,12 +268,22 @@ fn send_plan(
     for &(kind, detail) in held.iter().rev() {
         let _ = conn.xtest_fake_input(kind, detail, x11rb::CURRENT_TIME, root, 0, 0, 0);
     }
-    conn.sync().map_err(|e| format!("XTest: {e}"))?;
-    done?;
-    for cookie in sent {
-        cookie.check().map_err(|e| format!("XTest: {e}"))?;
-    }
-    Ok(())
+    let went = !sent.is_empty();
+    let checked = conn
+        .sync()
+        .map_err(|e| format!("XTest: {e}"))
+        .and(done)
+        .and_then(|()| {
+            sent.into_iter()
+                .try_for_each(|c| c.check().map_err(|e| format!("XTest: {e}")))
+        });
+    checked.map_err(|e| {
+        if went && !e.starts_with(STOPPED) {
+            format!("{e}, after part of the input went out, so it may still take effect: read the window before sending it again")
+        } else {
+            e
+        }
+    })
 }
 
 fn keycode(conn: &RustConnection, keysym: u32) -> Option<u8> {

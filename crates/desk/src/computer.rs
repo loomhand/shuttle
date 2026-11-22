@@ -4252,7 +4252,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.text);
         assert!(
             out.text
-                .starts_with("Sent click at screenshot point (100,40) at a person's pace."),
+                .starts_with("Sent, effect not verified: Sent click at screenshot point (100,40) at a person's pace."),
             "{}",
             out.text
         );

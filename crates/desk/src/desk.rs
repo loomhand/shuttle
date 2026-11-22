@@ -587,7 +587,12 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         if self.os == Os::Linux && args["session"] == WINDOW_SESSION && tool != "get_window_state" {
             *lock(&self.read) = None;
         }
-        let out = match human_input(self.hand, tool, &args).await? {
+        let human = human_input(self.hand, tool, &args);
+        let human = match human_click(tool, &args) {
+            Some(at) => self.driver.spaced(at, human).await?,
+            None => human.await?,
+        };
+        let out = match human {
             Some(out) => out,
             None => self.driver.call(tool, args).await?,
         };
@@ -3157,13 +3162,15 @@ pub(crate) async fn human_input(
         let clicks = (tool == "click").then(|| clicks(req)).flatten();
         // the computer verbs turn "Sent screen-absolute click at (x, y)" into screenshot pixels, as for the driver's own reply
         let text = format!(
-            "Sent screen-absolute click at ({}, {}) at a person's pace.",
+            "Sent, effect not verified: Sent screen-absolute click at ({}, {}) at a person's pace.",
             to.0, to.1
         );
         (Gesture::Point(to, clicks), text)
     } else if let Some((keysyms, names)) = desktop_keys(tool, req) {
         let kind = if tool == "hotkey" { "hotkey" } else { "key" };
-        let text = format!("Pressed desktop {kind} {names} at a person's pace.");
+        let text = format!(
+            "Sent, effect not verified: Pressed desktop {kind} {names} at a person's pace."
+        );
         (Gesture::Keys(keysyms), text)
     } else {
         return Ok(None);
@@ -3173,7 +3180,16 @@ pub(crate) async fn human_input(
     let pressed = tokio::task::spawn_blocking(move || hand(gesture, &stop))
         .await
         .map_err(|e| format!("XTest: {e}"))??;
-    Ok(pressed.then(|| json!({"content": [{"type": "text", "text": text}]})))
+    Ok(pressed.then(|| {
+        json!({"content": [{"type": "text", "text": text}], "structuredContent": {"effect": "unverifiable"}})
+    }))
+}
+
+/// The point of a `human` desktop click that the hand presses itself, which keeps the driver's spacing between clicks.
+fn human_click(tool: &str, req: &Value) -> Option<(f64, f64)> {
+    (tool == "click" && human() && clicks(req).is_some())
+        .then(|| pointer_point(tool, req))
+        .flatten()
 }
 
 /// The keysyms of a desktop key or hotkey request and its key names; none for a key without one.
@@ -9418,6 +9434,7 @@ pub(crate) mod tests {
             *calls.lock().unwrap(),
             [
                 ("click".to_owned(), click.clone()),
+                ("spaced".to_owned(), json!([300.0, 200.0])),
                 ("click".to_owned(), click)
             ]
         );
@@ -9468,7 +9485,10 @@ pub(crate) mod tests {
                 .extend(extra.as_object().unwrap().clone());
             a
         };
-        desk.run("desk_click", human(json!({}))).await.unwrap();
+        let first: Value =
+            serde_json::from_str(&desk.run("desk_click", human(json!({}))).await.unwrap().text)
+                .unwrap();
+        assert_eq!(first["effect"], "unverifiable", "{first}");
         desk.run(
             "desk_click",
             human(json!({"button": "right", "count": 2, "modifiers": ["ctrl", "shift"]})),
@@ -9518,7 +9538,7 @@ pub(crate) mod tests {
             .iter()
             .map(|(t, _)| t.clone())
             .collect();
-        assert_eq!(tools, ["click", "scroll", "press_key"]);
+        assert_eq!(tools, ["spaced", "spaced", "click", "scroll", "press_key"]);
     }
 
     #[test]
@@ -11812,6 +11832,18 @@ pub(crate) mod tests {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             self.0.lock().unwrap().push((tool.to_owned(), args));
             Ok(json!({}))
+        }
+
+        fn spaced<T: Send>(
+            &self,
+            point: (f64, f64),
+            click: impl Future<Output = T> + Send,
+        ) -> impl Future<Output = T> + Send {
+            self.0
+                .lock()
+                .unwrap()
+                .push(("spaced".to_owned(), json!([point.0, point.1])));
+            click
         }
     }
 
