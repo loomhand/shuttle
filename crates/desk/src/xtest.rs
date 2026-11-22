@@ -184,6 +184,7 @@ fn glide(to: (f64, f64), clicks: Option<Clicks>, stop: &AtomicBool) -> Result<bo
     let from = (f64::from(at.root_x), f64::from(at.root_y));
     let mut rng = Rng::seeded();
     let points = path(from, to, &mut rng);
+    let rest = points.last().copied().unwrap_or((at.root_x, at.root_y));
     for (x, y) in points {
         if stop.load(Ordering::Relaxed)
             || conn
@@ -208,14 +209,7 @@ fn glide(to: (f64, f64), clicks: Option<Clicks>, stop: &AtomicBool) -> Result<bo
         return Ok(false);
     };
     let plan = press_plan(&clicks, &mods);
-    send_plan(
-        &conn,
-        root,
-        &plan,
-        Some((pixel(to.0), pixel(to.1))),
-        &mut rng,
-        stop,
-    )?;
+    send_plan(&conn, root, &plan, Some(rest), &mut rng, stop)?;
     Ok(true)
 }
 
@@ -246,7 +240,7 @@ fn press_plan(clicks: &Clicks, mods: &[u8]) -> Vec<Step> {
     plan
 }
 
-/// Sends `plan`, putting the pointer back on `at` before each button press, and releases whatever it still holds when it stops early.
+/// Sends `plan`, putting the pointer back on `at` before each button press it has left, and releases whatever it still holds when it stops early.
 fn send_plan(
     conn: &RustConnection,
     root: Window,
@@ -262,7 +256,13 @@ fn send_plan(
             if stop.load(Ordering::Relaxed) {
                 return Err(STOPPED.to_owned());
             }
-            if let (BUTTON_PRESS_EVENT, Some((x, y))) = (kind, at) {
+            if let (BUTTON_PRESS_EVENT, Some((x, y))) = (kind, at)
+                && conn
+                    .query_pointer(root)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .is_none_or(|p| (p.root_x, p.root_y) != (x, y))
+            {
                 sent.push(
                     conn.xtest_fake_input(
                         MOTION_NOTIFY_EVENT,
