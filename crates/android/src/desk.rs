@@ -37,7 +37,6 @@ const WAIT_POLL: Duration = Duration::from_millis(10);
 const UNSETTLED: &str = "the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles";
 const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
 const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
-const BEHIND: &str = "which came to the front: read that window before closing again";
 const STILL_LISTED: &str = "the window was sent the back key and is still listed 1 s later, while the device lists no window in front: read the window list before closing again";
 const STILL_OPEN: &str = "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again";
 
@@ -1199,7 +1198,7 @@ async fn still_open(android: &Android, id: &str) -> Result<Option<String>, Strin
     Ok(Some(match (active, front) {
         (true, _) => STILL_OPEN.to_owned(),
         (false, Some(f)) => format!(
-            "the window was sent the back key and is still open behind {:?}, {BEHIND}",
+            "the window was sent the back key and is still open behind {:?}, which came to the front: read that window before closing again",
             f.title
         ),
         (false, None) => STILL_LISTED.to_owned(),

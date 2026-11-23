@@ -329,7 +329,8 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                     }
                     Input::Key { code, .. } if hotkey == Some(code) => continue,
                     Input::Click { x, y, right, count, mods, found } => {
-                        let (mut at, tapped) = match found {
+                        let tapped = found.is_some();
+                        let mut at = match found {
                             Some(h) => {
                                 let mut at = json!({
                                     "found": {"role": h.role, "name": h.name, "description": h.description},
@@ -343,9 +344,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                                         at["web"]["id"] = id.into();
                                     }
                                 }
-                                (at, true)
+                                at
                             }
-                            None => (call(desk, "desk_at", json!({"x": x.round() as i32, "y": y.round() as i32})).await.unwrap_or_default(), false),
+                            None => call(desk, "desk_at", json!({"x": x.round() as i32, "y": y.round() as i32})).await.unwrap_or_default(),
                         };
                         let pid = at["pid"].as_u64();
                         if pid == Some(u64::from(std::process::id())) {

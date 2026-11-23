@@ -284,16 +284,20 @@ impl Android {
     pub async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
         let clear = async {
-            if !self.control.lock().await.as_ref().is_some_and(|c| c.filled) {
-                return;
-            }
-            if wiped(&self.control).await
-                && let Ok(mut control) = self.open_control().await
-            {
-                let _ = control.set_clipboard("").await;
+            if self.control.lock().await.as_ref().is_some_and(|c| c.filled) {
+                self.clear().await;
             }
         };
         let _ = tokio::time::timeout(CLOSE_WAIT, clear).await;
+    }
+
+    async fn clear(&self) {
+        if wiped(&self.control).await
+            && let Ok(mut control) = self.open_control().await
+            && control.set_clipboard("").await.is_ok()
+        {
+            *self.control.lock().await = Some(control);
+        }
     }
 
     pub fn release(&self, session: &str) {
@@ -428,12 +432,7 @@ impl Android {
         let mut protected = false;
         let typed = self.type_lines(text, at, check, &mut protected).await;
         wipe.0 = None;
-        if wiped(&self.control).await
-            && let Ok(mut control) = self.open_control().await
-            && control.set_clipboard("").await.is_ok()
-        {
-            *self.control.lock().await = Some(control);
-        }
+        self.clear().await;
         typed
             .map(|typed| (typed, protected))
             .map_err(|e| into_password_field(e, protected))

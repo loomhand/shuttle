@@ -1729,10 +1729,7 @@ mod tests {
             name: "One".to_owned(),
             ..Raw::default()
         };
-        for name in [
-            "org.freedesktop.DBus.Error.UnknownObject",
-            "org.freedesktop.DBus.Error.UnknownMethod",
-        ] {
+        for name in STALE {
             let mut raw = HashMap::new();
             let fetched = [(o("c1"), Ok(r.clone())), (o("c2"), Err(stale(name)))];
             assert!(!read_into(&mut raw, fetched), "{name}");

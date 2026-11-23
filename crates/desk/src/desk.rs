@@ -3762,6 +3762,8 @@ pub(crate) mod tests {
         ("desk_close", r#"{"window": "Notepad", "pid": 4}"#),
     ];
 
+    const CLASS_REFUSED: &str = "Background delivery is not available for target window class 'Chrome_WidgetWin_1' on this event kind (key_combo). Retry this action with delivery_mode:\"foreground\".";
+    const MENU_REFUSED: &str = "Select All is disabled. invoke_menu does not activate a background app: macOS keeps this menu item unavailable while the app is behind the user's window. If the user allows it, call bring_to_front for this window first, then invoke_menu, or send the app's keyboard shortcut with hotkey and delivery_mode:\"foreground\".";
     const LONG_TITLE: &str = "Example Competitive Analysis: Pricing and GTM (October 2026) - Example Docs - Google Chrome \u{2013} Work (example.com)";
 
     static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -3864,7 +3866,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
-            Refuses(Behind(Arc::clone(&calls)), |t, _| t == "hotkey"),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                CLASS_REFUSED,
+            ),
             Os::Windows,
         )
         .background(true)
@@ -3886,7 +3892,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let linux = Desk::new(
             || Ok(Apps),
-            Refuses(Behind(Arc::clone(&calls)), |t, _| t == "hotkey"),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                CLASS_REFUSED,
+            ),
             Os::Linux,
         )
         .background(true)
@@ -3911,7 +3921,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
-            MenuRefuses(Behind(Arc::clone(&calls))),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                MENU_REFUSED,
+            ),
             Os::Mac,
         )
         .background(true)
@@ -3926,7 +3940,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let behind = Desk::new(
             || Ok(Apps),
-            MenuRefuses(Behind(Arc::clone(&calls))),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                MENU_REFUSED,
+            ),
             Os::Mac,
         )
         .background(true);
@@ -5629,9 +5647,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
-            Refuses(Behind(Arc::clone(&calls)), |t, a| {
-                t == "press_key" && a["key"] == "return"
-            }),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, a| t == "press_key" && a["key"] == "return",
+                CLASS_REFUSED,
+            ),
             Os::Windows,
         )
         .background(true)
@@ -9512,18 +9532,9 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(*GLIDES.lock().unwrap(), [(300.0, 200.0)]);
         assert_eq!(*TYPED_HUMAN.lock().unwrap(), [false, true]);
-        calls
-            .lock()
-            .unwrap()
-            .retain(|(t, _)| t != "get_screen_size");
-        assert_eq!(
-            *calls.lock().unwrap(),
-            [
-                ("click".to_owned(), click.clone()),
-                ("spaced".to_owned(), json!([300.0, 200.0])),
-                ("click".to_owned(), click)
-            ]
-        );
+        assert_eq!(tools(&calls), ["click", "spaced", "click"]);
+        assert_eq!(sent(&calls, "click"), [click.clone(), click]);
+        assert_eq!(sent(&calls, "spaced"), [json!([300.0, 200.0])]);
     }
 
     #[tokio::test]
@@ -9552,10 +9563,6 @@ pub(crate) mod tests {
         desk.run("desk_click", json!({"x": 300.0, "y": 200.0, "human": true}))
             .await
             .unwrap();
-        SENT_ORDER
-            .lock()
-            .unwrap()
-            .retain(|t| t != "get_screen_size");
         assert_eq!(*SENT_ORDER.lock().unwrap(), ["click", "glide", "click"]);
     }
 
@@ -9622,14 +9629,10 @@ pub(crate) mod tests {
                 Gesture::Keys(vec![0xffe3, 0x61])
             ]
         );
-        let tools: Vec<String> = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(t, _)| t.clone())
-            .filter(|t| t != "get_screen_size")
-            .collect();
-        assert_eq!(tools, ["spaced", "spaced", "click", "scroll", "press_key"]);
+        assert_eq!(
+            tools(&calls),
+            ["spaced", "spaced", "click", "scroll", "press_key"]
+        );
     }
 
     #[tokio::test]
@@ -9698,28 +9701,19 @@ pub(crate) mod tests {
             let refused = desk.run("desk_click", json!({"x": x, "y": y})).await;
             assert!(refused.is_err(), "{x},{y}");
         }
-        let sent = |calls: &Arc<Mutex<Vec<(String, Value)>>>| -> Vec<String> {
-            calls
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(t, _)| t.clone())
-                .filter(|t| t != "get_screen_size")
-                .collect()
-        };
-        assert!(sent(&calls).is_empty(), "{:?}", sent(&calls));
+        assert!(tools(&calls).is_empty(), "{:?}", tools(&calls));
         for (x, y) in [(2500.0, 500.0), (3839.0, 1079.0), (0.0, 0.0)] {
             desk.run("desk_click", json!({"x": x, "y": y}))
                 .await
                 .unwrap();
         }
-        assert_eq!(sent(&calls), ["click", "click", "click"]);
+        assert_eq!(tools(&calls), ["click", "click", "click"]);
         let mac_calls = Arc::new(Mutex::new(Vec::new()));
         let mac = Desk::new(|| Ok(notepad()), TwoDisplays(mac_calls.clone()), Os::Mac);
         mac.run("desk_click", json!({"x": 180.0, "y": -349.0}))
             .await
             .unwrap();
-        assert!(sent(&mac_calls).contains(&"click".to_owned()));
+        assert!(tools(&mac_calls).contains(&"click".to_owned()));
     }
 
     #[tokio::test]
@@ -9750,18 +9744,8 @@ pub(crate) mod tests {
                 .unwrap_err(),
             off("drag", 100, 1200)
         );
-        let tools = |calls: &Arc<Mutex<Vec<(String, Value)>>>| -> Vec<String> {
-            calls
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|(t, _)| t.clone())
-                .collect()
-        };
-        assert_eq!(
-            tools(&calls),
-            ["get_screen_size", "get_screen_size", "get_screen_size"]
-        );
+        assert_eq!(sent(&calls, "get_screen_size").len(), 3);
+        assert!(tools(&calls).is_empty(), "{:?}", tools(&calls));
         calls.lock().unwrap().clear();
         desk.run(
             "desk_drag",
@@ -9775,10 +9759,8 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            tools(&calls),
-            ["get_screen_size", "drag", "get_screen_size", "scroll"]
-        );
+        assert_eq!(sent(&calls, "get_screen_size").len(), 2);
+        assert_eq!(tools(&calls), ["drag", "scroll"]);
         let mac_calls = Arc::new(Mutex::new(Vec::new()));
         let mac = Desk::new(|| Ok(notepad()), TwoDisplays(mac_calls.clone()), Os::Mac);
         mac.run(
@@ -12125,7 +12107,9 @@ pub(crate) mod tests {
 
     impl Input for Ordered {
         async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
-            SENT_ORDER.lock().unwrap().push(tool.to_owned());
+            if tool != "get_screen_size" {
+                SENT_ORDER.lock().unwrap().push(tool.to_owned());
+            }
             Ok(json!({}))
         }
     }
@@ -12536,33 +12520,17 @@ pub(crate) mod tests {
         }
     }
 
-    struct MenuRefuses(Behind);
-
-    impl Input for MenuRefuses {
-        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
-            if args["delivery_mode"] == "background" && tool == "hotkey" {
-                self.0.0.lock().unwrap().push((tool.to_owned(), args));
-                return Err(format!("{tool}: {MENU_REFUSED}"));
-            }
-            self.0.call(tool, args).await
-        }
-    }
-
-    struct Refuses(Behind, fn(&str, &Value) -> bool);
+    struct Refuses(Behind, fn(&str, &Value) -> bool, &'static str);
 
     impl Input for Refuses {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             if args["delivery_mode"] == "background" && (self.1)(tool, &args) {
                 self.0.0.lock().unwrap().push((tool.to_owned(), args));
-                return Err(format!(
-                    "{tool}: Background delivery is not available for target window class 'Chrome_WidgetWin_1' on this event kind (key_combo). Retry this action with delivery_mode:\"foreground\"."
-                ));
+                return Err(format!("{tool}: {}", self.2));
             }
             self.0.call(tool, args).await
         }
     }
-
-    const MENU_REFUSED: &str = "Select All is disabled. invoke_menu does not activate a background app: macOS keeps this menu item unavailable while the app is behind the user's window. If the user allows it, call bring_to_front for this window first, then invoke_menu, or send the app's keyboard shortcut with hotkey and delivery_mode:\"foreground\".";
 
     fn order(calls: &Arc<Mutex<Vec<(String, Value)>>>) -> Vec<String> {
         calls
@@ -12839,6 +12807,16 @@ pub(crate) mod tests {
                 _ => json!({}),
             })
         }
+    }
+
+    fn tools(calls: &Mutex<Vec<(String, Value)>>) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .filter(|t| t != "get_screen_size")
+            .collect()
     }
 
     fn sent(calls: &Mutex<Vec<(String, Value)>>, tool: &str) -> Vec<Value> {
