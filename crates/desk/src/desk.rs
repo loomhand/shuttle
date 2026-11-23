@@ -3295,7 +3295,7 @@ fn on_desktop(req: &Value) -> bool {
 
 fn off_desk((x, y): (f64, f64), size: &Value, verb: &str) -> Option<String> {
     let (w, h) = (size["width"].as_f64()?, size["height"].as_f64()?);
-    if (0.0..w).contains(&x) && (0.0..h).contains(&y) {
+    if (0.0..w).contains(&x.round()) && (0.0..h).contains(&y.round()) {
         return None;
     }
     Some(format!(
@@ -9788,6 +9788,17 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert!(tools(&mac_calls).contains(&"drag".to_owned()));
+    }
+
+    #[test]
+    fn a_desk_point_is_checked_as_the_driver_rounds_it() {
+        let screen = json!({"width": 1920, "height": 1080});
+        for (x, y) in [(1919.75, 5.0), (5.0, 1079.5), (-0.6, 5.0)] {
+            assert!(off_desk((x, y), &screen, "click").is_some(), "{x},{y}");
+        }
+        for (x, y) in [(1919.4, 5.0), (-0.4, 1079.4), (0.0, 0.0)] {
+            assert_eq!(off_desk((x, y), &screen, "click"), None, "{x},{y}");
+        }
     }
 
     #[test]
