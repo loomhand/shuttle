@@ -164,3 +164,20 @@ test('grounding on a window that moves after its shot grounds again on a fresh s
   assert.match(stopped.escalate?.reason ?? '', /^"Portal" moved, changed size or closed while its target was found in its shot, so nothing was clicked/)
   assert.deepEqual(again.clicks, [])
 })
+
+test('an expect while an untitled popup of the plan window is in front checks the screen, which shows the popup', async (t) => {
+  const shots: Record<string, unknown>[] = []; const asked: string[] = []
+  const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: true, bounds: [-1300, 120, 300, 200] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([popup, { ...win, active: false }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "the suggestions show apple"}', usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: "the suggestions show 'apple'" }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(shots, [{}])
+  assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
+})
