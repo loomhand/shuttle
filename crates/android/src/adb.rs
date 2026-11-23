@@ -284,6 +284,9 @@ impl Android {
     pub async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
         let clear = async {
+            if !self.control.lock().await.as_ref().is_some_and(|c| c.filled) {
+                return;
+            }
             if wiped(&self.control).await
                 && let Ok(mut control) = self.open_control().await
             {
@@ -3162,6 +3165,17 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_with_no_text_of_shuttle_on_the_clipboard_sends_nothing() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        android.close().await;
+        let mut buf = [0; 64];
+        let sent = tokio::time::timeout(Duration::from_millis(300), peer.read(&mut buf)).await;
+        assert!(sent.is_err(), "the device got {sent:?}");
+        assert!(android.control.lock().await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_waits_out_a_paste_whose_ack_is_slow_then_empties_the_clipboard() {
         let (android, mut peer) = session("/nonexistent/adb").await;
         let device = tokio::spawn(async move {
@@ -3212,6 +3226,9 @@ mod tests {
     #[tokio::test]
     async fn a_close_during_a_type_empties_the_device_clipboard_and_pastes_no_line_after_it() {
         let (android, mut peer) = session("/nonexistent/adb").await;
+        if let Some(c) = android.control.lock().await.as_mut() {
+            c.filled = true;
+        }
         let device = tokio::spawn(async move {
             let mut clear = vec![0; clipboard_message("", 1).len()];
             peer.read_exact(&mut clear).await.unwrap();
