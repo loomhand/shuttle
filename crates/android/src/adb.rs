@@ -39,6 +39,7 @@ const CONNECT_TRIES: u32 = 50;
 const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const CLOSE_WAIT: Duration = Duration::from_millis(500);
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const NOT_INJECTED: &str = "the paste key was not injected";
@@ -282,11 +283,14 @@ impl Android {
 
     pub async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
-        if wiped(&self.control).await
-            && let Ok(mut control) = self.open_control().await
-        {
-            let _ = control.set_clipboard("").await;
-        }
+        let clear = async {
+            if wiped(&self.control).await
+                && let Ok(mut control) = self.open_control().await
+            {
+                let _ = control.set_clipboard("").await;
+            }
+        };
+        let _ = tokio::time::timeout(CLOSE_WAIT, clear).await;
     }
 
     pub fn release(&self, session: &str) {
@@ -3130,6 +3134,20 @@ mod tests {
         let sent = tokio::time::timeout(Duration::from_secs(5), device).await;
         assert_eq!(sent.unwrap().unwrap(), clipboard_message("", 1));
         assert!(android.control.lock().await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_on_a_device_that_does_not_answer_the_clear_ends_within_its_bound() {
+        let (android, _peer) = session("/nonexistent/adb").await;
+        let started = std::time::Instant::now();
+        android.close().await;
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(android.paste("next").await, Err(CLOSED.to_owned()));
     }
 
     #[cfg(unix)]
