@@ -133,6 +133,7 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
 fn daemon(exe: &Path, endpoint: &str) -> Command {
     let mut cmd = Command::new(exe);
     cmd.args(["serve", endpoint])
+        .env_remove(crate::http::TOKEN_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -167,6 +168,19 @@ mod tests {
     use desk_core::wire::read_frame;
 
     use super::*;
+
+    #[test]
+    fn the_daemon_starts_without_the_http_token_its_children_would_inherit() {
+        let cmd = daemon(Path::new("/bin/true"), "desk.sock");
+        let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
+        assert!(
+            cmd.as_std()
+                .get_envs()
+                .any(|(k, v)| k == token && v.is_none()),
+            "{:?}",
+            cmd.as_std().get_envs().collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn only_a_macos_binary_inside_an_app_bundle_starts_through_its_app() {

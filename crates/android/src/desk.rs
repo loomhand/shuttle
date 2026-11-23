@@ -156,9 +156,10 @@ impl Frame {
     }
 
     pub(crate) fn settled(&self) -> Result<(), String> {
-        match self.guessed {
-            true => Err(UNSETTLED.to_owned()),
-            false => Ok(()),
+        if self.guessed {
+            Err(UNSETTLED.to_owned())
+        } else {
+            Ok(())
         }
     }
 
@@ -372,13 +373,13 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
             }
             let mut stayed = None;
             if !frame.keyboard || hide_keyboard(android, &frame).await? {
-                android
-                    .keys("back")
-                    .await
-                    .map_err(|e| match frame.keyboard {
-                        true => format!("{e}; a back key had hidden the keyboard before it"),
-                        false => e,
-                    })?;
+                android.keys("back").await.map_err(|e| {
+                    if frame.keyboard {
+                        format!("{e}; a back key had hidden the keyboard before it")
+                    } else {
+                        e
+                    }
+                })?;
                 stayed = still_open(android, &frame.id).await?;
             }
             let mut out = json!({"ok": true});

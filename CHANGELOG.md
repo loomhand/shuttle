@@ -15,6 +15,9 @@
 
 - **Linux: a child that no longer exists no longer marks every snapshot truncated.** An app that keeps listing a destroyed child among a node's children made that child's read fail with `UnknownObject` (or, from GDBus, `UnknownMethod`), and every snapshot of the window then said `truncated: true`, so a `gui_plan` `gone` verify could never pass there. Such a child is now left out without cutting the tree; a read that times out or whose app is gone still cuts it. Cost: one string check per failed read.
 
+- **A service call names the service's last run only while that run's end is news.** A call that found no service listening added how the service's last run ended, and that note stayed after the service came back and answered, so a later wait on a busy service named an exit from long before. A call that reaches the service now clears it. Cost: one map removal per service call.
+- **The daemon `shuttle mcp --http` starts no longer holds `SHUTTLE_MCP_TOKEN`.** The proxy passed its environment, the bearer token included, to the daemon it started, whose cua-driver and adb children inherited it; the daemon never reads it. Cost: none.
+
 ## 0.1.60 - 2026-11-22
 
 - **A cancelled click or key no longer lets the next input slip in early.** A click cancelled while it runs spaces the next click within 16 px from the cancel, not from its start, so a click cancelled after a long human glide cannot pair with the next one into a double click. A cancelled human click or key keeps other input waiting until its buttons and keys are released, up to about 120 ms, so the next input never lands while a modifier is still held. Cost: none on a call that is not cancelled.
