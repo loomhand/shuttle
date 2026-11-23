@@ -2343,6 +2343,47 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_whose_back_brings_a_dialog_over_the_window_names_the_dialog() {
+        let dialog = r#"{"id":12,"type":1,"layer":1,"title":"Discard changes?","package":"com.android.settings","active":true,"focused":true,"bounds":[40,400,680,800]},"#;
+        for keyboard in [false, true] {
+            let fake = Fake::new();
+            fake.put("inject.answer", "true\ntrue");
+            fake.windows("");
+            let front = log(&fake, "windows.json");
+            let behind = front
+                .replace(
+                    r#""active":true,"focused":true"#,
+                    r#""active":false,"focused":false"#,
+                )
+                .replacen('[', &format!("[{dialog}"), 1);
+            if keyboard {
+                fake.put("after-input.json", &front);
+                fake.put("after-input-2.json", &behind);
+                fake.windows("keyboard");
+            } else {
+                fake.put("after-input.json", &behind);
+            }
+            let out = desk(
+                &fake,
+                "desk_close",
+                serde_json::json!({"window": "Settings"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                out["unverified"],
+                "the window was sent the back key and is still open behind \"Discard changes? - com.android.settings\", which came to the front: read that window before closing again",
+                "keyboard {keyboard}: {out}"
+            );
+            assert_eq!(
+                log(&fake, "requests").matches("key 4").count(),
+                1 + usize::from(keyboard)
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_whose_window_leaves_at_the_first_read_answers_ok_after_one_more_list() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
@@ -4071,7 +4112,7 @@ mod tests {
             let adb = dir.path().join("adb");
             script(
                 &adb,
-                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"forward tcp:0\"*) cat \"$DIR/port\" 2>/dev/null;;\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) if [ -f \"$DIR/input.fail\" ]; then exit 1; fi; echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.fail\" ]; then mv \"$DIR/after-swipe.fail\" \"$DIR/input.fail\"; fi; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-swipe.json\" ]; then mv \"$DIR/after-swipe.json\" \"$DIR/windows.json\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-show.json\" ]; then mv \"$DIR/after-show.json\" \"$DIR/windows.json\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      \"focus live\") if [ -f \"$DIR/live.fail\" ]; then printf '<error>focus read failed</error>'; else cat \"$DIR/focus.json\" 2>/dev/null; fi;;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-paste-2.json\" ]; then mv \"$DIR/after-paste-2.json\" \"$DIR/after-paste.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/after-dump-focus.json\" ]; then mv \"$DIR/after-dump-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-dump-focus-2.json\" ]; then mv \"$DIR/after-dump-focus-2.json\" \"$DIR/after-dump-focus.json\"; fi; if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
+                "#!/bin/sh\nDIR=$(dirname \"$0\")\ncase \"$*\" in\n*\"forward tcp:0\"*) cat \"$DIR/port\" 2>/dev/null;;\n*\"wm size\"*) echo 'Physical size: 720x1280';;\n*\"shell input\"*) if [ -f \"$DIR/input.fail\" ]; then exit 1; fi; echo \"$*\" >> \"$DIR/adbinput\"; if [ -f \"$DIR/after-swipe.fail\" ]; then mv \"$DIR/after-swipe.fail\" \"$DIR/input.fail\"; fi; if [ -f \"$DIR/after-swipe.xml\" ]; then cp \"$DIR/after-swipe.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-swipe.json\" ]; then mv \"$DIR/after-swipe.json\" \"$DIR/windows.json\"; fi;;\n*screencap*) if [ -f \"$DIR/screencap.fail\" ]; then exit 1; fi; cat \"$DIR/screen.png\" 2>/dev/null || printf png;;\n*app_process*)\n  echo start >> \"$DIR/starts\"\n  echo ready\n  while read l; do\n    echo \"$l\" >> \"$DIR/requests\"\n    case \"$l\" in\n      shot) if [ -f \"$DIR/shot.frame\" ]; then cat \"$DIR/shot.frame\"; continue; fi;;\n      tap*|key*) if [ -f \"$DIR/after-key-focus.json\" ]; then mv \"$DIR/after-key-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-input.json\" ]; then mv \"$DIR/after-input.json\" \"$DIR/windows.json\"; fi; if [ -f \"$DIR/after-input-2.json\" ]; then mv \"$DIR/after-input-2.json\" \"$DIR/after-input.json\"; fi; a=$(head -n 1 \"$DIR/inject.answer\" 2>/dev/null); if [ -f \"$DIR/inject.answer\" ] && [ \"$(wc -l < \"$DIR/inject.answer\")\" -ge 1 ]; then tail -n +2 \"$DIR/inject.answer\" > \"$DIR/inject.next\"; mv \"$DIR/inject.next\" \"$DIR/inject.answer\"; fi; if [ \"$a\" = exit ]; then exit 0; fi; printf %s \"$a\";;\n      show*) cat \"$DIR/show.answer\" 2>/dev/null; if [ -f \"$DIR/after-show.xml\" ]; then cp \"$DIR/after-show.xml\" \"$DIR/dump.xml\"; fi; if [ -f \"$DIR/after-show.json\" ]; then mv \"$DIR/after-show.json\" \"$DIR/windows.json\"; fi;;\n      windows) cat \"$DIR/windows.json\";;\n      \"focus live\") if [ -f \"$DIR/live.fail\" ]; then printf '<error>focus read failed</error>'; else cat \"$DIR/focus.json\" 2>/dev/null; fi;;\n      focus*) cat \"$DIR/focus.json\" 2>/dev/null;;\n      paste) if [ -f \"$DIR/after-paste.json\" ]; then mv \"$DIR/after-paste.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-paste-2.json\" ]; then mv \"$DIR/after-paste-2.json\" \"$DIR/after-paste.json\"; fi; printf true;;\n      dump*) if [ -f \"$DIR/after-dump-focus.json\" ]; then mv \"$DIR/after-dump-focus.json\" \"$DIR/focus.json\"; fi; if [ -f \"$DIR/after-dump-focus-2.json\" ]; then mv \"$DIR/after-dump-focus-2.json\" \"$DIR/after-dump-focus.json\"; fi; if [ -f \"$DIR/dump-first.xml\" ]; then cat \"$DIR/dump-first.xml\"; rm \"$DIR/dump-first.xml\"; else cat \"$DIR/dump.xml\"; fi;;\n    esac\n    echo\n    echo '<<end>>'\n  done;;\nesac\n",
             );
             let android = android_at(adb);
             Self { dir, android }

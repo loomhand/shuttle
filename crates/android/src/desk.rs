@@ -37,6 +37,7 @@ const WAIT_POLL: Duration = Duration::from_millis(10);
 const UNSETTLED: &str = "the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles";
 const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
 const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
+const BEHIND: &str = "which came to the front: read that window before closing again";
 const STILL_OPEN: &str = "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again";
 
 /// One element of a window as the desk and computer_state show it.
@@ -369,7 +370,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                     frame.title
                 ));
             }
-            let mut stayed = false;
+            let mut stayed = None;
             if !frame.keyboard || hide_keyboard(android, &frame).await? {
                 android
                     .keys("back")
@@ -378,12 +379,12 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                         true => format!("{e}; a back key had hidden the keyboard before it"),
                         false => e,
                     })?;
-                stayed = still_in_front(android, &frame.id).await?;
+                stayed = still_open(android, &frame.id).await?;
             }
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
-            if stayed {
-                out["unverified"] = STILL_OPEN.into();
+            if let Some(note) = stayed {
+                out["unverified"] = note.into();
             }
             out.to_string()
         }
@@ -1178,17 +1179,27 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
     ))
 }
 
-async fn still_in_front(android: &Android, id: &str) -> Result<bool, String> {
+async fn still_open(android: &Android, id: &str) -> Result<Option<String>, String> {
+    let mut front = None;
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
         let frames = frames(android)
             .await
             .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
-        if !frames.iter().any(|f| f.id == id && f.active) {
-            return Ok(false);
+        if !frames.iter().any(|f| f.id == id) {
+            return Ok(None);
         }
+        front = frames.into_iter().find(|f| f.active && f.id != id);
     }
-    Ok(true)
+    Ok(Some(front.map_or_else(
+        || STILL_OPEN.to_owned(),
+        |f| {
+            format!(
+                "the window was sent the back key and is still open behind {:?}, {BEHIND}",
+                f.title
+            )
+        },
+    )))
 }
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
