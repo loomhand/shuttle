@@ -3905,6 +3905,37 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn an_auto_macos_key_whose_menu_item_is_disabled_in_the_background_runs_once_in_the_foreground()
+     {
+        let key = json!({"keys": "cmd+a", "window": "Untitled - Notepad"});
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            MenuRefuses(Behind(Arc::clone(&calls))),
+            Os::Mac,
+        )
+        .background(true)
+        .auto(true);
+        let out = desk.run("desk_key", key.clone()).await.unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["input"], "foreground", "{v}");
+        assert_eq!(
+            order(&calls),
+            ["hotkey background", "bring_to_front -", "hotkey desktop"]
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let behind = Desk::new(
+            || Ok(Apps),
+            MenuRefuses(Behind(Arc::clone(&calls))),
+            Os::Mac,
+        )
+        .background(true);
+        let err = behind.run("desk_key", key).await.unwrap_err();
+        assert!(err.contains(MENU_REFUSED), "{err}");
+        assert_eq!(order(&calls), ["hotkey background"]);
+    }
+
+    #[tokio::test]
     async fn an_auto_pointer_call_by_pid_alone_runs_in_the_foreground_among_several_windows_of_that_pid()
      {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -12494,6 +12525,18 @@ pub(crate) mod tests {
         }
     }
 
+    struct MenuRefuses(Behind);
+
+    impl Input for MenuRefuses {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            if args["delivery_mode"] == "background" && tool == "hotkey" {
+                self.0.0.lock().unwrap().push((tool.to_owned(), args));
+                return Err(format!("{tool}: {MENU_REFUSED}"));
+            }
+            self.0.call(tool, args).await
+        }
+    }
+
     struct Refuses(Behind, fn(&str, &Value) -> bool);
 
     impl Input for Refuses {
@@ -12507,6 +12550,8 @@ pub(crate) mod tests {
             self.0.call(tool, args).await
         }
     }
+
+    const MENU_REFUSED: &str = "Select All is disabled. invoke_menu does not activate a background app: macOS keeps this menu item unavailable while the app is behind the user's window. If the user allows it, call bring_to_front for this window first, then invoke_menu, or send the app's keyboard shortcut with hotkey and delivery_mode:\"foreground\".";
 
     fn order(calls: &Arc<Mutex<Vec<(String, Value)>>>) -> Vec<String> {
         calls
