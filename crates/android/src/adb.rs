@@ -43,6 +43,7 @@ const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const NOT_INJECTED: &str = "the paste key was not injected";
 const NO_FIELD: &str = "no field of the window holds the input focus, so the line was not pasted";
+const CLOSED: &str = "the daemon is stopping, so the line was not pasted";
 const NO_FIELD_FIRST: &str =
     "no field holds the input focus, so nothing was typed of a text that starts with a line break";
 const TYPE_WAIT: Duration = Duration::from_secs(1);
@@ -109,6 +110,7 @@ pub struct Android {
     ui: Mutex<Option<UiServer>>,
     server_input: AtomicBool,
     control: Arc<Mutex<Option<Control>>>,
+    closed: AtomicBool,
     natural: OnceCell<(i32, i32)>,
 }
 
@@ -120,6 +122,7 @@ impl Android {
             ui: Mutex::new(None),
             server_input: AtomicBool::new(true),
             control: Arc::default(),
+            closed: AtomicBool::new(false),
             natural: OnceCell::new(),
         }
     }
@@ -275,6 +278,15 @@ impl Android {
     pub async fn end(&self, args: &Value) -> Result<String, String> {
         self.release(args["session"].as_str().unwrap_or_default());
         Ok("ended".to_owned())
+    }
+
+    pub async fn close(&self) {
+        self.closed.store(true, Ordering::Relaxed);
+        if wiped(&self.control).await
+            && let Ok(mut control) = self.open_control().await
+        {
+            let _ = control.set_clipboard("").await;
+        }
     }
 
     pub fn release(&self, session: &str) {
@@ -548,6 +560,9 @@ impl Android {
     async fn paste(&self, text: &str) -> Result<bool, String> {
         {
             let mut slot = self.control.lock().await;
+            if self.closed.load(Ordering::Relaxed) {
+                return Err(CLOSED.to_owned());
+            }
             let control = match slot.take() {
                 Some(control) if control.is_open() => slot.insert(control),
                 _ => slot.insert(self.open_control().await?),
@@ -3074,6 +3089,35 @@ mod tests {
         let sent = tokio::time::timeout(Duration::from_secs(5), device).await;
         assert_eq!(sent.unwrap().unwrap(), clipboard_message("", 1));
         assert!(android.control.lock().await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_during_a_type_empties_the_device_clipboard_and_pastes_no_line_after_it() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let device = tokio::spawn(async move {
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            peer.read_exact(&mut clear).await.unwrap();
+            peer.write_all(&ack(1)).await.unwrap();
+            let mut more = [0; 64];
+            let late = tokio::time::timeout(Duration::from_millis(300), peer.read(&mut more)).await;
+            (clear, late.is_ok())
+        });
+        let android = Arc::new(android);
+        let typist = Arc::clone(&android);
+        let typing =
+            tokio::spawn(
+                async move { typist.type_text("secret", None, std::future::pending).await },
+            );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), android.close())
+            .await
+            .expect("the close did not end");
+        assert_eq!(android.paste("next").await, Err(CLOSED.to_owned()));
+        let (clear, more) = device.await.unwrap();
+        assert_eq!(clear, clipboard_message("", 1));
+        assert!(!more, "the device got more after the close");
+        typing.abort();
     }
 
     #[cfg(unix)]

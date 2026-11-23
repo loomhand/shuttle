@@ -161,6 +161,10 @@ impl<H: Handler> Daemon<H> {
         self.ending.store(true, Ordering::Relaxed);
     }
 
+    pub async fn close_desk(&self) {
+        self.desk.close().await;
+    }
+
     /// Adds the plugin tools, which run only while `script_run` is on.
     #[must_use]
     pub fn with_plugins(mut self, plugins: Vec<Plugin>) -> Self {

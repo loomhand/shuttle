@@ -37,6 +37,12 @@ impl<N: Handler> Handler for Desks<N> {
             native.allowed();
         }
     }
+
+    async fn close(&self) {
+        if let Self::Android(android) = self {
+            android.close().await;
+        }
+    }
 }
 
 pub fn device(settings: AndroidSettings, exe: &Path) -> Result<Android, String> {

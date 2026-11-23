@@ -390,6 +390,7 @@ async fn serve(
         () = stopping => Ok(()),
     };
     ending.stop_answering();
+    ending.close_desk().await;
     ending.end_recording().await;
     #[cfg(unix)]
     crate::kill_graced();

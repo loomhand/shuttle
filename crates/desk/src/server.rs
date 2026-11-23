@@ -145,6 +145,10 @@ pub trait Handler: Send + Sync + 'static {
         async {}
     }
 
+    fn close(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
     /// Whether `tool` answers only a caller that runs as this process's user.
     fn owner_only(&self, _tool: &str) -> bool {
         false
