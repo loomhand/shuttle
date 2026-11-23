@@ -1590,7 +1590,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
             match self.pointed(a.window.as_deref(), a.pid, (a.x, a.y)).await? {
                 Some((w, point, listed)) => (Some(w), point, listed),
                 None => {
-                    self.check_on_screen((a.x, a.y)).await?;
+                    self.check_on_screen(&[(a.x, a.y)], "click").await?;
                     (None, (a.x, a.y), None)
                 }
             };
@@ -1815,7 +1815,7 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
-    async fn check_on_screen(&self, point: (f64, f64)) -> Result<(), String> {
+    async fn check_on_screen(&self, points: &[(f64, f64)], verb: &str) -> Result<(), String> {
         if self.os != Os::Linux {
             return Ok(());
         }
@@ -1823,7 +1823,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let size = &v["structuredContent"];
         let k = size["scale_factor"].as_f64().unwrap_or(1.0);
         let _ = SCALE.try_with(|s| s.set(Some(k)));
-        off_desk(point, size).map_or(Ok(()), Err)
+        points
+            .iter()
+            .find_map(|&p| off_desk(p, size, verb))
+            .map_or(Ok(()), Err)
     }
 
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
@@ -1858,7 +1861,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     point
                 }
-                None => (x, y),
+                None => {
+                    self.check_on_screen(&[(x, y)], "scroll").await?;
+                    (x, y)
+                }
             },
             _ => {
                 let named = a.window.is_some() || a.pid.is_some();
@@ -1969,6 +1975,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn drag(&self, a: DragArgs) -> Result<String, String> {
         let (mut from, mut to) = ((a.x, a.y), (a.to_x, a.to_y));
+        if a.window.is_none() {
+            self.check_on_screen(&[from, to], "drag").await?;
+        }
         if self.bg() {
             let (target, w) = match a.window.as_deref() {
                 Some(window) => self.shot_window(window, a.pid).await?,
@@ -3284,13 +3293,13 @@ fn on_desktop(req: &Value) -> bool {
     req["scope"] == "desktop" || req["target"]["kind"] == "desktop"
 }
 
-fn off_desk((x, y): (f64, f64), size: &Value) -> Option<String> {
+fn off_desk((x, y): (f64, f64), size: &Value, verb: &str) -> Option<String> {
     let (w, h) = (size["width"].as_f64()?, size["height"].as_f64()?);
     if (0.0..w).contains(&x) && (0.0..h).contains(&y) {
         return None;
     }
     Some(format!(
-        "({x},{y}) is off the screen, which is {w}x{h} desk pixels over every display (x 0 to {}, y 0 to {}); the click did not run, and nothing was sent: use a point inside it",
+        "({x},{y}) is off the screen, which is {w}x{h} desk pixels over every display (x 0 to {}, y 0 to {}); the {verb} did not run, and nothing was sent: use a point inside it",
         w - 1.0,
         h - 1.0
     ))
@@ -9680,6 +9689,74 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert!(sent(&mac_calls).contains(&"click".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_linux_desktop_scroll_or_drag_off_every_display_is_refused_before_anything_is_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), TwoDisplays(calls.clone()), Os::Linux)
+            .with_hand(|_, _| panic!("an off-screen point reaches no hand"));
+        let off = |verb: &str, x: i32, y: i32| {
+            format!(
+                "({x},{y}) is off the screen, which is 3840x1080 desk pixels over every display (x 0 to 3839, y 0 to 1079); the {verb} did not run, and nothing was sent: use a point inside it"
+            )
+        };
+        let scroll = json!({"direction": "down", "x": 180.0, "y": -349.0});
+        assert_eq!(
+            desk.run("desk_scroll", scroll).await.unwrap_err(),
+            off("scroll", 180, -349)
+        );
+        let drag = |from: (f64, f64), to: (f64, f64)| json!({"x": from.0, "y": from.1, "to_x": to.0, "to_y": to.1, "human": true});
+        assert_eq!(
+            desk.run("desk_drag", drag((-5.0, 10.0), (100.0, 100.0)))
+                .await
+                .unwrap_err(),
+            off("drag", -5, 10)
+        );
+        assert_eq!(
+            desk.run("desk_drag", drag((100.0, 100.0), (100.0, 1200.0)))
+                .await
+                .unwrap_err(),
+            off("drag", 100, 1200)
+        );
+        let tools = |calls: &Arc<Mutex<Vec<(String, Value)>>>| -> Vec<String> {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(t, _)| t.clone())
+                .collect()
+        };
+        assert_eq!(
+            tools(&calls),
+            ["get_screen_size", "get_screen_size", "get_screen_size"]
+        );
+        calls.lock().unwrap().clear();
+        desk.run(
+            "desk_drag",
+            json!({"x": 100.0, "y": 100.0, "to_x": 2500.0, "to_y": 500.0}),
+        )
+        .await
+        .unwrap();
+        desk.run(
+            "desk_scroll",
+            json!({"direction": "down", "x": 3000.0, "y": 900.0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tools(&calls),
+            ["get_screen_size", "drag", "get_screen_size", "scroll"]
+        );
+        let mac_calls = Arc::new(Mutex::new(Vec::new()));
+        let mac = Desk::new(|| Ok(notepad()), TwoDisplays(mac_calls.clone()), Os::Mac);
+        mac.run(
+            "desk_drag",
+            json!({"x": -5.0, "y": 10.0, "to_x": 100.0, "to_y": 100.0}),
+        )
+        .await
+        .unwrap();
+        assert!(tools(&mac_calls).contains(&"drag".to_owned()));
     }
 
     #[test]
