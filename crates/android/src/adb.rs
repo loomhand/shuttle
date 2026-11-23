@@ -11,7 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::parse;
 use desk_core::shot::png_size;
-use desk_core::wire::{Output, into_password_field};
+use desk_core::wire::{MCP_TOKEN_ENV, Output, into_password_field};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -665,6 +665,7 @@ impl Android {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.device.adb);
+        cmd.env_remove(MCP_TOKEN_ENV);
         if let Some(serial) = &self.device.serial {
             cmd.args(["-s", serial]);
         }
@@ -1408,6 +1409,19 @@ mod tests {
     use super::*;
 
     const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
+
+    #[test]
+    fn adb_runs_without_the_http_token() {
+        let cmd = android_at("/bin/true").command();
+        let token = std::ffi::OsStr::new(MCP_TOKEN_ENV);
+        assert!(
+            cmd.as_std()
+                .get_envs()
+                .any(|(k, v)| k == token && v.is_none()),
+            "{:?}",
+            cmd.as_std().get_envs().collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn desktop_key_names_map_to_android_keycodes() {

@@ -23,8 +23,7 @@ use tokio::sync::{Notify, Semaphore};
 use crate::plugins::Plugins;
 use crate::{lock, log, mcp};
 
-/// The environment variable that holds the bearer token every HTTP request must carry.
-pub const TOKEN_ENV: &str = "SHUTTLE_MCP_TOKEN";
+pub const TOKEN_ENV: &str = desk_core::wire::MCP_TOKEN_ENV;
 
 const PATH: &str = "/mcp";
 const MAX_BODY: usize = 8 << 20;
