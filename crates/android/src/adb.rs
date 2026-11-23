@@ -39,7 +39,7 @@ const CONNECT_TRIES: u32 = 50;
 const CONNECT_PAUSE: Duration = Duration::from_millis(100);
 const ACK_CLIPBOARD: u8 = 1;
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
-const CLOSE_WAIT: Duration = Duration::from_millis(500);
+const CLOSE_WAIT: Duration = ACK_TIMEOUT.saturating_add(Duration::from_millis(500));
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 const DIAGNOSE_TIMEOUT: Duration = Duration::from_secs(1);
 const NOT_INJECTED: &str = "the paste key was not injected";
@@ -3162,12 +3162,46 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_waits_out_a_paste_whose_ack_is_slow_then_empties_the_clipboard() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let device = tokio::spawn(async move {
+            let mut set = vec![0; clipboard_message("secret", 1).len()];
+            peer.read_exact(&mut set).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            peer.write_all(&ack(1)).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 2).len()];
+            let cleared =
+                tokio::time::timeout(Duration::from_secs(3), peer.read_exact(&mut clear)).await;
+            peer.write_all(&ack(2)).await.unwrap();
+            (set, cleared.is_ok().then_some(clear))
+        });
+        let android = Arc::new(android);
+        let paster = Arc::clone(&android);
+        let pasting = tokio::spawn(async move { paster.paste("secret").await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        android.close().await;
+        let (set, clear) = device.await.unwrap();
+        assert_eq!(set, clipboard_message("secret", 1));
+        assert_eq!(clear, Some(clipboard_message("", 2)));
+        pasting.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_on_a_device_that_does_not_answer_the_clear_ends_within_its_bound() {
-        let (android, _peer) = session("/nonexistent/adb").await;
+        let dir = tempfile::tempdir().unwrap();
+        let adb = dir.path().join("adb");
+        std::fs::write(&adb, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&adb, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let (android, _peer) = session(adb.to_str().unwrap()).await;
+        if let Some(c) = android.control.lock().await.as_mut() {
+            c.filled = true;
+        }
         let started = std::time::Instant::now();
         android.close().await;
         assert!(
-            started.elapsed() < Duration::from_secs(1),
+            started.elapsed() < CLOSE_WAIT + Duration::from_secs(1),
             "{:?}",
             started.elapsed()
         );
