@@ -498,8 +498,8 @@ function lined(w: Win | null, ws: Win[], text: string): desk.Target {
   const under = (y: Win) => { let z: Win | undefined = y; for (let k = 0; z && k <= ws.length; k++, z = ws.find((v) => v.id === z?.owner)) if (z.id === to.id) return true; return false }
   return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
-function alone(w: Win | null | undefined): Win | null {
-  return w && !ANDROID && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, picked) ? w : null
+function alone(w: Win | null | undefined, ws = picked): Win | null {
+  return w && !ANDROID && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, ws) ? w : null
 }
 async function windowView(w: Win | undefined): Promise<View | null> {
   const of = alone(w); const b = of?.bounds
@@ -1533,7 +1533,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     } else if (BG && !AUTO) throw new Surprise(`${busy(w, t1)}; ${NO_PIXELS}`, await seen())
     else if (Date.now() >= deadline) throw new Surprise(busy(w, t1), await seen())
     if (BG) await front(w)
-    const of = alone(w)
+    const of = ANDROID ? null : alone(w, await desk.windows())
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
