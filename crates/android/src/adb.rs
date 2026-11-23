@@ -2388,6 +2388,30 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_whose_window_stays_listed_with_no_window_in_front_says_only_that_it_is_listed()
+    {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("unsettled");
+        let unsettled = log(&fake, "windows.json");
+        fake.put("after-input.json", &unsettled);
+        fake.windows("");
+        let out = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out["unverified"],
+            "the window was sent the back key and is still listed 1 s later, while the device lists no window in front: read the window list before closing again",
+            "{out}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_whose_window_leaves_at_the_first_read_answers_ok_after_one_more_list() {
         let fake = Fake::new();
         fake.put("inject.answer", "true");

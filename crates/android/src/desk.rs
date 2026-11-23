@@ -38,6 +38,7 @@ const UNSETTLED: &str = "the device lists no window in front at this moment, as 
 const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
 const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
 const BEHIND: &str = "which came to the front: read that window before closing again";
+const STILL_LISTED: &str = "the window was sent the back key and is still listed 1 s later, while the device lists no window in front: read the window list before closing again";
 const STILL_OPEN: &str = "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again";
 
 /// One element of a window as the desk and computer_state show it.
@@ -1181,26 +1182,28 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
 }
 
 async fn still_open(android: &Android, id: &str) -> Result<Option<String>, String> {
-    let mut front = None;
+    let (mut active, mut front) = (true, None);
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
         let frames = frames(android)
             .await
             .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
-        if !frames.iter().any(|f| f.id == id) {
+        let Some(own) = frames.iter().find(|f| f.id == id) else {
             return Ok(None);
-        }
-        front = frames.into_iter().find(|f| f.active && f.id != id);
+        };
+        active = own.active && !own.guessed;
+        front = frames
+            .into_iter()
+            .find(|f| f.active && !f.guessed && f.id != id);
     }
-    Ok(Some(front.map_or_else(
-        || STILL_OPEN.to_owned(),
-        |f| {
-            format!(
-                "the window was sent the back key and is still open behind {:?}, {BEHIND}",
-                f.title
-            )
-        },
-    )))
+    Ok(Some(match (active, front) {
+        (true, _) => STILL_OPEN.to_owned(),
+        (false, Some(f)) => format!(
+            "the window was sent the back key and is still open behind {:?}, {BEHIND}",
+            f.title
+        ),
+        (false, None) => STILL_LISTED.to_owned(),
+    }))
 }
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.
