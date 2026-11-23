@@ -329,7 +329,7 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                     }
                     Input::Key { code, .. } if hotkey == Some(code) => continue,
                     Input::Click { x, y, right, count, mods, found } => {
-                        let mut at = match found {
+                        let (mut at, tapped) = match found {
                             Some(h) => {
                                 let mut at = json!({
                                     "found": {"role": h.role, "name": h.name, "description": h.description},
@@ -343,9 +343,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                                         at["web"]["id"] = id.into();
                                     }
                                 }
-                                at
+                                (at, true)
                             }
-                            None => call(desk, "desk_at", json!({"x": x.round() as i32, "y": y.round() as i32})).await.unwrap_or_default(),
+                            None => (call(desk, "desk_at", json!({"x": x.round() as i32, "y": y.round() as i32})).await.unwrap_or_default(), false),
                         };
                         let pid = at["pid"].as_u64();
                         if pid == Some(u64::from(std::process::id())) {
@@ -365,6 +365,9 @@ pub async fn work<H: Handler>(desk: &H, s: Session) {
                                 "t": t, "kind": "click", "x": x, "y": y, "button": if right { "right" } else { "left" }, "count": count, "mods": mods,
                                 "app": app, "element": at["found"], "path": at["path"], "root": rooted(&at["found"]), "late": late,
                             });
+                            if !tapped && let Some(path) = e["path"].as_array_mut() {
+                                path.reverse();
+                            }
                             if at["secret"] == true {
                                 e["secret"] = true.into();
                             }
@@ -789,6 +792,29 @@ mod tests {
             "{:?}",
             lock(&desk.shots)
         );
+    }
+
+    #[tokio::test]
+    async fn a_click_the_desk_finds_keeps_its_path_innermost_first_as_a_tap_path_runs() {
+        let desk = Desk::new(json!({
+            "found": {"role": "menuitem", "name": "PDF"},
+            "path": [
+                {"id": "7/1", "role": "window", "name": "Untitled"},
+                {"id": "7/2", "role": "menu", "name": "File"},
+                {"id": "7/3", "role": "menu", "name": "Export"}
+            ],
+            "pid": 7
+        }));
+        let r = run(&desk, &[], vec![click(100.0, 80.0)]).await;
+        let e = &r["events"][0];
+        let path: Vec<&str> = e["path"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(path, ["Export", "File", "Untitled"], "{e}");
+        assert_eq!(e["window"]["title"], "Untitled", "{e}");
     }
 
     #[tokio::test]

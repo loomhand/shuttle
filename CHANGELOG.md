@@ -11,6 +11,8 @@
 
 - **`gui_plan`: another caller's chain never overwrites a flow a live chain saved under the same automatic name.** Two callers whose chains drafted the same app and targets got the same automatic name, so the later save replaced the earlier caller's flow, which that caller's chain then wrote back over on its next step. The automatic name now steps around a name another caller's chain of the last 10 minutes holds, as it does around a flow saved by name (`quillpad-2` beside `quillpad`); a caller's own later chain still replaces its own automatic flow. Cost: one `.pending.json` read per name tried when a chain is saved.
 
+- **`record_stop`: a menu click the recorder read through `desk at` drafts its submenus in order.** A recorded click keeps the element's ancestors innermost first, and the draft reverses them into the menu path, but a click the keyboard and mouse tap did not read itself took its element from `desk at`, whose ancestors run from the window down, so `File > Export > PDF` drafted as `Export > File > PDF`. Such a click now keeps its ancestors innermost first too. Cost: none.
+
 ## 0.1.60 - 2026-11-22
 
 - **A cancelled click or key no longer lets the next input slip in early.** A click cancelled while it runs spaces the next click within 16 px from the cancel, not from its start, so a click cancelled after a long human glide cannot pair with the next one into a double click. A cancelled human click or key keeps other input waiting until its buttons and keys are released, up to about 120 ms, so the next input never lands while a modifier is still held. Cost: none on a call that is not cancelled.
