@@ -499,7 +499,7 @@ function lined(w: Win | null, ws: Win[], text: string): desk.Target {
   return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
 function alone(w: Win | null | undefined): Win | null {
-  return w && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, picked) ? w : null
+  return w && !ANDROID && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, picked) ? w : null
 }
 async function windowView(w: Win | undefined): Promise<View | null> {
   const of = alone(w); const b = of?.bounds

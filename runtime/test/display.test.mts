@@ -119,3 +119,15 @@ test('a pick among same-named elements of a window on a second display places th
   assert.match(list, /^Elements of the focused window, with their centres as fractions of the image of the window:\n/)
   assert.match(list, /button "Send" in "Portal" at \(0\.20, 0\.16\)\nbutton "Send" in "Portal" at \(0\.91, 0\.16\)/)
 })
+
+test('an expect on an Android device checks the device shot, which takes no window', async (t) => {
+  const seen = await second(t, { truth: 0.2 })
+  const mode = 'android-expect'
+  process.env.SHUTTLE_DESK = 'android'
+  const device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main
+  delete process.env.SHUTTLE_DESK
+  const r = await device({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(seen.shots, [{}])
+  assert.match(seen.asked[0] ?? '', /^You check the state of a computer screen\./)
+})
