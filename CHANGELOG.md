@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Linux: a desktop `click` at a point off the screen is refused before anything is sent.** A `desk click` with no `window`, `pid` or `app` took any point: the driver, and the XTest press of a `human` click, clamped one outside the screen to its edge and pressed there, so a click at (180,-349) pressed the top panel's task button at (180,0) and minimized the front window. Only `computer_act` refused such a point. The click now fails with `(x,y) is off the screen, which is WxH desk pixels over every display (…); the click did not run, and nothing was sent`, by the size `desk screen` gives, the X screen, which spans every display, so a point on a second display still clicks. On macOS and Windows the desk knows the main display alone and another display can lie at negative coordinates, so a point there still goes to the driver as before. Cost: one `get_screen_size` driver call per Linux desktop click, which also gives the screen scale a background or allowlisted click reads anyway; none for a click that names a window, and none off Linux.
+
 ## 0.1.60 - 2026-11-22
 
 - **A cancelled click or key no longer lets the next input slip in early.** A click cancelled while it runs spaces the next click within 16 px from the cancel, not from its start, so a click cancelled after a long human glide cannot pair with the next one into a double click. A cancelled human click or key keeps other input waiting until its buttons and keys are released, up to about 120 ms, so the next input never lands while a modifier is still held. Cost: none on a call that is not cancelled.

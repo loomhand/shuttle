@@ -1589,7 +1589,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (named, (x, y), listed) =
             match self.pointed(a.window.as_deref(), a.pid, (a.x, a.y)).await? {
                 Some((w, point, listed)) => (Some(w), point, listed),
-                None => (None, (a.x, a.y), None),
+                None => {
+                    self.check_on_screen((a.x, a.y)).await?;
+                    (None, (a.x, a.y), None)
+                }
             };
         if let Some(w) = named.as_ref().filter(|_| !self.bg() && self.os != Os::Mac) {
             self.front(w, (x, y), listed).await?;
@@ -1810,6 +1813,17 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         }
         let under = self.window_at(x, y).await?;
         self.check_point(x, y, under.as_ref()).await
+    }
+
+    async fn check_on_screen(&self, point: (f64, f64)) -> Result<(), String> {
+        if self.os != Os::Linux {
+            return Ok(());
+        }
+        let v = self.call("get_screen_size", json!({})).await?;
+        let size = &v["structuredContent"];
+        let k = size["scale_factor"].as_f64().unwrap_or(1.0);
+        let _ = SCALE.try_with(|s| s.set(Some(k)));
+        off_desk(point, size).map_or(Ok(()), Err)
     }
 
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
@@ -3268,6 +3282,18 @@ fn pointer_point(tool: &str, req: &Value) -> Option<(f64, f64)> {
 
 fn on_desktop(req: &Value) -> bool {
     req["scope"] == "desktop" || req["target"]["kind"] == "desktop"
+}
+
+fn off_desk((x, y): (f64, f64), size: &Value) -> Option<String> {
+    let (w, h) = (size["width"].as_f64()?, size["height"].as_f64()?);
+    if (0.0..w).contains(&x) && (0.0..h).contains(&y) {
+        return None;
+    }
+    Some(format!(
+        "({x},{y}) is off the screen, which is {w}x{h} desk pixels over every display (x 0 to {}, y 0 to {}); the click did not run, and nothing was sent: use a point inside it",
+        w - 1.0,
+        h - 1.0
+    ))
 }
 
 fn opens(prelude: &str, name: &str) -> bool {
@@ -9446,6 +9472,10 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(*GLIDES.lock().unwrap(), [(300.0, 200.0)]);
         assert_eq!(*TYPED_HUMAN.lock().unwrap(), [false, true]);
+        calls
+            .lock()
+            .unwrap()
+            .retain(|(t, _)| t != "get_screen_size");
         assert_eq!(
             *calls.lock().unwrap(),
             [
@@ -9482,6 +9512,10 @@ pub(crate) mod tests {
         desk.run("desk_click", json!({"x": 300.0, "y": 200.0, "human": true}))
             .await
             .unwrap();
+        SENT_ORDER
+            .lock()
+            .unwrap()
+            .retain(|t| t != "get_screen_size");
         assert_eq!(*SENT_ORDER.lock().unwrap(), ["click", "glide", "click"]);
     }
 
@@ -9553,6 +9587,7 @@ pub(crate) mod tests {
             .unwrap()
             .iter()
             .map(|(t, _)| t.clone())
+            .filter(|t| t != "get_screen_size")
             .collect();
         assert_eq!(tools, ["spaced", "spaced", "click", "scroll", "press_key"]);
     }
@@ -9599,6 +9634,52 @@ pub(crate) mod tests {
             .collect();
         assert!(!tools.contains(&"spaced".to_owned()), "{tools:?}");
         assert!(tools.contains(&"click".to_owned()), "{tools:?}");
+    }
+
+    #[tokio::test]
+    async fn a_linux_desktop_click_off_every_display_is_refused_before_anything_is_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), TwoDisplays(calls.clone()), Os::Linux)
+            .with_hand(|_, _| panic!("an off-screen click reaches no hand"));
+        for human in [false, true] {
+            let err = desk
+                .run(
+                    "desk_click",
+                    json!({"x": 180.0, "y": -349.0, "human": human}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                "(180,-349) is off the screen, which is 3840x1080 desk pixels over every display (x 0 to 3839, y 0 to 1079); the click did not run, and nothing was sent: use a point inside it"
+            );
+        }
+        for (x, y) in [(3840.0, 10.0), (-1.0, 10.0), (10.0, 1080.0)] {
+            let refused = desk.run("desk_click", json!({"x": x, "y": y})).await;
+            assert!(refused.is_err(), "{x},{y}");
+        }
+        let sent = |calls: &Arc<Mutex<Vec<(String, Value)>>>| -> Vec<String> {
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(t, _)| t.clone())
+                .filter(|t| t != "get_screen_size")
+                .collect()
+        };
+        assert!(sent(&calls).is_empty(), "{:?}", sent(&calls));
+        for (x, y) in [(2500.0, 500.0), (3839.0, 1079.0), (0.0, 0.0)] {
+            desk.run("desk_click", json!({"x": x, "y": y}))
+                .await
+                .unwrap();
+        }
+        assert_eq!(sent(&calls), ["click", "click", "click"]);
+        let mac_calls = Arc::new(Mutex::new(Vec::new()));
+        let mac = Desk::new(|| Ok(notepad()), TwoDisplays(mac_calls.clone()), Os::Mac);
+        mac.run("desk_click", json!({"x": 180.0, "y": -349.0}))
+            .await
+            .unwrap();
+        assert!(sent(&mac_calls).contains(&"click".to_owned()));
     }
 
     #[test]
@@ -11904,6 +11985,20 @@ pub(crate) mod tests {
                 .unwrap()
                 .push(("spaced".to_owned(), json!([point.0, point.1])));
             click
+        }
+    }
+
+    struct TwoDisplays(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for TwoDisplays {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => {
+                    json!({"structuredContent": {"width": 3840, "height": 1080, "scale_factor": 1.0}})
+                }
+                _ => json!({}),
+            })
         }
     }
 
