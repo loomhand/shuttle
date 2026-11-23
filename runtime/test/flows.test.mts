@@ -509,6 +509,22 @@ test('a chain whose auto name another caller then saves by name neither continue
   assert.deepEqual(flow('a-flow').params, { text: 'memo', text_2: ' more' })
 })
 
+test('a chain of another caller never overwrites the flow a live chain saved under the same auto name', async (t) => {
+  const was = process.env.SHUTTLE_CALLER
+  t.after(() => { if (was === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = was })
+  const pad = { ...notepad, title: 'a.txt - Quillpad' }
+  await daemon(t, answer(() => [pad]))
+  const as = (who: string, p: Parameters<typeof main>[0]) => { process.env.SHUTTLE_CALLER = who; return main(p) }
+  assert.equal((await as('mcp-a', { steps: [{ app: 'Quillpad' }, { type: 'memo' }] })).saved, 'quillpad')
+  const before = readFileSync(`${process.env.SHUTTLE_FLOWS}/quillpad.json`, 'utf8')
+  assert.equal((await as('mcp-b', { steps: [{ app: 'Quillpad' }, { type: 'theirs' }] })).saved, 'quillpad-2')
+  assert.equal(readFileSync(`${process.env.SHUTTLE_FLOWS}/quillpad.json`, 'utf8'), before)
+  assert.equal((await as('mcp-a', { steps: [{ type: ' more' }] })).saved, 'quillpad')
+  assert.deepEqual(flow('quillpad').params, { text: 'memo', text_2: ' more' })
+  assert.deepEqual(flow('quillpad-2').params, { text: 'theirs' })
+  assert.equal((await as('mcp-b', { steps: [{ app: 'Quillpad' }, { type: 'again' }] })).saved, 'quillpad-2')
+})
+
 test('a chain renamed right after another caller saved its auto name by name leaves that flow', async (t) => {
   const was = process.env.SHUTTLE_CALLER
   t.after(() => { if (was === undefined) delete process.env.SHUTTLE_CALLER; else process.env.SHUTTLE_CALLER = was })
