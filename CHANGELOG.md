@@ -13,6 +13,8 @@
 
 - **`record_stop`: a menu click the recorder read through `desk at` drafts its submenus in order.** A recorded click keeps the element's ancestors innermost first, and the draft reverses them into the menu path, but a click the keyboard and mouse tap did not read itself took its element from `desk at`, whose ancestors run from the window down, so `File > Export > PDF` drafted as `Export > File > PDF`. Such a click now keeps its ancestors innermost first too. Cost: none.
 
+- **Linux: a child that no longer exists no longer marks every snapshot truncated.** An app that keeps listing a destroyed child among a node's children made that child's read fail with `UnknownObject` (or, from GDBus, `UnknownMethod`), and every snapshot of the window then said `truncated: true`, so a `gui_plan` `gone` verify could never pass there. Such a child is now left out without cutting the tree; a read that times out or whose app is gone still cuts it. Cost: one string check per failed read.
+
 ## 0.1.60 - 2026-11-22
 
 - **A cancelled click or key no longer lets the next input slip in early.** A click cancelled while it runs spaces the next click within 16 px from the cancel, not from its start, so a click cancelled after a long human glide cannot pair with the next one into a double click. A cancelled human click or key keeps other input waiting until its buttons and keys are released, up to about 120 ms, so the next input never lands while a modifier is still held. Cost: none on a call that is not cancelled.
