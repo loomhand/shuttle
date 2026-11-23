@@ -82,7 +82,7 @@ On an Android device, a `type` step whose `desk type` answers `typed: false` sto
 
 When the accessibility tree has no match for such a click, the step tries, in this order:
 
-1. the crop, found on a screenshot with a normalized cross-correlation of at least 0.8, when the step's target is the recorded text;
+1. the crop, found with a normalized cross-correlation of at least 0.8 on the plan window's own shot on macOS, on any display, or on a screenshot elsewhere ([config.md](config.md#models-bring-your-own-key) says when), when the step's target is the recorded text;
 2. grounding the target, which may land on the window or document itself when `root` is set. On a target with no accessibility element, such as a button drawn on a canvas, grounding can click a control that looks like the target, or one it takes for a target that is not there; the step's `after` stops the plan then, but the click has happened;
 3. the recorded point in the window, when the step's target is the recorded text and the window has the recorded size, within 2 desk units (macOS, where windows have `bounds`).
 
