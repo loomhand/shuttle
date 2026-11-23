@@ -893,11 +893,19 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>, 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): Promise<[number, number]> {
+async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, again = false): Promise<[number, number]> {
   const same = r?.text === target
   const roots = !!r?.root
   const missed: string[] = []
   let v: View | undefined
+  const settled = async (p: [number, number]): Promise<[number, number]> => {
+    const of = v?.of
+    if (!of) return p
+    const now = (await desk.windows()).find((x) => x.id === of.id && x.pid === of.pid)
+    if (now && isDeepStrictEqual(now.bounds, of.bounds)) return p
+    if (!now || again) throw new Surprise(`"${w.title}" moved, changed size or closed while its target was found in its shot, so nothing was clicked`, await seen())
+    return spot(r, target, now, rec, true)
+  }
   if (same && r.crop) {
     let t0 = Date.now()
     v = await windowView(w) ?? await screenView()
@@ -907,7 +915,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
     const [x, y] = [(area.left ?? 0) + m.x / k + (r.offset?.[0] ?? 0), (area.top ?? 0) + m.y / k + (r.offset?.[1] ?? 0)]
     tick('crop', t0); rec.p = +m.score.toFixed(2)
     t0 = Date.now(); const c = m.score >= MATCH_BAR ? await placed(x, y, w, roots) : null; tick('check', t0)
-    if (c?.ok) { rec.how = 'crop'; return [x, y] }
+    if (c?.ok) { rec.how = 'crop'; return settled([x, y]) }
     missed.push(c ? `the recorded crop matched ${told(c)}` : `the recorded crop matched nothing (best ${rec.p})`)
   }
   try {
@@ -918,10 +926,10 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): 
     const g = await grounded(x, y, target, w, v, roots)
     rec.ground_hit = g.what.slice(0, 80); rec.checked = g.check; rec.p = g.p; rec.p_zoom = g.p_zoom; rec.p_full = g.p_full
     const c = g.ok ? await placed(x, y, w, roots) : g
-    if (c.ok) { rec.how = 'ground'; return [x, y] }
+    if (c.ok) { rec.how = 'ground'; return await settled([x, y]) }
     missed.push(`grounding pointed at ${told(c)}`)
   } catch (e: unknown) {
-    if (!r || spent(e)) throw e
+    if (!r || spent(e) || e instanceof Surprise) throw e
     missed.push(`grounding failed: ${e instanceof Error ? e.message : String(e)}`)
   }
   const b = w.bounds

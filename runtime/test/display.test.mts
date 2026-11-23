@@ -30,15 +30,17 @@ function size(b64: string): number[] {
   return [p.w, p.h]
 }
 
-async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number } = {}): Promise<Seen> {
+async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number; moves?: number[][] } = {}): Promise<Seen> {
   const seen: Seen = { shots: [], asked: [], images: [], grounds: [], prompts: [], clicks: [], pressed: [] }
+  let at = bounds
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([win])
+    if (tool === 'desk_windows') return JSON.stringify([{ ...win, bounds: at }])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: o.nodes ?? [root] })
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'desk_read' && o.read) return o.read(String(args.id))
     if (tool === 'desk_shot') {
       seen.shots.push(args)
+      if (args.window !== undefined && args.w === undefined) at = o.moves?.shift() ?? at
       const image = args.window === undefined ? gray(Number(args.w ?? 1280), Number(args.h ?? 800)) : args.w === undefined ? o.window ?? gray(846, 774) : gray(Number(args.w), Number(args.h))
       return { text: '{"ok":true}', image: image.toString('base64') }
     }
@@ -147,4 +149,18 @@ test('an expect whose window gets a same-titled twin before the shot checks the 
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(shots, [{}])
   assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
+})
+
+test('grounding on a window that moves after its shot grounds again on a fresh shot, and stops when it moves again', async (t) => {
+  const moved = [-1400, 20, 846, 774]
+  const seen = await second(t, { moves: [moved] })
+  const r = await main({ steps: [{ click: 'the yellow star' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(seen.grounds, [{ left: -1416, top: 0, width: 846, height: 774 }, { left: -1400, top: 20, width: 846, height: 774 }])
+  assert.deepEqual(seen.clicks, ['-1000,300'])
+  const again = await second(t, { moves: [moved, [-1300, 40, 846, 774]] })
+  const stopped = await main({ steps: [{ click: 'the yellow star' }] })
+  assert.equal(stopped.ok, false, JSON.stringify(stopped))
+  assert.match(stopped.escalate?.reason ?? '', /^"Portal" moved, changed size or closed while its target was found in its shot, so nothing was clicked/)
+  assert.deepEqual(again.clicks, [])
 })
