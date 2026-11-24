@@ -1542,7 +1542,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     else if (Date.now() >= deadline) throw new Surprise(busy(w, t1), await seen())
     if (BG) await front(w)
     const ws = ANDROID ? [] : await desk.windows()
-    const of = ws.find((x) => x.active)?.id === w.id ? alone(w, ws) : null
+    const now = ws.find((x) => x.active)
+    const of = now?.id === w.id && now.pid === w.pid ? alone(now, ws) : null
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())

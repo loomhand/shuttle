@@ -216,3 +216,20 @@ test('a state check crops the control from the window where the window list plac
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([seen.images, seen.tones], [[[100, 28]], [0]])
 })
+
+test('an expect whose window retitles itself before the shot shoots it by its current title', async (t) => {
+  const shots: Record<string, unknown>[] = []; const asked: string[] = []
+  let title = 'Portal'
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ ...win, title }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'model_decide') { title = 'Portal - edited'; return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage }) }
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(846, 774).toString('base64') } }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(shots, [{ window: 'Portal - edited', pid: process.pid }])
+  assert.match(asked[0] ?? '', /^You check the state of the app window "Portal - edited", which the image shows alone\./)
+})
