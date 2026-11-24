@@ -291,15 +291,6 @@ impl Android {
         let _ = tokio::time::timeout(CLOSE_WAIT, clear).await;
     }
 
-    async fn clear(&self) {
-        if wiped(&self.control).await
-            && let Ok(mut control) = self.open_control().await
-            && control.set_clipboard("").await.is_ok()
-        {
-            *self.control.lock().await = Some(control);
-        }
-    }
-
     pub fn release(&self, session: &str) {
         self.saved().remove(session);
     }
@@ -438,6 +429,18 @@ impl Android {
             .map_err(|e| into_password_field(e, protected))
     }
 
+    /// The screen size `wm size` reports in the device's natural rotation, read once per device.
+    pub(crate) async fn natural(&self) -> Result<(i32, i32), String> {
+        self.natural
+            .get_or_try_init(|| async {
+                let out = self.adb(&["shell", "wm", "size"]).await?;
+                let out = String::from_utf8_lossy(&out);
+                wm_size(&out).ok_or_else(|| format!("wm size said {:?}", out.trim()))
+            })
+            .await
+            .copied()
+    }
+
     async fn type_lines<C, Cf>(
         &self,
         text: &str,
@@ -544,18 +547,6 @@ impl Android {
         Ok(focus)
     }
 
-    /// The screen size `wm size` reports in the device's natural rotation, read once per device.
-    pub(crate) async fn natural(&self) -> Result<(i32, i32), String> {
-        self.natural
-            .get_or_try_init(|| async {
-                let out = self.adb(&["shell", "wm", "size"]).await?;
-                let out = String::from_utf8_lossy(&out);
-                wm_size(&out).ok_or_else(|| format!("wm size said {:?}", out.trim()))
-            })
-            .await
-            .copied()
-    }
-
     async fn input(&self, args: &[&str]) -> Result<(), String> {
         let mut argv = vec!["shell", "input"];
         argv.extend_from_slice(args);
@@ -581,6 +572,15 @@ impl Android {
         match tokio::time::timeout(PASTE_TIMEOUT, self.served("paste")).await {
             Ok(answer) => answer.map(|a| a.trim() == "true"),
             Err(_) => Err(unhandled_paste(&self.focused_window().await)),
+        }
+    }
+
+    async fn clear(&self) {
+        if wiped(&self.control).await
+            && let Ok(mut control) = self.open_control().await
+            && control.set_clipboard("").await.is_ok()
+        {
+            *self.control.lock().await = Some(control);
         }
     }
 
