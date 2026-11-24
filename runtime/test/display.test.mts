@@ -408,3 +408,27 @@ test('an expect on a window off the main display that has a same-titled twin sto
   assert.equal(r.escalate?.reason, '"Portal" cannot be shot alone, and the screen shot of the main display would not show it: the text is bold'.replace(/^/, 'the condition cannot be checked: '))
   assert.deepEqual(shots, [])
 })
+
+async function fresh(t: TestContext, after: () => object[]) {
+  const shots: Record<string, unknown>[] = []; const asked: string[] = []
+  let read = false
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(read ? after() : [win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'model_decide') { read = true; return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage }) }
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage }) }
+    return '{"ok":true}'
+  })
+  return { shots, asked }
+}
+
+test('an expect on a plan window on the main display while another app holds the focus on a second display checks the screen', async (t) => {
+  const here = { ...win, active: false, bounds: [0, 0, 846, 774] }
+  const elsewhere = { id: '7/1', title: 'Notes', role: 'window', pid: 4242, active: true, bounds: [-1416, 0, 800, 600] }
+  const seen = await fresh(t, () => [elsewhere, here])
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.shots, seen.asked.length], [[{}], 1])
+})

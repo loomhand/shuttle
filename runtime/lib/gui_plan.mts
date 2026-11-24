@@ -1552,7 +1552,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const me = ws.find((x) => x.id === w.id && x.pid === w.pid) ?? w
     const main = !of && !ANDROID && me.bounds ? await desk.screen() : null
     const shown = main ? [main.left ?? 0, main.top ?? 0, main.width, main.height] as [number, number, number, number] : null
-    const involved = [me, now, ...ws.filter((x) => x.id !== me.id && x.pid === me.pid && !x.title.trim() && !!x.bounds && !!me.bounds && crosses(x.bounds, me.bounds))]
+    const involved = [me, now?.pid === me.pid ? now : undefined, ...ws.filter((x) => x.id !== me.id && x.pid === me.pid && !x.title.trim() && !!x.bounds && !!me.bounds && crosses(x.bounds, me.bounds))]
     if (shown && involved.some((x) => !!x?.bounds && !crosses(x.bounds, shown))) throw new Surprise(`the condition cannot be checked: "${w.title}" cannot be shot alone, and the screen shot of the main display would not show it: ${s.expect}`, await seen())
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
