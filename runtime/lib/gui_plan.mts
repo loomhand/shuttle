@@ -896,18 +896,19 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>, 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, again = false): Promise<[number, number]> {
+async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, again = false, ws = picked): Promise<[number, number]> {
   const same = r?.text === target
   const roots = !!r?.root
   const missed: string[] = []
   let v: View | undefined
   const settled = async (p: [number, number]): Promise<[number, number]> => {
-    const of = v?.of ?? (MAC && host(w, picked).bounds ? host(w, picked) : undefined)
+    const of = v?.of ?? (MAC && host(w, ws).bounds ? host(w, ws) : undefined)
     if (!of) return p
-    const now = (await desk.windows()).find((x) => x.id === of.id && x.pid === of.pid)
+    const list = await desk.windows(); const now = list.find((x) => x.id === of.id && x.pid === of.pid)
     if (now && isDeepStrictEqual(now.bounds, of.bounds)) return p
-    if (!now || again) throw new Surprise(`"${w.title}" moved, changed size or closed while its target was found in its shot, so nothing was clicked`, await seen())
-    return spot(r, target, now, rec, true)
+    const fresh = list.find((x) => x.id === w.id && x.pid === w.pid)
+    if (!now || !fresh || again) throw new Surprise(`"${w.title}" moved, changed size or closed while its target was found in its shot, so nothing was clicked`, await seen())
+    return spot(r, target, fresh, rec, true, list)
   }
   if (same && r.crop) {
     let t0 = Date.now()

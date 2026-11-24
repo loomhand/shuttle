@@ -581,7 +581,7 @@ test('grounding on a macOS sheet whose window moves after the screen shot ground
   const sheet = { id: '5/1', title: 'Export', role: 'dialog', pid: process.pid, active: true, owner: '1/1' }
   const moves = [[120, 20, 846, 774]]
   let at = [100, 10, 846, 774]
-  const grounds: unknown[] = []; const clicks: string[] = []
+  const grounds: unknown[] = []; const clicks: string[] = []; const targets: unknown[] = []; const hits: unknown[] = []
   await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([sheet, { ...win, active: false, bounds: at }])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: sheet, truncated: false, nodes: [{ ref: 0, id: '5/1', parent: -1, depth: 0, role: 'dialog', name: 'Export', states: ['showing'] }] })
@@ -590,7 +590,8 @@ test('grounding on a macOS sheet whose window moves after the screen shot ground
       if (args.w === undefined) at = moves.shift() ?? at
       return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
     }
-    if (tool === 'model_ground') { grounds.push(args.area); return JSON.stringify({ x: 500, y: 300, usage }) }
+    if (tool === 'model_ground') { grounds.push(args.area); targets.push(args.target); return JSON.stringify({ x: 500, y: 300, usage }) }
+    if (tool === 'desk_at') hits.push(args.window)
     if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '5/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '5/1', role: 'dialog', name: 'Export' }, { id: '1/1', role: 'window', name: 'Portal' }], pid: process.pid })
     if (tool === 'model_decide') {
       const a = args as { questions: Record<string, { type: string }> }
@@ -603,4 +604,6 @@ test('grounding on a macOS sheet whose window moves after the screen shot ground
   const r = await main({ steps: [{ click: 'the yellow star' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([grounds.length, clicks], [2, ['500,300']])
+  assert.deepEqual(targets, ['the yellow star in the "Export" window', 'the yellow star in the "Export" window'])
+  assert.ok(hits.length > 0 && hits.every((x) => x === 'Export'), JSON.stringify(hits))
 })
