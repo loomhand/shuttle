@@ -2471,6 +2471,35 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_whose_keyboard_back_takes_the_window_off_the_list_under_its_dialog_says_only_that_back_was_sent()
+     {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("keyboard");
+        let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
+        fake.put(
+            "after-input.json",
+            &format!(
+                r#"[{bar},{{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}}]"#
+            ),
+        );
+        let out = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out["unverified"],
+            "only the back key that hides the keyboard was sent, and the window left the window list, but \"com.android.settings\" came to the front, not another app, so it may still be open: read the window list before closing again",
+            "{out}"
+        );
+        assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_to_another_app_or_a_full_screen_window_of_its_own_app_is_closed_at_once() {
         for after in [
             r#",{"id":3,"type":1,"layer":0,"title":"","package":"com.android.launcher3","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,

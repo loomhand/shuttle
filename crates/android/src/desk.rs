@@ -38,7 +38,9 @@ const UNSETTLED: &str = "the device lists no window in front at this moment, as 
 const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
 const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
 const STILL_LISTED: &str = "the window was sent the back key and is still listed 1 s later, while the device lists no window in front: read the window list before closing again";
-const LEFT_EMPTY: &str = "the window was sent the back key and left the window list with no window in front, so it may still be open: read the window list before closing again";
+const BACK_SENT: &str = "the window was sent the back key and left the window list";
+const KEYBOARD_SENT: &str =
+    "only the back key that hides the keyboard was sent, and the window left the window list";
 const STILL_OPEN: &str = "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again";
 
 /// One element of a window as the desk and computer_state show it.
@@ -373,17 +375,24 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                     frame.title
                 ));
             }
-            let mut stayed = None;
-            if !frame.keyboard || hide_keyboard(android, &frame).await? {
-                android.keys("back").await.map_err(|e| {
-                    if frame.keyboard {
-                        format!("{e}; a back key had hidden the keyboard before it")
-                    } else {
-                        e
-                    }
-                })?;
-                stayed = still_open(android, &frame).await?;
-            }
+            let hidden = if frame.keyboard {
+                hide_keyboard(android, &frame).await?
+            } else {
+                None
+            };
+            let stayed = match hidden {
+                Some(stayed) => stayed,
+                None => {
+                    android.keys("back").await.map_err(|e| {
+                        if frame.keyboard {
+                            format!("{e}; a back key had hidden the keyboard before it")
+                        } else {
+                            e
+                        }
+                    })?;
+                    still_open(android, &frame).await?
+                }
+            };
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
             if let Some(note) = stayed {
@@ -1158,62 +1167,84 @@ fn named(frames: Vec<Frame>, a: &WindowArgs) -> Result<Frame, String> {
     Ok(frame)
 }
 
-async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String> {
+async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<Option<Option<String>>, String> {
     android.keys("back").await?;
+    let mut gone = None;
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
-        match frames(android)
-            .await
-            .map_err(|e| {
-                format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
-            })?
-            .into_iter()
-            .find(|f| f.id == frame.id)
-        {
-            None => return Ok(false),
-            Some(f) if f.keyboard || f.guessed => {}
-            Some(f) if f.active => return Ok(true),
-            Some(_) => {
-                return Err(format!(
-                    "{} left the front after a back key to hide the keyboard, so no closing back was sent",
-                    frame.title
-                ));
+        let frames = frames(android).await.map_err(|e| {
+            format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
+        })?;
+        let Some(own) = frames.iter().position(|f| f.id == frame.id) else {
+            match left(frames, frame) {
+                None => return Ok(Some(None)),
+                top => gone = top,
             }
+            continue;
+        };
+        let own = &frames[own];
+        gone = None;
+        if own.keyboard || own.guessed {
+            continue;
         }
+        if own.active {
+            return Ok(None);
+        }
+        return Err(format!(
+            "{} left the front after a back key to hide the keyboard, so no closing back was sent",
+            frame.title
+        ));
     }
-    Err(format!(
-        "the keyboard stayed up after a back key, so {} was not closed",
-        frame.title
-    ))
+    match gone {
+        Some(top) => Ok(Some(Some(left_note(KEYBOARD_SENT, top)))),
+        None => Err(format!(
+            "the keyboard stayed up after a back key, so {} was not closed",
+            frame.title
+        )),
+    }
+}
+
+fn left(frames: Vec<Frame>, closing: &Frame) -> Option<Option<Frame>> {
+    let top = frames.into_iter().find(|f| f.active && !f.guessed);
+    let closed = top
+        .as_ref()
+        .is_some_and(|f| !f.system && (f.package != closing.package || fills(f.bounds, f.screen)));
+    (!closed).then_some(top)
+}
+
+fn left_note(sent: &str, top: Option<Frame>) -> String {
+    match top {
+        Some(f) => format!(
+            "{sent}, but {:?} came to the front, not another app, so it may still be open: read the window list before closing again",
+            f.title
+        ),
+        None => format!(
+            "{sent} with no window in front, so it may still be open: read the window list before closing again"
+        ),
+    }
 }
 
 async fn still_open(android: &Android, closing: &Frame) -> Result<Option<String>, String> {
-    let (mut active, mut front, mut left) = (true, None, None);
+    let (mut active, mut front, mut gone) = (true, None, None);
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
         let frames = frames(android)
             .await
             .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
         let Some(own) = frames.iter().find(|f| f.id == closing.id) else {
-            let top = frames.into_iter().find(|f| f.active && !f.guessed);
-            if top.as_ref().is_some_and(|f| {
-                !f.system && (f.package != closing.package || fills(f.bounds, f.screen))
-            }) {
-                return Ok(None);
+            match left(frames, closing) {
+                None => return Ok(None),
+                top => gone = top,
             }
-            left = Some(top);
             continue;
         };
-        (active, left) = (own.active && !own.guessed, None);
+        (active, gone) = (own.active && !own.guessed, None);
         front = frames
             .into_iter()
             .find(|f| f.active && !f.guessed && f.id != closing.id);
     }
-    if let Some(top) = left {
-        return Ok(Some(top.map_or_else(|| LEFT_EMPTY.to_owned(), |f| format!(
-            "the window was sent the back key and left the window list, but {:?} came to the front, not another app, so it may still be open: read the window list before closing again",
-            f.title
-        ))));
+    if let Some(top) = gone {
+        return Ok(Some(left_note(BACK_SENT, top)));
     }
     Ok(Some(match (active, front) {
         (true, _) => STILL_OPEN.to_owned(),
