@@ -562,7 +562,11 @@ impl Android {
             }
             let control = match slot.take() {
                 Some(control) if control.is_open() => slot.insert(control),
-                _ => slot.insert(self.open_control().await?),
+                taken => {
+                    let filled = taken.is_some_and(|c| c.filled);
+                    let fresh = self.open_control().await?;
+                    slot.insert(Control { filled, ..fresh })
+                }
             };
             if self.closed.load(Ordering::Relaxed) {
                 return Err(CLOSED.to_owned());
@@ -3234,6 +3238,37 @@ mod tests {
         assert!(fake.android.paste("secret").await.is_err());
         fake.android.close().await;
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_during_a_new_session_after_a_dead_filled_one_still_empties_the_clipboard() {
+        let fake = Fake::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let peer = controlled(&fake.android).await;
+        if let Some(c) = fake.android.control.lock().await.as_mut() {
+            c.filled = true;
+        }
+        drop(peer);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let device = tokio::spawn(async move {
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            fresh.write_all(&[0]).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            let read =
+                tokio::time::timeout(Duration::from_secs(3), fresh.read_exact(&mut clear)).await;
+            let _ = fresh.write_all(&ack(1)).await;
+            read.is_ok_and(|r| r.is_ok()).then_some(clear)
+        });
+        let android = Arc::new(fake.android);
+        let paster = Arc::clone(&android);
+        let pasting = tokio::spawn(async move { paster.paste("line 2").await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        android.close().await;
+        assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
+        assert_eq!(pasting.await.unwrap(), Err(CLOSED.to_owned()));
     }
 
     #[cfg(unix)]
