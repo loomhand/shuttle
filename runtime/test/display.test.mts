@@ -332,7 +332,7 @@ test('an expect that would fall back to the main display while its window is on 
   })
   const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: "Portal" or the window that holds the focus or overlaps it is on another display than the main one/)
+  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: "Portal" cannot be shot alone, and the screen shot of the main display would not show it: the completion list is gone$/)
   assert.deepEqual([shots, asked], [[], []])
   at = [-400, 0, 846, 774]
   const partly = await main({ steps: [{ expect: 'the completion list is gone' }] })
@@ -391,4 +391,20 @@ test('an expect on a straddling window whose popup lies wholly on another displa
     assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: /)
     assert.deepEqual([seen.shots, seen.asked], [[], []])
   }
+})
+
+test('an expect on a window off the main display that has a same-titled twin stops with the neutral reason', async (t) => {
+  const shots: Record<string, unknown>[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([win, { ...win, id: '2/1', active: false }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_shot') shots.push(args)
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"Portal" cannot be shot alone, and the screen shot of the main display would not show it: the text is bold'.replace(/^/, 'the condition cannot be checked: '))
+  assert.deepEqual(shots, [])
 })
