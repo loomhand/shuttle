@@ -111,6 +111,7 @@ pub struct Android {
     ui: Mutex<Option<UiServer>>,
     server_input: AtomicBool,
     control: Arc<Mutex<Option<Control>>>,
+    owed: Arc<AtomicBool>,
     closed: AtomicBool,
     natural: OnceCell<(i32, i32)>,
 }
@@ -123,6 +124,7 @@ impl Android {
             ui: Mutex::new(None),
             server_input: AtomicBool::new(true),
             control: Arc::default(),
+            owed: Arc::default(),
             closed: AtomicBool::new(false),
             natural: OnceCell::new(),
         }
@@ -284,7 +286,8 @@ impl Android {
     pub async fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
         let clear = async {
-            if self.control.lock().await.as_ref().is_some_and(|c| c.filled) {
+            drop(self.control.lock().await);
+            if self.owed.load(Ordering::Relaxed) {
                 self.clear().await;
             }
         };
@@ -419,7 +422,7 @@ impl Android {
         C: FnMut() -> Cf,
         Cf: Future<Output = Result<Option<i64>, String>>,
     {
-        let mut wipe = Wipe(Some(Arc::clone(&self.control)));
+        let mut wipe = Wipe(Some(Arc::clone(&self.control)), Arc::clone(&self.owed));
         let mut protected = false;
         let typed = self.type_lines(text, at, check, &mut protected).await;
         wipe.0 = None;
@@ -562,22 +565,13 @@ impl Android {
             }
             let control = match slot.take() {
                 Some(control) if control.is_open() => slot.insert(control),
-                taken => {
-                    let filled = taken.is_some_and(|c| c.filled);
-                    let fresh = self.open_control().await?;
-                    slot.insert(Control { filled, ..fresh })
-                }
+                _ => slot.insert(self.open_control().await?),
             };
             if self.closed.load(Ordering::Relaxed) {
                 return Err(CLOSED.to_owned());
             }
-            if let Err(e) = control.set_clipboard(text).await {
-                let filled = control.filled;
-                *slot = self
-                    .open_control()
-                    .await
-                    .ok()
-                    .map(|fresh| Control { filled, ..fresh });
+            if let Err(e) = control.set_clipboard(text, &self.owed).await {
+                *slot = self.open_control().await.ok();
                 return Err(e);
             }
         }
@@ -588,9 +582,9 @@ impl Android {
     }
 
     async fn clear(&self) {
-        if wiped(&self.control).await
+        if wiped(&self.control, &self.owed).await
             && let Ok(mut control) = self.open_control().await
-            && control.set_clipboard("").await.is_ok()
+            && control.set_clipboard("", &self.owed).await.is_ok()
         {
             *self.control.lock().await = Some(control);
         }
@@ -844,7 +838,6 @@ impl Android {
             stream,
             sequence: 0,
             pending: false,
-            filled: false,
             _server: server,
             _forward: forward,
         })
@@ -956,7 +949,6 @@ struct Control {
     stream: TcpStream,
     sequence: u64,
     pending: bool,
-    filled: bool,
     _server: Child,
     _forward: Forward,
 }
@@ -971,19 +963,23 @@ impl Control {
             )
     }
 
-    async fn set_clipboard(&mut self, text: &str) -> Result<(), String> {
+    async fn set_clipboard(&mut self, text: &str, owed: &AtomicBool) -> Result<(), String> {
         if self.pending {
             self.ack().await?;
         }
         self.sequence += 1;
         self.pending = true;
-        self.filled |= !text.is_empty();
+        if !text.is_empty() {
+            owed.store(true, Ordering::Relaxed);
+        }
         self.stream
             .write_all(&clipboard_message(text, self.sequence))
             .await
             .map_err(|e| format!("send clipboard: {e}"))?;
         self.ack().await?;
-        self.filled = !text.is_empty();
+        if text.is_empty() {
+            owed.store(false, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -996,14 +992,15 @@ impl Control {
     }
 }
 
-struct Wipe(Option<Arc<Mutex<Option<Control>>>>);
+struct Wipe(Option<Arc<Mutex<Option<Control>>>>, Arc<AtomicBool>);
 
 impl Drop for Wipe {
     fn drop(&mut self) {
         if let Some(slot) = self.0.take()
             && let Ok(rt) = tokio::runtime::Handle::try_current()
         {
-            rt.spawn(async move { wiped(&slot).await });
+            let owed = Arc::clone(&self.1);
+            rt.spawn(async move { wiped(&slot, &owed).await });
         }
     }
 }
@@ -1389,15 +1386,16 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
     Err("scrcpy control did not start".to_owned())
 }
 
-async fn wiped(slot: &Mutex<Option<Control>>) -> bool {
+async fn wiped(slot: &Mutex<Option<Control>>, owed: &AtomicBool) -> bool {
     let mut slot = slot.lock().await;
-    let Some(control) = slot.as_mut() else {
-        return false;
-    };
-    if control.is_open() && control.set_clipboard("").await.is_ok() {
+    if let Some(control) = slot.as_mut()
+        && control.is_open()
+        && control.set_clipboard("", owed).await.is_ok()
+    {
         return false;
     }
-    slot.take().is_some_and(|c| c.filled)
+    *slot = None;
+    owed.load(Ordering::Relaxed)
 }
 
 /// Reads the device message that acknowledges the clipboard of `sequence`, the only one a server without clipboard autosync sends.
@@ -3247,9 +3245,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         fake.put("port", &listener.local_addr().unwrap().port().to_string());
         let peer = controlled(&fake.android).await;
-        if let Some(c) = fake.android.control.lock().await.as_mut() {
-            c.filled = true;
-        }
+        fake.android.owed.store(true, Ordering::Relaxed);
         drop(peer);
         tokio::time::sleep(Duration::from_millis(50)).await;
         let device = tokio::spawn(async move {
@@ -3269,6 +3265,46 @@ mod tests {
         android.close().await;
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
         assert_eq!(pasting.await.unwrap(), Err(CLOSED.to_owned()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clear_owed_after_a_failed_reconnect_is_sent_once_adb_answers_again() {
+        let fake = Fake::new();
+        let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &refused.local_addr().unwrap().port().to_string());
+        drop(refused);
+        let peer = controlled(&fake.android).await;
+        let mut set = vec![0; clipboard_message("line 1", 1).len()];
+        let device = tokio::spawn(async move {
+            let mut peer = peer;
+            peer.read_exact(&mut set).await.unwrap();
+            peer.write_all(&ack(1)).await.unwrap();
+            set
+        });
+        if let Some(c) = fake.android.control.lock().await.as_mut() {
+            c.set_clipboard("line 1", &fake.android.owed).await.unwrap();
+        }
+        assert_eq!(device.await.unwrap(), clipboard_message("line 1", 1));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(fake.android.paste("line 2").await.is_err());
+        assert!(fake.android.control.lock().await.is_none());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let device = tokio::spawn(async move {
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .ok()?
+                .ok()?;
+            fresh.write_all(&[0]).await.ok()?;
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            let read =
+                tokio::time::timeout(Duration::from_secs(3), fresh.read_exact(&mut clear)).await;
+            let _ = fresh.write_all(&ack(1)).await;
+            read.is_ok_and(|r| r.is_ok()).then_some(clear)
+        });
+        fake.android.close().await;
+        assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
     }
 
     #[cfg(unix)]
@@ -3317,9 +3353,7 @@ mod tests {
         std::fs::set_permissions(&adb, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
         let (android, _peer) = session(adb.to_str().unwrap()).await;
-        if let Some(c) = android.control.lock().await.as_mut() {
-            c.filled = true;
-        }
+        android.owed.store(true, Ordering::Relaxed);
         let started = std::time::Instant::now();
         android.close().await;
         assert!(
@@ -3334,9 +3368,7 @@ mod tests {
     #[tokio::test]
     async fn a_close_during_a_type_empties_the_device_clipboard_and_pastes_no_line_after_it() {
         let (android, mut peer) = session("/nonexistent/adb").await;
-        if let Some(c) = android.control.lock().await.as_mut() {
-            c.filled = true;
-        }
+        android.owed.store(true, Ordering::Relaxed);
         let device = tokio::spawn(async move {
             let mut clear = vec![0; clipboard_message("", 1).len()];
             peer.read_exact(&mut clear).await.unwrap();
@@ -4458,7 +4490,6 @@ mod tests {
             stream,
             sequence: 0,
             pending: false,
-            filled: false,
             _server: Command::new("sleep")
                 .arg("30")
                 .kill_on_drop(true)
