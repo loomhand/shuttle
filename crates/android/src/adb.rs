@@ -582,11 +582,12 @@ impl Android {
     }
 
     async fn clear(&self) {
-        if wiped(&self.control, &self.owed).await
+        let mut slot = self.control.lock().await;
+        if wiped(&mut slot, &self.owed).await
             && let Ok(mut control) = self.open_control().await
             && control.set_clipboard("", &self.owed).await.is_ok()
         {
-            *self.control.lock().await = Some(control);
+            *slot = Some(control);
         }
     }
 
@@ -1000,7 +1001,7 @@ impl Drop for Wipe {
             && let Ok(rt) = tokio::runtime::Handle::try_current()
         {
             let owed = Arc::clone(&self.1);
-            rt.spawn(async move { wiped(&slot, &owed).await });
+            rt.spawn(async move { wiped(&mut *slot.lock().await, &owed).await });
         }
     }
 }
@@ -1386,8 +1387,7 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
     Err("scrcpy control did not start".to_owned())
 }
 
-async fn wiped(slot: &Mutex<Option<Control>>, owed: &AtomicBool) -> bool {
-    let mut slot = slot.lock().await;
+async fn wiped(slot: &mut Option<Control>, owed: &AtomicBool) -> bool {
     if let Some(control) = slot.as_mut()
         && control.is_open()
         && control.set_clipboard("", owed).await.is_ok()
@@ -3363,6 +3363,36 @@ mod tests {
         assert_eq!(typed, Ok((Some(true), false)));
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
         assert!(!fake.android.owed.load(Ordering::Relaxed));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_during_a_cleanup_reconnect_waits_for_it_and_opens_no_second_session() {
+        let fake = Fake::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        fake.android.owed.store(true, Ordering::Relaxed);
+        let device = tokio::spawn(async move {
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            fresh.write_all(&[0]).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            let read =
+                tokio::time::timeout(Duration::from_secs(3), fresh.read_exact(&mut clear)).await;
+            let _ = fresh.write_all(&ack(1)).await;
+            read.is_ok_and(|r| r.is_ok()).then_some(clear)
+        });
+        let android = Arc::new(fake.android);
+        let typist = Arc::clone(&android);
+        let typing =
+            tokio::spawn(async move { typist.type_text("", None, || async { Ok(None) }).await });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        android.close().await;
+        assert_eq!(typing.await.unwrap(), Ok((Some(true), false)));
+        assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
+        let starts = std::fs::read_to_string(fake.dir.path().join("starts")).unwrap_or_default();
+        assert_eq!(starts.lines().count(), 1, "{starts}");
+        assert!(!android.owed.load(Ordering::Relaxed));
     }
 
     #[cfg(unix)]
