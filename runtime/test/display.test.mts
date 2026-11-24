@@ -410,12 +410,12 @@ test('an expect on a window off the main display that has a same-titled twin sto
   assert.deepEqual(shots, [])
 })
 
-async function fresh(t: TestContext, after: () => object[]) {
+async function fresh(t: TestContext, after: () => object[], first: object[] = [win]) {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
   let read = false
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify(read ? after() : [win])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_windows') return JSON.stringify(read ? after() : first)
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: first[0], truncated: false, nodes: [root] })
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'model_decide') { read = true; return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage }) }
     if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
@@ -434,7 +434,7 @@ test('an expect on a plan window on the main display while another app holds the
   assert.deepEqual([seen.shots, seen.asked.length], [[{}], 1])
 })
 
-test('an expect whose window closed during the tree check stops before any shot or vision call', async (t) => {
+test('an expect whose window closed during the tree check stops before any shot or vision call', { skip: process.platform !== 'darwin' }, async (t) => {
   const other = { id: '8/1', title: 'Other document', role: 'window', pid: process.pid, active: true, bounds: [0, 0, 846, 774] }
   const seen = await fresh(t, () => [other])
   const r = await main({ steps: [{ expect: 'the status indicator is green' }] })
@@ -453,7 +453,7 @@ test('an expect on a plan window on the main display while a sheet of another wi
   assert.deepEqual([seen.shots, seen.asked.length], [[{}], 1])
 })
 
-test('an expect whose window without bounds is listed again under another id keeps the screen shot', async (t) => {
+test('an expect whose window without bounds is listed again under another id keeps the screen shot', { skip: process.platform === 'darwin' }, async (t) => {
   const { bounds: _, ...bare } = win
   const again = { ...bare, id: '1/2' }
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
@@ -469,4 +469,36 @@ test('an expect whose window without bounds is listed again under another id kee
   const r = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([shots, asked.length], [[{}], 1])
+})
+
+function sheetOn(at: [number, number, number, number]) {
+  const doc = { id: '4/1', title: 'Report', role: 'window', pid: process.pid, active: false, bounds: at }
+  const sheet = { id: '5/1', title: 'Export', role: 'dialog', pid: process.pid, active: true, owner: '4/1' }
+  return { sheet, doc, ws: [sheet, doc] }
+}
+
+test('an expect on a macOS sheet dismissed during the tree check stops before any shot or vision call', { skip: process.platform !== 'darwin' }, async (t) => {
+  const { doc, ws } = sheetOn([0, 0, 846, 774])
+  const seen = await fresh(t, () => [{ ...doc, active: true }], ws)
+  const r = await main({ steps: [{ expect: 'Report.pdf is selected' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"Export" closed before the condition was checked: Report.pdf is selected')
+  assert.deepEqual([seen.shots, seen.asked], [[], []])
+})
+
+test('an expect on a macOS sheet still listed on a window wholly on the main display checks the screen', { skip: process.platform !== 'darwin' }, async (t) => {
+  const { ws } = sheetOn([0, 0, 846, 774])
+  const seen = await fresh(t, () => ws, ws)
+  const r = await main({ steps: [{ expect: 'Report.pdf is selected' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.shots, seen.asked.length], [[{}], 1])
+})
+
+test('an expect on a macOS sheet of a window off the main display stops as unverifiable', { skip: process.platform !== 'darwin' }, async (t) => {
+  const { ws } = sheetOn([-1416, 0, 846, 774])
+  const seen = await fresh(t, () => ws, ws)
+  const r = await main({ steps: [{ expect: 'no error message is shown' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: no error message is shown')
+  assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
