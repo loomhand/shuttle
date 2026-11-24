@@ -302,3 +302,11 @@ test('a state check whose window got a same-titled twin since the step began doe
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.ok(shots.every((a) => a.window === undefined), JSON.stringify(shots))
 })
+
+test('a state check whose window closed before the read stops and crops no screen', async (t) => {
+  const shots = await toggled(t, () => [])
+  const r = await main({ steps: [{ verify: 'Bold', on: true }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^"Portal" closed before the state of "Bold" was read$/)
+  assert.deepEqual(shots, [])
+})

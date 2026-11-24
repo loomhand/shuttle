@@ -1380,7 +1380,9 @@ async function cropState(n: Node, unsent = true, w?: Win) {
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
   const ws = w?.bounds ? await desk.windows() : []
-  const v = await windowView(ws.find((x) => x.id === w?.id && x.pid === w.pid), ws)
+  const fresh = ws.find((x) => x.id === w?.id && x.pid === w.pid)
+  if (w?.bounds && !fresh) throw new Surprise(`"${w.title}" closed before the state of "${n.name}" was read`, await seen())
+  const v = await windowView(fresh, ws)
   const area = v?.area ?? await desk.screen(); const [x, y] = [b[0] - 40 - (area.left ?? 0), b[1] - 4 - (area.top ?? 0)]
   const r = { x: Math.max(0, x), y: Math.max(0, y), w: b[2] + 80 + Math.min(0, x), h: b[3] + 8 + Math.min(0, y) }
   const img = v && unpng(v.png); const k = img ? img.w / area.width : 1
