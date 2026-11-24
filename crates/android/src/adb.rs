@@ -3300,9 +3300,15 @@ mod tests {
         let fake = Fake::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let (accepted, on_accept) = tokio::sync::oneshot::channel();
+        let (closed, on_close) = tokio::sync::oneshot::channel::<()>();
         let device = tokio::spawn(async move {
-            let (mut peer, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(CLOSE_WAIT + Duration::from_millis(500)).await;
+            let (mut peer, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let _ = accepted.send(());
+            let _ = on_close.await;
             peer.write_all(&[0]).await.unwrap();
             let mut buf = [0; 64];
             let sent = tokio::time::timeout(Duration::from_secs(1), peer.read(&mut buf)).await;
@@ -3311,8 +3317,12 @@ mod tests {
         let android = Arc::new(fake.android);
         let paster = Arc::clone(&android);
         let pasting = tokio::spawn(async move { paster.paste("secret").await });
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(5), on_accept)
+            .await
+            .unwrap()
+            .unwrap();
         android.close().await;
+        let _ = closed.send(());
         let sent = device.await.unwrap();
         assert!(
             sent.as_deref().is_none_or(|b| b.is_empty()),
@@ -3572,9 +3582,15 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         fake.put("port", &listener.local_addr().unwrap().port().to_string());
         fake.android.owed.store(true, Ordering::Relaxed);
+        let (accepted, on_accept) = tokio::sync::oneshot::channel();
+        let (closing, on_close) = tokio::sync::oneshot::channel::<()>();
         let device = tokio::spawn(async move {
-            let (mut fresh, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let _ = accepted.send(());
+            let _ = on_close.await;
             fresh.write_all(&[0]).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 1).len()];
             let read =
@@ -3586,13 +3602,33 @@ mod tests {
         let typist = Arc::clone(&android);
         let typing =
             tokio::spawn(async move { typist.type_text("", None, || async { Ok(None) }).await });
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::timeout(Duration::from_secs(5), on_accept)
+            .await
+            .unwrap()
+            .unwrap();
+        let starts = fake.dir.path().join("starts");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while std::fs::read_to_string(&starts)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
         let started = std::time::Instant::now();
-        android.close().await;
+        let closer = Arc::clone(&android);
+        let close = tokio::spawn(async move { closer.close().await });
+        while !android.closed.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+        let _ = closing.send(());
+        close.await.unwrap();
         assert!(started.elapsed() < CLOSE_WAIT, "{:?}", started.elapsed());
         assert_eq!(typing.await.unwrap(), Ok((Some(true), false)));
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
-        let starts = std::fs::read_to_string(fake.dir.path().join("starts")).unwrap_or_default();
+        let starts = std::fs::read_to_string(starts).unwrap_or_default();
         assert_eq!(starts.lines().count(), 1, "{starts}");
         assert!(!android.owed.load(Ordering::Relaxed));
     }
