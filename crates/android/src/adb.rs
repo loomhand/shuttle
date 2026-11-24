@@ -3405,9 +3405,12 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         fake.put("port", &listener.local_addr().unwrap().port().to_string());
         fake.android.owed.store(true, Ordering::Relaxed);
+        let (accepted, on_accept) = tokio::sync::oneshot::channel();
+        let (closed, on_close) = tokio::sync::oneshot::channel::<()>();
         let device = tokio::spawn(async move {
             let (mut fresh, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(CLOSE_WAIT + Duration::from_secs(1)).await;
+            let _ = accepted.send(());
+            let _ = on_close.await;
             fresh.write_all(&[0]).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 1).len()];
             let read =
@@ -3419,10 +3422,15 @@ mod tests {
         let typist = Arc::clone(&android);
         let typing =
             tokio::spawn(async move { typist.type_text("", None, || async { Ok(None) }).await });
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::timeout(Duration::from_secs(5), on_accept)
+            .await
+            .unwrap()
+            .unwrap();
         let started = std::time::Instant::now();
-        android.close().await;
+        let returned = tokio::time::timeout(CLOSE_WAIT * 2, android.close()).await;
         let took = started.elapsed();
+        let _ = closed.send(());
+        assert!(returned.is_ok(), "close() still waits after {took:?}");
         assert!(
             took >= CLOSE_WAIT && took < CLOSE_WAIT + Duration::from_millis(500),
             "{took:?}"
