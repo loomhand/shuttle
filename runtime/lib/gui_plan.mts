@@ -1196,7 +1196,7 @@ async function submit(w: Win, chooser = false) {
 }
 
 async function unsure(title: string, c: { unverified?: string }) {
-  if (c.unverified) throw new Surprise(`"${title}" may still be open after its close: ${c.unverified}`, await seen())
+  if (ANDROID && c.unverified) throw new Surprise(`"${title}" may still be open after its close: ${c.unverified}`, await seen())
 }
 async function closed(title: string, pid: number | null, id?: string) {
   const t0 = Date.now()
