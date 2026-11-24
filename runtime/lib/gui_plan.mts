@@ -503,7 +503,7 @@ function alone(w: Win | null | undefined, ws = picked): Win | null {
 }
 async function windowView(w: Win | undefined, ws = picked): Promise<View | null> {
   const of = alone(w, ws); const b = of?.bounds
-  return of && b ? { png: await desk.shot({ window: of.title, pid: of.pid }), area: { left: b[0], top: b[1], width: b[2], height: b[3] }, of } : null
+  return of && b && !inside(b, await desk.screen()) ? { png: await desk.shot({ window: of.title, pid: of.pid }), area: { left: b[0], top: b[1], width: b[2], height: b[3] }, of } : null
 }
 async function screenView(): Promise<View> {
   return { area: await desk.screen(), png: await desk.shot() }
@@ -1546,14 +1546,16 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     } else if (BG && !AUTO) throw new Surprise(`${busy(w, t1)}; ${NO_PIXELS}`, await seen())
     else if (Date.now() >= deadline) throw new Surprise(busy(w, t1), await seen())
     if (BG) await front(w)
-    const ws = ANDROID ? [] : await desk.windows()
+    const mac = OS === 'darwin' && !ANDROID
+    const ws = mac ? await desk.windows() : []
     const now = ws.find((x) => x.active)
     const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
     const me = ws.find((x) => x.id === w.id && x.pid === w.pid)
-    if (OS === 'darwin' && !ANDROID && !me) throw new Surprise(`${w.owner === undefined ? '' : 'the sheet listed as '}"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
-    const of = now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
+    if (mac && !me) throw new Surprise(`${w.owner === undefined ? '' : 'the sheet listed as '}"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
     const b = me && host(me, ws).bounds
-    if (!of && OS === 'darwin' && !ANDROID && (!b || !inside(b, await desk.screen()))) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
+    const off = mac && !(b && inside(b, await desk.screen()))
+    const of = off && now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
+    if (off && !of) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())

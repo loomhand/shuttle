@@ -30,23 +30,23 @@ function size(b64: string): number[] {
   return [p.w, p.h]
 }
 
-async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number; moves?: number[][]; readMoves?: number[] } = {}): Promise<Seen> {
+async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number; moves?: number[][]; readMoves?: number[]; at?: number[]; ground?: [number, number]; screen?: Buffer } = {}): Promise<Seen> {
   const seen: Seen = { shots: [], asked: [], images: [], tones: [], grounds: [], prompts: [], clicks: [], pressed: [] }
-  let at = bounds
+  let at = o.at ?? bounds
   await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([{ ...win, bounds: at }])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: o.nodes ?? [root] })
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: { ...win, bounds: at }, truncated: false, nodes: o.nodes ?? [root] })
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'desk_read' && o.readMoves) at = o.readMoves
     if (tool === 'desk_read' && o.read) return o.read(String(args.id))
     if (tool === 'desk_shot') {
       seen.shots.push(args)
       if (args.window !== undefined && args.w === undefined) at = o.moves?.shift() ?? at
-      const image = args.window === undefined ? gray(Number(args.w ?? 1280), Number(args.h ?? 800)) : args.w === undefined ? o.window ?? gray(846, 774) : gray(Number(args.w), Number(args.h))
+      const image = args.window === undefined ? args.w === undefined && o.screen ? o.screen : gray(Number(args.w ?? 1280), Number(args.h ?? 800)) : args.w === undefined ? o.window ?? gray(846, 774) : gray(Number(args.w), Number(args.h))
       return { text: '{"ok":true}', image: image.toString('base64') }
     }
     if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '1/1', role: 'window', name: 'Portal' }], pid: process.pid })
-    if (tool === 'model_ground') { seen.grounds.push(args.area); return JSON.stringify({ x: -1000, y: 300, usage }) }
+    if (tool === 'model_ground') { seen.grounds.push(args.area); return JSON.stringify({ x: o.ground?.[0] ?? -1000, y: o.ground?.[1] ?? 300, usage }) }
     if (tool === 'model_ask') {
       seen.asked.push(String(args.prompt))
       seen.images.push(...(args.images as string[]).map(size))
@@ -66,12 +66,62 @@ async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; r
   return seen
 }
 
-test('an expect on a window of a second display checks the shot of that window alone, and says the image is the window', async (t) => {
+test('an expect on a window of a second display checks the shot of that window alone, and says the image is the window', { skip: process.platform !== 'darwin' }, async (t) => {
   const seen = await second(t, { truth: 0.2 })
   const r = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(seen.shots, [own])
   assert.match(seen.asked[0] ?? '', /^You check the state of the app window "Portal", which the image shows alone\.\nCondition: the text is bold\n/)
+})
+
+test('an expect on a window wholly on the main display checks the screen shot, as 0.1.60 did', async (t) => {
+  const seen = await second(t, { truth: 0.2, at: [100, 10, 846, 774] })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(seen.shots, [{}])
+  assert.match(seen.asked[0] ?? '', /^You check the state of a computer screen\.\nCondition: the text is bold\n/)
+})
+
+test('an expect off macOS on a window of a second display checks the screen shot, as 0.1.60 did', { skip: process.platform === 'darwin' }, async (t) => {
+  const seen = await second(t, { truth: 0.2 })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(seen.shots, [{}])
+  assert.match(seen.asked[0] ?? '', /^You check the state of a computer screen\./)
+})
+
+test('grounding on a window wholly on the main display reads the screen shot', async (t) => {
+  const seen = await second(t, { at: [100, 10, 846, 774], ground: [500, 300] })
+  const r = await main({ steps: [{ click: 'the yellow star' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(seen.clicks, ['500,300'])
+  assert.deepEqual(seen.grounds, [{ width: 1280, height: 800 }])
+  assert.ok(seen.shots.every((x) => x.window === undefined), JSON.stringify(seen.shots))
+})
+
+test('grounding reaches a target of a window on the main display that lies outside the window, such as an open pop-up list below it', async (t) => {
+  const seen = await second(t, { at: [0, 0, 700, 150], ground: [300, 400] })
+  const r = await main({ steps: [{ click: 'Bold Oblique' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.clicks, seen.grounds], [['300,400'], [{ width: 1280, height: 800 }]])
+})
+
+test('a recorded crop on a window wholly on the main display is found in the screen shot', async (t) => {
+  const crop = cut(unpng(pattern(1280, 800, [100, 100])), 60, 80, 200, 100, 1).toString('base64')
+  const seen = await second(t, { at: [100, 10, 846, 774], screen: pattern(1280, 800, [300, 250]) })
+  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop, root: true } }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.clicks, seen.grounds, r.trace?.[0]?.how], [['360,280'], [], 'crop'])
+  assert.deepEqual(seen.shots, [{}])
+})
+
+test('a state check on a window wholly on the main display crops the control from the screen', async (t) => {
+  const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [300, 100, 20, 20] }
+  let reads = 0
+  const seen = await second(t, { at: [100, 10, 846, 774], nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
+  const r = await main({ steps: [{ verify: 'Bold', on: true }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(seen.shots, [{ x: 260, y: 96, w: 100, h: 28 }])
 })
 
 test('a recorded crop on a window of a second display is found in that window\'s shot and clicked in desk coordinates', async (t) => {
@@ -221,7 +271,7 @@ test('a state check crops the control from the window where the window list plac
   assert.deepEqual([seen.images, seen.tones], [[[100, 28]], [0]])
 })
 
-test('an expect whose window retitles itself before the shot shoots it by its current title', async (t) => {
+test('an expect whose window retitles itself before the shot shoots it by its current title', { skip: process.platform !== 'darwin' }, async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
   let title = 'Portal'
   await daemon(t, ({ tool, args }) => {
@@ -238,10 +288,10 @@ test('an expect whose window retitles itself before the shot shoots it by its cu
   assert.match(asked[0] ?? '', /^You check the state of the app window "Portal - edited", which the image shows alone\./)
 })
 
-test('an expect while an untitled window of the plan window\'s app covers it checks the screen, and a titled one beside it keeps the window shot', async (t) => {
+test('an expect while an untitled window of the app covers a plan window off the main display stops as unverifiable, and a titled one beside it keeps the window shot', { skip: process.platform !== 'darwin' }, async (t) => {
   const shots: Record<string, unknown>[] = []
-  let other = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [100, 120, 300, 200] }
-  const here = { ...win, bounds: [0, 0, 846, 774] }
+  let other = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [-1316, 120, 300, 200] }
+  const here = win
   await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([other, here])
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
@@ -252,16 +302,16 @@ test('an expect while an untitled window of the plan window\'s app covers it che
     return '{"ok":true}'
   })
   const list = await main({ steps: [{ expect: "the suggestions show 'apple'" }] })
-  assert.equal(list.ok, true, JSON.stringify(list))
-  other = { ...other, title: 'Untitled 2', bounds: [26, 20, 846, 774] }
+  assert.equal(list.escalate?.reason, "the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: the suggestions show 'apple'")
+  other = { ...other, title: 'Untitled 2', bounds: [-1390, 20, 846, 774] }
   const cascade = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(cascade.ok, true, JSON.stringify(cascade))
-  assert.deepEqual(shots, [{}, own])
+  assert.deepEqual(shots, [own])
 })
 
 test('a window that moves after its shot and whose next shot fails never takes a click at its old place', async (t) => {
   const clicks: string[] = []
-  let at = [0, 0, 800, 600]; let shots = 0
+  let at = [-900, 0, 800, 600]; let shots = 0
   const pad = { id: '4/1', title: 'Sketch', role: 'window', pid: process.pid, active: true }
   const crop = cut(unpng(pattern(800, 600, [100, 100])), 60, 80, 200, 100, 1).toString('base64')
   await daemon(t, ({ tool, args }) => {
@@ -271,7 +321,7 @@ test('a window that moves after its shot and whose next shot fails never takes a
     if (tool === 'desk_shot' && args.window !== undefined && args.w === undefined) {
       shots += 1
       if (shots > 1) return { text: 'the window shot failed', error: true }
-      at = [100, 50, 800, 600]
+      at = [-800, 50, 800, 600]
     }
     if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 800), Number(args.h ?? 600)).toString('base64') }
     if (tool === 'model_ground') return JSON.stringify({ x: 500, y: 300, usage })
@@ -281,8 +331,8 @@ test('a window that moves after its shot and whose next shot fails never takes a
     return '{"ok":true}'
   })
   await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop, at: [160, 130], size: [800, 600] } }] })
-  assert.ok(!clicks.includes('160,130'), JSON.stringify(clicks))
-  assert.deepEqual(clicks, ['260,180'])
+  assert.ok(!clicks.includes('-740,130'), JSON.stringify(clicks))
+  assert.deepEqual(clicks, ['-640,180'])
 })
 
 async function toggled(t: TestContext, after: (w: typeof win) => object[]) {
