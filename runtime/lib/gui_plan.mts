@@ -501,8 +501,8 @@ function lined(w: Win | null, ws: Win[], text: string): desk.Target {
 function alone(w: Win | null | undefined, ws = picked): Win | null {
   return w && !ANDROID && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, ws) ? w : null
 }
-async function windowView(w: Win | undefined): Promise<View | null> {
-  const of = alone(w); const b = of?.bounds
+async function windowView(w: Win | undefined, ws = picked): Promise<View | null> {
+  const of = alone(w, ws); const b = of?.bounds
   return of && b ? { png: await desk.shot({ window: of.title, pid: of.pid }), area: { left: b[0], top: b[1], width: b[2], height: b[3] }, of } : null
 }
 async function screenView(): Promise<View> {
@@ -1379,7 +1379,8 @@ async function cropState(n: Node, unsent = true, w?: Win) {
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
-  const v = await windowView(w?.bounds ? (await desk.windows()).find((x) => x.id === w.id && x.pid === w.pid) : undefined)
+  const ws = w?.bounds ? await desk.windows() : []
+  const v = await windowView(ws.find((x) => x.id === w?.id && x.pid === w.pid), ws)
   const area = v?.area ?? await desk.screen(); const [x, y] = [b[0] - 40 - (area.left ?? 0), b[1] - 4 - (area.top ?? 0)]
   const r = { x: Math.max(0, x), y: Math.max(0, y), w: b[2] + 80 + Math.min(0, x), h: b[3] + 8 + Math.min(0, y) }
   const img = v && unpng(v.png); const k = img ? img.w / area.width : 1

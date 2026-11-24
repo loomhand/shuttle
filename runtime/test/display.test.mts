@@ -278,3 +278,27 @@ test('a window that moves after its shot and whose next shot fails never takes a
   assert.ok(!clicks.includes('160,130'), JSON.stringify(clicks))
   assert.deepEqual(clicks, ['260,180'])
 })
+
+async function toggled(t: TestContext, after: (w: typeof win) => object[]) {
+  const main1 = { ...win, bounds: [0, 0, 846, 774] }
+  const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [300, 100, 20, 20] }
+  const shots: Record<string, unknown>[] = []
+  let reads = 0; let read = false
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(read ? after(main1) : [main1])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: main1, truncated: false, nodes: [root, box] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_read') { read = true; return reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } }
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(Number(args.w ?? 846), Number(args.h ?? 774)).toString('base64') } }
+    if (tool === 'model_ask') return JSON.stringify({ text: '{"on": true}', usage })
+    return '{"ok":true}'
+  })
+  return shots
+}
+
+test('a state check whose window got a same-titled twin since the step began does not shoot by title', async (t) => {
+  const shots = await toggled(t, (w) => [w, { ...w, id: '2/1', active: false }])
+  const r = await main({ steps: [{ verify: 'Bold', on: true }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(shots.every((a) => a.window === undefined), JSON.stringify(shots))
+})
