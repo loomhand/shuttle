@@ -3387,7 +3387,9 @@ mod tests {
         let typing =
             tokio::spawn(async move { typist.type_text("", None, || async { Ok(None) }).await });
         tokio::time::sleep(Duration::from_millis(300)).await;
+        let started = std::time::Instant::now();
         android.close().await;
+        assert!(started.elapsed() < CLOSE_WAIT, "{:?}", started.elapsed());
         assert_eq!(typing.await.unwrap(), Ok((Some(true), false)));
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
         let starts = std::fs::read_to_string(fake.dir.path().join("starts")).unwrap_or_default();
