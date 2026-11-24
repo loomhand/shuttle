@@ -3309,6 +3309,64 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_clear_is_owed_from_before_a_text_leaves_until_an_empty_set_is_acked() {
+        let (android, mut peer) = session("/nonexistent/adb").await;
+        let owed = || android.owed.load(Ordering::Relaxed);
+        let mut slot = android.control.lock().await;
+        let control = slot.as_mut().unwrap();
+        let dropped = tokio::time::timeout(
+            Duration::from_millis(50),
+            control.set_clipboard("a", &android.owed),
+        )
+        .await;
+        assert!(dropped.is_err());
+        assert!(owed());
+        let mut buf = [0; 64];
+        let _ = peer.read(&mut buf).await.unwrap();
+        peer.write_all(&ack(1)).await.unwrap();
+        peer.write_all(&ack(2)).await.unwrap();
+        control.set_clipboard("b", &android.owed).await.unwrap();
+        assert!(owed());
+        peer.write_all(&ack(3)).await.unwrap();
+        control.set_clipboard("", &android.owed).await.unwrap();
+        assert!(!owed());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_later_type_retries_the_clear_owed_after_a_failed_reconnect() {
+        let fake = Fake::new();
+        let refused = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &refused.local_addr().unwrap().port().to_string());
+        drop(refused);
+        fake.android.owed.store(true, Ordering::Relaxed);
+        assert!(fake.android.paste("line 2").await.is_err());
+        assert!(fake.android.control.lock().await.is_none());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let device = tokio::spawn(async move {
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .ok()?
+                .ok()?;
+            fresh.write_all(&[0]).await.ok()?;
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            let read =
+                tokio::time::timeout(Duration::from_secs(3), fresh.read_exact(&mut clear)).await;
+            let _ = fresh.write_all(&ack(1)).await;
+            read.is_ok_and(|r| r.is_ok()).then_some(clear)
+        });
+        let typed = fake
+            .android
+            .type_text("", None, || async { Ok(None) })
+            .await;
+        assert_eq!(typed, Ok((Some(true), false)));
+        assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
+        assert!(!fake.android.owed.load(Ordering::Relaxed));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_with_no_text_of_shuttle_on_the_clipboard_sends_nothing() {
         let (android, mut peer) = session("/nonexistent/adb").await;
         android.close().await;
