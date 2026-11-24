@@ -432,3 +432,12 @@ test('an expect on a plan window on the main display while another app holds the
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([seen.shots, seen.asked.length], [[{}], 1])
 })
+
+test('an expect whose window closed during the tree check stops before any shot or vision call', async (t) => {
+  const other = { id: '8/1', title: 'Other document', role: 'window', pid: process.pid, active: true, bounds: [0, 0, 846, 774] }
+  const seen = await fresh(t, () => [other])
+  const r = await main({ steps: [{ expect: 'the status indicator is green' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"Portal" closed before the condition was checked: the status indicator is green')
+  assert.deepEqual([seen.shots, seen.asked], [[], []])
+})

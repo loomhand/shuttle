@@ -1549,7 +1549,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const now = ws.find((x) => x.active)
     const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
     const of = now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
-    const me = ws.find((x) => x.id === w.id && x.pid === w.pid) ?? w
+    const listed = ws.find((x) => x.id === w.id && x.pid === w.pid)
+    if (!ANDROID && !listed) throw new Surprise(`"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
+    const me = listed ?? w
     const main = !of && !ANDROID && me.bounds ? await desk.screen() : null
     const shown = main ? [main.left ?? 0, main.top ?? 0, main.width, main.height] as [number, number, number, number] : null
     const involved = [me, now?.pid === me.pid ? now : undefined, ...ws.filter((x) => x.id !== me.id && x.pid === me.pid && !x.title.trim() && !!x.bounds && !!me.bounds && crosses(x.bounds, me.bounds))]
