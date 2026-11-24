@@ -902,10 +902,10 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
   const missed: string[] = []
   let v: View | undefined
   const settled = async (p: [number, number]): Promise<[number, number]> => {
-    const of = v?.of ?? (MAC && host(w, ws).bounds ? host(w, ws) : undefined)
-    if (!of) return p
-    const list = await desk.windows(); const now = list.find((x) => x.id === of.id && x.pid === of.pid)
-    const fresh = list.find((x) => x.id === w.id && x.pid === w.pid)
+    const of = v?.of ?? (MAC ? host(w, ws) : undefined)
+    if (!of?.bounds) return p
+    const list = await desk.windows(); const get = (x: Win) => list.find((y) => y.id === x.id && y.pid === x.pid)
+    const [now, fresh] = [get(of), get(w)]
     if (now && fresh && isDeepStrictEqual(now.bounds, of.bounds)) return p
     if (!now || !fresh || again) throw new Surprise(`"${w.title}" moved, changed size or closed while its target was found in its shot, so nothing was clicked`, await seen())
     return spot(r, target, fresh, rec, true, list)

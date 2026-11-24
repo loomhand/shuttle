@@ -165,8 +165,7 @@ test('an Android close step whose close answers unverified stops with that note 
     const r = await device({ steps: [{ close: true }, { key: 'Return' }] })
     assert.equal(r.ok, false, `${hung} ${JSON.stringify(r)}`)
     assert.equal(r.escalate?.reason, `"Find" may still be open after its close: ${note}`, String(hung))
-    const after = calls.slice(calls.indexOf('desk_close') + 1)
-    assert.ok(!after.includes('desk_key'), `${hung} ${calls.join(' ')}`)
+    assert.deepEqual(calls.filter((c) => c === 'desk_key' || c === 'desk_close'), ['desk_close'], String(hung))
   }
 })
 
@@ -175,30 +174,6 @@ test('a desktop close step whose close answers unverified passes once the window
   const r = await main({ steps: [{ close: true }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.ok(calls.includes('desk_close'), calls.join(' '))
-})
-
-test('an Android close step sends no Escape before its close, so a back that takes the window off the list cannot pass as a close', async (t) => {
-  const note = 'the window was sent the back key and left the window list, but "com.android.settings" came to the front, not another app, so it may still be open: read the window list before closing again'
-  const mode = 'android-close-escape'
-  process.env.SHUTTLE_DESK = 'android'
-  let device: typeof main
-  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
-  const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
-  const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }
-  let open = true
-  const calls: string[] = []
-  await daemon(t, ({ tool }) => {
-    calls.push(tool)
-    if (tool === 'desk_windows') return JSON.stringify(open ? [editor, find] : [{ ...editor, active: true }])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
-    if (tool === 'desk_key') open = false
-    if (tool === 'desk_close') { open = false; return JSON.stringify({ ok: true, title: 'Find', unverified: note }) }
-    return '{"ok":true}'
-  })
-  const r = await device({ steps: [{ close: true }] })
-  assert.equal(r.ok, false, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, `"Find" may still be open after its close: ${note}`)
-  assert.deepEqual(calls.filter((c) => c === 'desk_key' || c === 'desk_close'), ['desk_close'])
 })
 
 async function deviceClose(t: TestContext, stays: boolean) {

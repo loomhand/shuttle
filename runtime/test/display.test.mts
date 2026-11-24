@@ -596,8 +596,7 @@ async function sheeted(t: TestContext, moves: number[][], closes = false) {
       return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
     }
     if (tool === 'model_ground') { seen.grounds.push(args.area); seen.targets.push(args.target); return JSON.stringify({ x: 500, y: 300, usage }) }
-    if (tool === 'desk_at') { seen.hits.push(args.window); open = !closes }
-    if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '5/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '5/1', role: 'dialog', name: 'Export' }, { id: '1/1', role: 'window', name: 'Portal' }], pid: process.pid })
+    if (tool === 'desk_at') { seen.hits.push(args.window); open = !closes; return JSON.stringify({ found: { ref: 1, id: '5/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '5/1', role: 'dialog', name: 'Export' }, { id: '1/1', role: 'window', name: 'Portal' }], pid: process.pid }) }
     if (tool === 'model_decide') {
       const a = args as { questions: Record<string, { type: string }> }
       const answers = Object.fromEntries(Object.keys(a.questions).map((k) => [k, a.questions[k]?.type === 'noul' ? { probability: 0.95 } : { choice: 'r1', confidence: 0.95, probabilities: { none: 1 } }]))

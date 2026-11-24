@@ -2423,7 +2423,7 @@ mod tests {
     async fn a_close_whose_window_leaves_the_list_under_a_dialog_of_its_app_says_it_may_still_be_open()
      {
         let fake = Fake::new();
-        let out = closed_into(&fake, &format!(",{DIALOG}")).await;
+        let out = closed_into(&fake, DIALOG).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list, but \"com.android.settings\" came to the front, not another app, so it may still be open: read the window list before closing again",
@@ -2437,7 +2437,7 @@ mod tests {
     #[tokio::test]
     async fn a_close_whose_window_leaves_the_list_under_the_notification_shade_says_it_may_still_be_open()
      {
-        let out = closed_into(&Fake::new(), &format!(",{SHADE}")).await;
+        let out = closed_into(&Fake::new(), SHADE).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list, but \"Shade - com.android.systemui\" came to the front, not another app, so it may still be open: read the window list before closing again",
@@ -2449,7 +2449,7 @@ mod tests {
     #[tokio::test]
     async fn a_close_whose_window_loses_its_package_as_the_screen_goes_off_says_it_may_still_be_open()
      {
-        let out = closed_into(&Fake::new(), r#",{"id":7,"type":1,"layer":0,"title":"Settings","package":"","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
+        let out = closed_into(&Fake::new(), r#"{"id":7,"type":1,"layer":0,"title":"Settings","package":"","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list with no window in front, so it may still be open: read the window list before closing again",
@@ -2509,8 +2509,8 @@ mod tests {
     #[tokio::test]
     async fn a_close_to_another_app_or_a_full_screen_window_of_its_own_app_is_closed_at_once() {
         for after in [
-            r#",{"id":3,"type":1,"layer":0,"title":"","package":"com.android.launcher3","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
-            r#",{"id":13,"type":1,"layer":0,"title":"Network","package":"com.android.settings","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
+            r#"{"id":3,"type":1,"layer":0,"title":"","package":"com.android.launcher3","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
+            r#"{"id":13,"type":1,"layer":0,"title":"Network","package":"com.android.settings","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
         ] {
             let fake = Fake::new();
             let out = closed_into(&fake, after).await;
@@ -3625,6 +3625,7 @@ mod tests {
         }
         let _ = closing.send(());
         close.await.unwrap();
+        assert!(!android.owed.load(Ordering::Relaxed));
         assert!(started.elapsed() < CLOSE_WAIT, "{:?}", started.elapsed());
         assert_eq!(typing.await.unwrap(), Ok((Some(true), false)));
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
@@ -4683,7 +4684,7 @@ mod tests {
     async fn closed_into(fake: &Fake, after: &str) -> Value {
         fake.put("inject.answer", "true");
         fake.windows("");
-        fake.put("after-input.json", &format!("[{BAR}{after}]"));
+        fake.put("after-input.json", &format!("[{BAR},{after}]"));
         desk(
             fake,
             "desk_close",
