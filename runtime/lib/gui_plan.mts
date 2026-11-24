@@ -53,6 +53,7 @@ const OS = process.platform
 const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const ANDROID = process.env.SHUTTLE_DESK === 'android'
+const MAC = OS === 'darwin' && !ANDROID
 const FG: desk.Target = AUTO ? { delivery_mode: 'foreground' } : {}
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
@@ -901,7 +902,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
   const missed: string[] = []
   let v: View | undefined
   const settled = async (p: [number, number]): Promise<[number, number]> => {
-    const of = v?.of ?? (OS === 'darwin' && !ANDROID && host(w, picked).bounds ? host(w, picked) : undefined)
+    const of = v?.of ?? (MAC && host(w, picked).bounds ? host(w, picked) : undefined)
     if (!of) return p
     const now = (await desk.windows()).find((x) => x.id === of.id && x.pid === of.pid)
     if (now && isDeepStrictEqual(now.bounds, of.bounds)) return p
@@ -1549,14 +1550,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     } else if (BG && !AUTO) throw new Surprise(`${busy(w, t1)}; ${NO_PIXELS}`, await seen())
     else if (Date.now() >= deadline) throw new Surprise(busy(w, t1), await seen())
     if (BG) await front(w)
-    const mac = OS === 'darwin' && !ANDROID
-    const ws = mac ? await desk.windows() : []
+    const ws = MAC ? await desk.windows() : []
     const now = ws.find((x) => x.active)
     const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
     const me = ws.find((x) => x.id === w.id && x.pid === w.pid)
-    if (mac && !me) throw new Surprise(`${w.owner === undefined ? '' : 'the sheet listed as '}"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
+    if (MAC && !me) throw new Surprise(`${w.owner === undefined ? '' : 'the sheet listed as '}"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
     const b = me && host(me, ws).bounds
-    const off = mac && !(b && inside(b, await desk.screen()))
+    const off = MAC && !(b && inside(b, await desk.screen()))
     const of = off && now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
     if (off && !of) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'

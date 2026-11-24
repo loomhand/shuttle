@@ -158,8 +158,8 @@ test('an Android close step whose close answers unverified stops with that note 
   const note = 'the window was sent the back key and left the window list, but "com.android.settings" came to the front, not another app, so it may still be open: read the window list before closing again'
   const mode = 'android-close'
   process.env.SHUTTLE_DESK = 'android'
-  const device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main
-  delete process.env.SHUTTLE_DESK
+  let device: typeof main
+  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
   for (const hung of [false, true]) {
     const calls = await unconfirmed(t, hung, note)
     const r = await device({ steps: [{ close: true }, { key: 'Return' }] })
@@ -181,8 +181,8 @@ test('an Android close step sends no Escape before its close, so a back that tak
   const note = 'the window was sent the back key and left the window list, but "com.android.settings" came to the front, not another app, so it may still be open: read the window list before closing again'
   const mode = 'android-close-escape'
   process.env.SHUTTLE_DESK = 'android'
-  const device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main
-  delete process.env.SHUTTLE_DESK
+  let device: typeof main
+  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
   const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
   const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }
   let open = true

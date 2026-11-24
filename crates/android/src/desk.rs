@@ -513,7 +513,6 @@ fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
             Frame {
                 covers,
                 keyboard,
-                system: w.kind != APPLICATION,
                 guessed,
                 ..frame(w, alone, screen)
             }
@@ -549,6 +548,7 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         package: w.package,
         title,
         dialog: !full,
+        system: w.kind != APPLICATION,
         active: w.active,
         bounds,
         screen,
@@ -1180,14 +1180,13 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<Option<Option
         let frames = frames_now(android).await.map_err(|e| {
             format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
         })?;
-        let Some(own) = frames.iter().position(|f| f.id == frame.id) else {
-            match left(frames, frame) {
+        let Some(own) = frames.iter().find(|f| f.id == frame.id) else {
+            match unverified(frames, frame, KEYBOARD_SENT) {
                 None => return Ok(Some(None)),
-                top => gone = top,
+                note => gone = note,
             }
             continue;
         };
-        let own = &frames[own];
         gone = None;
         if own.keyboard || own.guessed {
             continue;
@@ -1201,7 +1200,7 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<Option<Option
         ));
     }
     match gone {
-        Some(top) => Ok(Some(Some(left_note(KEYBOARD_SENT, top)))),
+        Some(note) => Ok(Some(Some(note))),
         None => Err(format!(
             "the keyboard stayed up after a back key, so {} was not closed",
             frame.title
@@ -1209,23 +1208,16 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<Option<Option
     }
 }
 
-fn left(frames: Vec<Frame>, closing: &Frame) -> Option<Option<Frame>> {
-    let top = frames.into_iter().find(|f| f.active && !f.guessed);
-    let closed = top
-        .as_ref()
-        .is_some_and(|f| !f.system && (f.package != closing.package || fills(f.bounds, f.screen)));
-    (!closed).then_some(top)
-}
-
-fn left_note(sent: &str, top: Option<Frame>) -> String {
-    match top {
-        Some(f) => format!(
+fn unverified(frames: Vec<Frame>, closing: &Frame, sent: &str) -> Option<String> {
+    match frames.into_iter().find(|f| f.active && !f.guessed) {
+        Some(f) if !f.system && (f.package != closing.package || fills(f.bounds, f.screen)) => None,
+        Some(f) => Some(format!(
             "{sent}, but {:?} came to the front, not another app, so it may still be open: read the window list before closing again",
             f.title
-        ),
-        None => format!(
+        )),
+        None => Some(format!(
             "{sent} with no window in front, so it may still be open: read the window list before closing again"
-        ),
+        )),
     }
 }
 
@@ -1237,9 +1229,9 @@ async fn still_open(android: &Android, closing: &Frame) -> Result<Option<String>
             .await
             .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
         let Some(own) = frames.iter().find(|f| f.id == closing.id) else {
-            match left(frames, closing) {
+            match unverified(frames, closing, BACK_SENT) {
                 None => return Ok(None),
-                top => gone = top,
+                note => gone = note,
             }
             continue;
         };
@@ -1248,8 +1240,8 @@ async fn still_open(android: &Android, closing: &Frame) -> Result<Option<String>
             .into_iter()
             .find(|f| f.active && !f.guessed && f.id != closing.id);
     }
-    if let Some(top) = gone {
-        return Ok(Some(left_note(BACK_SENT, top)));
+    if gone.is_some() {
+        return Ok(gone);
     }
     Ok(Some(match (active, front) {
         (true, _) => STILL_OPEN.to_owned(),

@@ -1421,6 +1421,8 @@ async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), 
 mod tests {
     use super::*;
 
+    const DIALOG: &str = r#"{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}"#;
+    const SHADE: &str = r#"{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}"#;
     const BAR: &str = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
     const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
 
@@ -2421,7 +2423,7 @@ mod tests {
     async fn a_close_whose_window_leaves_the_list_under_a_dialog_of_its_app_says_it_may_still_be_open()
      {
         let fake = Fake::new();
-        let out = closed_into(&fake, r#",{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}"#).await;
+        let out = closed_into(&fake, &format!(",{DIALOG}")).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list, but \"com.android.settings\" came to the front, not another app, so it may still be open: read the window list before closing again",
@@ -2435,7 +2437,7 @@ mod tests {
     #[tokio::test]
     async fn a_close_whose_window_leaves_the_list_under_the_notification_shade_says_it_may_still_be_open()
      {
-        let out = closed_into(&Fake::new(), r#",{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
+        let out = closed_into(&Fake::new(), &format!(",{SHADE}")).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list, but \"Shade - com.android.systemui\" came to the front, not another app, so it may still be open: read the window list before closing again",
@@ -2462,12 +2464,7 @@ mod tests {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
         fake.windows("keyboard");
-        fake.put(
-            "after-input.json",
-            &format!(
-                r#"[{BAR},{{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}}]"#
-            ),
-        );
+        fake.put("after-input.json", &format!("[{BAR},{DIALOG}]"));
         let out = desk(
             &fake,
             "desk_close",
@@ -2480,7 +2477,9 @@ mod tests {
             "only the back key that hides the keyboard was sent, and the window left the window list, but \"com.android.settings\" came to the front, not another app, so it may still be open: read the window list before closing again",
             "{out}"
         );
-        assert_eq!(log(&fake, "requests").matches("key 4").count(), 1);
+        let requests = log(&fake, "requests");
+        assert_eq!(requests.matches("key 4").count(), 1, "{requests}");
+        assert_eq!(requests.matches("windows").count(), 11, "{requests}");
     }
 
     #[cfg(unix)]
@@ -2502,7 +2501,8 @@ mod tests {
             "the window was sent the back key and left the window list with no window in front, so it may still be open: read the window list before closing again",
             "{out}"
         );
-        assert_eq!(log(&fake, "requests").matches("windows").count(), 11);
+        let requests = log(&fake, "requests");
+        assert_eq!(requests.matches("windows").count(), 11, "{requests}");
     }
 
     #[cfg(unix)]
@@ -4711,10 +4711,7 @@ mod tests {
                 )
             };
             let list = match layout {
-                "shade" => format!(
-                    r#"[{BAR},{{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}},{}]"#,
-                    app(false)
-                ),
+                "shade" => format!("[{BAR},{SHADE},{}]", app(false)),
                 "keyboard" => format!(
                     r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{BAR},{}]"#,
                     app(true)
