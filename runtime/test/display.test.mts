@@ -332,7 +332,7 @@ test('an expect that would fall back to the main display while its window is on 
   })
   const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: "Portal" cannot be shot alone, and the screen shot of the main display would not show it: the completion list is gone$/)
+  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: the completion list is gone$/)
   assert.deepEqual([shots, asked], [[], []])
   at = [-400, 0, 846, 774]
   const partly = await main({ steps: [{ expect: 'the completion list is gone' }] })
@@ -405,7 +405,7 @@ test('an expect on a window off the main display that has a same-titled twin sto
   })
   const r = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, '"Portal" cannot be shot alone, and the screen shot of the main display would not show it: the text is bold'.replace(/^/, 'the condition cannot be checked: '))
+  assert.equal(r.escalate?.reason, 'the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: the text is bold')
   assert.deepEqual(shots, [])
 })
 
