@@ -358,3 +358,27 @@ test('an expect on a window that straddles the main display with a focused untit
   assert.deepEqual([shots, asked.length], [[{}], 1])
   assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
 })
+
+async function offMain(t: TestContext, before: number[], after: number[], popup: number[], focused = false) {
+  const shots: Record<string, unknown>[] = []; const asked: string[] = []
+  let moved = false
+  await daemon(t, ({ tool, args }) => {
+    const pop = { id: '9/1', title: '', role: 'window', pid: process.pid, active: moved && focused, bounds: popup }
+    if (tool === 'desk_windows') return JSON.stringify(moved ? [pop, { ...win, active: !focused, bounds: after }] : [{ ...win, bounds: before }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'model_decide') { moved = true; return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage }) }
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it is gone"}', usage }) }
+    return '{"ok":true}'
+  })
+  return { shots, asked }
+}
+
+test('an expect whose window moved off the main display during the tree check stops as unverifiable', async (t) => {
+  const seen = await offMain(t, [100, 0, 846, 774], [-1416, 0, 846, 774], [-1300, 120, 300, 200])
+  const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: /)
+  assert.deepEqual([seen.shots, seen.asked], [[], []])
+})

@@ -1549,8 +1549,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const now = ws.find((x) => x.active)
     const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
     const of = now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
-    const main = !of && !ANDROID && w.bounds ? await desk.screen() : null
-    if (main && w.bounds && !crosses(w.bounds, [main.left ?? 0, main.top ?? 0, main.width, main.height])) throw new Surprise(`the condition cannot be checked: "${w.title}" is on another display than the main one, and another window holds the focus or overlaps it, so the screen shot would not show it: ${s.expect}`, await seen())
+    const me = ws.find((x) => x.id === w.id && x.pid === w.pid) ?? w
+    const main = !of && !ANDROID && me.bounds ? await desk.screen() : null
+    if (main && me.bounds && !crosses(me.bounds, [main.left ?? 0, main.top ?? 0, main.width, main.height])) throw new Surprise(`the condition cannot be checked: "${w.title}" is on another display than the main one, and another window holds the focus or overlaps it, so the screen shot would not show it: ${s.expect}`, await seen())
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
