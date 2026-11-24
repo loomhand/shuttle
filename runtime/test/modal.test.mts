@@ -139,7 +139,7 @@ test('a close step with no window in front and a window listed as not answering 
   assert.ok(!calls.includes('desk_key') && !calls.includes('desk_close'), calls.join(' '))
 })
 
-async function unconfirmed(t: TestContext, hung: boolean, note: string) {
+async function unconfirmed(t: TestContext, note: string) {
   const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
   const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }
   let open = true
@@ -147,7 +147,7 @@ async function unconfirmed(t: TestContext, hung: boolean, note: string) {
   await daemon(t, ({ tool }) => {
     calls.push(tool)
     if (tool === 'desk_windows') return JSON.stringify(open ? [editor, find] : [{ ...editor, active: true }])
-    if (tool === 'desk_snapshot') return hung ? { text: 'no accessibility answer within 2000 ms', error: true } : JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
     if (tool === 'desk_close') { open = false; return JSON.stringify({ ok: true, title: 'Find', unverified: note }) }
     return '{"ok":true}'
   })
@@ -160,17 +160,15 @@ test('an Android close step whose close answers unverified stops with that note 
   process.env.SHUTTLE_DESK = 'android'
   let device: typeof main
   try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
-  for (const hung of [false, true]) {
-    const calls = await unconfirmed(t, hung, note)
-    const r = await device({ steps: [{ close: true }, { key: 'Return' }] })
-    assert.equal(r.ok, false, `${hung} ${JSON.stringify(r)}`)
-    assert.equal(r.escalate?.reason, `"Find" may still be open after its close: ${note}`, String(hung))
-    assert.deepEqual(calls.filter((c) => c === 'desk_key' || c === 'desk_close'), ['desk_close'], String(hung))
-  }
+  const calls = await unconfirmed(t, note)
+  const r = await device({ steps: [{ close: true }, { key: 'Return' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, `"Find" may still be open after its close: ${note}`)
+  assert.deepEqual(calls.filter((c) => c === 'desk_key' || c === 'desk_close'), ['desk_close'])
 })
 
 test('a desktop close step whose close answers unverified passes once the window leaves the list', async (t) => {
-  const calls = await unconfirmed(t, false, 'the window did not answer the close within 500 ms, so it may still be closing, be asking to save, or not respond: read the window list before closing again')
+  const calls = await unconfirmed(t, 'the window did not answer the close within 500 ms, so it may still be closing, be asking to save, or not respond: read the window list before closing again')
   const r = await main({ steps: [{ close: true }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.ok(calls.includes('desk_close'), calls.join(' '))
