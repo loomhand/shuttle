@@ -332,7 +332,7 @@ test('an expect that would fall back to the main display while its window is on 
   })
   const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: "Portal" is on another display than the main one, and another window holds the focus or overlaps it/)
+  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: "Portal" or the window that holds the focus or overlaps it is on another display than the main one/)
   assert.deepEqual([shots, asked], [[], []])
   at = [-400, 0, 846, 774]
   const partly = await main({ steps: [{ expect: 'the completion list is gone' }] })
@@ -381,4 +381,14 @@ test('an expect whose window moved off the main display during the tree check st
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: /)
   assert.deepEqual([seen.shots, seen.asked], [[], []])
+})
+
+test('an expect on a straddling window whose popup lies wholly on another display stops as unverifiable', async (t) => {
+  for (const focused of [false, true]) {
+    const seen = await offMain(t, [-300, 100, 846, 774], [-300, 100, 846, 774], [-280, 300, 200, 150], focused)
+    const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
+    assert.equal(r.ok, false, `focused ${focused}: ${JSON.stringify(r)}`)
+    assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: /)
+    assert.deepEqual([seen.shots, seen.asked], [[], []])
+  }
 })
