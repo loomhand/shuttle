@@ -576,3 +576,31 @@ test('an expect on a macOS window whose bounds the list does not give stops as u
   assert.equal(r.escalate?.reason, 'the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: the text is bold')
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
+
+test('grounding on a macOS sheet whose window moves after the screen shot grounds again', { skip: process.platform !== 'darwin' }, async (t) => {
+  const sheet = { id: '5/1', title: 'Export', role: 'dialog', pid: process.pid, active: true, owner: '1/1' }
+  const moves = [[120, 20, 846, 774]]
+  let at = [100, 10, 846, 774]
+  const grounds: unknown[] = []; const clicks: string[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([sheet, { ...win, active: false, bounds: at }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: sheet, truncated: false, nodes: [{ ref: 0, id: '5/1', parent: -1, depth: 0, role: 'dialog', name: 'Export', states: ['showing'] }] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_shot') {
+      if (args.w === undefined) at = moves.shift() ?? at
+      return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
+    }
+    if (tool === 'model_ground') { grounds.push(args.area); return JSON.stringify({ x: 500, y: 300, usage }) }
+    if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '5/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '5/1', role: 'dialog', name: 'Export' }, { id: '1/1', role: 'window', name: 'Portal' }], pid: process.pid })
+    if (tool === 'model_decide') {
+      const a = args as { questions: Record<string, { type: string }> }
+      const answers = Object.fromEntries(Object.keys(a.questions).map((k) => [k, a.questions[k]?.type === 'noul' ? { probability: 0.95 } : { choice: 'r1', confidence: 0.95, probabilities: { none: 1 } }]))
+      return JSON.stringify({ answers, served: { model: 'm', build: BUILD, id: null }, usage })
+    }
+    if (tool === 'desk_click') clicks.push(`${args.x},${args.y}`)
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'the yellow star' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([grounds.length, clicks], [2, ['500,300']])
+})
