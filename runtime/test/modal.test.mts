@@ -230,3 +230,24 @@ test('an Android close step whose window stays says it is still open after a clo
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.equal(r.escalate?.reason, '"Find" is still open after a close')
 })
+
+test('an Android close step that names a window behind another app focuses it by id', async (t) => {
+  const mode = 'android-close-named'
+  process.env.SHUTTLE_DESK = 'android'
+  let device: typeof main
+  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
+  const home = { id: '7', title: 'Home', role: 'window', pid: 4242, active: true }
+  const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: false }
+  let open = true
+  const focused: Record<string, unknown>[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(open ? [{ ...home, active: !find.active }, find] : [home])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+    if (tool === 'desk_focus') { focused.push(args); find.active = true }
+    if (tool === 'desk_close') open = false
+    return '{"ok":true}'
+  })
+  const r = await device({ steps: [{ close: true, window: 'Find' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(focused.length > 0 && focused.every((f) => f.id === '2'), JSON.stringify(focused))
+})

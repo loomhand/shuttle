@@ -769,7 +769,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
-      if (bg && !other) { if (!w || !alertIn(w, bg)) await desk.focus(bg.title, bg.pid, twinId(bg, ws)); return found(bg, t0) }
+      if (bg && !other) { if (!w || !alertIn(w, bg)) await desk.focus(bg.title, bg.pid, ANDROID ? bg.id : twinId(bg, ws)); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && !prior.has(w.id) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
