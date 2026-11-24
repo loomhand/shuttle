@@ -224,3 +224,9 @@ test('an Android close step names the window it picked by id', async (t) => {
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(sent, [{ window: 'Find', pid: process.pid, id: '2' }])
 })
+
+test('an Android close step whose window stays says it is still open after a close, with no Escape in the text', async (t) => {
+  const { r } = await deviceClose(t, true)
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"Find" is still open after a close')
+})

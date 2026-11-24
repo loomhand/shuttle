@@ -1523,7 +1523,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid, id, twin] = [w.title, w.pid, w.id, ANDROID ? w.id : twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); if (!ANDROID) await desk.key('Escape', at(w))
     if (ANDROID || titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await unsure(title, await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e })) }
-    tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
+    tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after ${ANDROID ? '' : 'Escape and '}a close`, await seen())
     return
   }
   const w = await windowFor(s.window, 3000, s.seen, kept)
