@@ -483,7 +483,7 @@ test('an expect on a macOS sheet dismissed during the tree check stops before an
   const seen = await fresh(t, () => [{ ...doc, active: true }], [untitled, doc])
   const r = await main({ steps: [{ expect: 'Report.pdf is selected' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, 'the sheet on "Report" closed before the condition was checked: Report.pdf is selected')
+  assert.equal(r.escalate?.reason, 'the sheet listed as "Report" closed before the condition was checked: Report.pdf is selected')
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
 

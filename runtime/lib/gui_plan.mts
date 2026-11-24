@@ -1550,7 +1550,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const now = ws.find((x) => x.active)
     const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
     const me = ws.find((x) => x.id === w.id && x.pid === w.pid)
-    if (OS === 'darwin' && !ANDROID && !me) throw new Surprise(`${w.owner === undefined ? '' : 'the sheet on '}"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
+    if (OS === 'darwin' && !ANDROID && !me) throw new Surprise(`${w.owner === undefined ? '' : 'the sheet listed as '}"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
     const of = now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
     const b = me && host(me, ws).bounds
     if (!of && OS === 'darwin' && !ANDROID && (!b || !inside(b, await desk.screen()))) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
