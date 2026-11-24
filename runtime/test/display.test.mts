@@ -441,3 +441,14 @@ test('an expect whose window closed during the tree check stops before any shot 
   assert.equal(r.escalate?.reason, '"Portal" closed before the condition was checked: the status indicator is green')
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
+
+test('an expect while a sheet of another window of the app, on a second display, holds the focus stops as unverifiable', async (t) => {
+  const here = { ...win, active: false, bounds: [0, 0, 846, 774] }
+  const doc = { id: '4/1', title: 'Doc 2', role: 'window', pid: process.pid, active: false, bounds: [-1416, 0, 800, 600] }
+  const sheet = { id: '5/1', title: 'Warning', role: 'dialog', pid: process.pid, active: true, owner: '4/1' }
+  const seen = await fresh(t, () => [sheet, doc, here])
+  const r = await main({ steps: [{ expect: 'the warning is gone' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: /)
+  assert.deepEqual([seen.shots, seen.asked], [[], []])
+})
