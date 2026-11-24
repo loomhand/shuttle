@@ -905,8 +905,8 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
     const of = v?.of ?? (MAC && host(w, ws).bounds ? host(w, ws) : undefined)
     if (!of) return p
     const list = await desk.windows(); const now = list.find((x) => x.id === of.id && x.pid === of.pid)
-    if (now && isDeepStrictEqual(now.bounds, of.bounds)) return p
     const fresh = list.find((x) => x.id === w.id && x.pid === w.pid)
+    if (now && fresh && isDeepStrictEqual(now.bounds, of.bounds)) return p
     if (!now || !fresh || again) throw new Surprise(`"${w.title}" moved, changed size or closed while its target was found in its shot, so nothing was clicked`, await seen())
     return spot(r, target, fresh, rec, true, list)
   }

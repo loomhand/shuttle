@@ -577,33 +577,45 @@ test('an expect on a macOS window whose bounds the list does not give stops as u
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
 
-test('grounding on a macOS sheet whose window moves after the screen shot grounds again', { skip: process.platform !== 'darwin' }, async (t) => {
+async function sheeted(t: TestContext, moves: number[][], closes = false) {
   const sheet = { id: '5/1', title: 'Export', role: 'dialog', pid: process.pid, active: true, owner: '1/1' }
-  const moves = [[120, 20, 846, 774]]
-  let at = [100, 10, 846, 774]
-  const grounds: unknown[] = []; const clicks: string[] = []; const targets: unknown[] = []; const hits: unknown[] = []
+  let at = [100, 10, 846, 774]; let open = true
+  const seen = { grounds: [] as unknown[], clicks: [] as string[], targets: [] as unknown[], hits: [] as unknown[] }
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([sheet, { ...win, active: false, bounds: at }])
+    if (tool === 'desk_windows') return JSON.stringify([...open ? [sheet] : [], { ...win, active: !open, bounds: at }])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: sheet, truncated: false, nodes: [{ ref: 0, id: '5/1', parent: -1, depth: 0, role: 'dialog', name: 'Export', states: ['showing'] }] })
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'desk_shot') {
       if (args.w === undefined) at = moves.shift() ?? at
       return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
     }
-    if (tool === 'model_ground') { grounds.push(args.area); targets.push(args.target); return JSON.stringify({ x: 500, y: 300, usage }) }
-    if (tool === 'desk_at') hits.push(args.window)
+    if (tool === 'model_ground') { seen.grounds.push(args.area); seen.targets.push(args.target); return JSON.stringify({ x: 500, y: 300, usage }) }
+    if (tool === 'desk_at') { seen.hits.push(args.window); open = !closes }
     if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '5/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '5/1', role: 'dialog', name: 'Export' }, { id: '1/1', role: 'window', name: 'Portal' }], pid: process.pid })
     if (tool === 'model_decide') {
       const a = args as { questions: Record<string, { type: string }> }
       const answers = Object.fromEntries(Object.keys(a.questions).map((k) => [k, a.questions[k]?.type === 'noul' ? { probability: 0.95 } : { choice: 'r1', confidence: 0.95, probabilities: { none: 1 } }]))
       return JSON.stringify({ answers, served: { model: 'm', build: BUILD, id: null }, usage })
     }
-    if (tool === 'desk_click') clicks.push(`${args.x},${args.y}`)
+    if (tool === 'desk_click') seen.clicks.push(`${args.x},${args.y}`)
     return '{"ok":true}'
   })
+  return seen
+}
+
+test('grounding on a macOS sheet whose window moves after the screen shot grounds again', { skip: process.platform !== 'darwin' }, async (t) => {
+  const seen = await sheeted(t, [[120, 20, 846, 774]])
   const r = await main({ steps: [{ click: 'the yellow star' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
-  assert.deepEqual([grounds.length, clicks], [2, ['500,300']])
-  assert.deepEqual(targets, ['the yellow star in the "Export" window', 'the yellow star in the "Export" window'])
-  assert.ok(hits.length > 0 && hits.every((x) => x === 'Export'), JSON.stringify(hits))
+  assert.deepEqual([seen.grounds.length, seen.clicks], [2, ['500,300']])
+  assert.deepEqual(seen.targets, ['the yellow star in the "Export" window', 'the yellow star in the "Export" window'])
+  assert.ok(seen.hits.length > 0 && seen.hits.every((x) => x === 'Export'), JSON.stringify(seen.hits))
+})
+
+test('a macOS sheet that closes after its hit test while its window stays put takes no click', { skip: process.platform !== 'darwin' }, async (t) => {
+  const seen = await sheeted(t, [], true)
+  const r = await main({ steps: [{ click: 'the yellow star' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^"Export" moved, changed size or closed while its target was found in its shot, so nothing was clicked/)
+  assert.deepEqual(seen.clicks, [])
 })
