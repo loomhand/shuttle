@@ -508,6 +508,7 @@ async function windowView(w: Win | undefined): Promise<View | null> {
 async function screenView(): Promise<View> {
   return { area: await desk.screen(), png: await desk.shot() }
 }
+function crosses([ax, ay, aw, ah]: [number, number, number, number], [bx, by, bw, bh]: [number, number, number, number]) { return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah }
 function unique(w: Win) {
   if (BG && listed.some((y) => y.id !== w.id && y.pid === w.pid && y.title === w.title)) throw new Surprise(`another window of the app is also titled "${w.title}", and background input names its window by title, so it never guesses which one gets it`)
 }
@@ -1543,7 +1544,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (BG) await front(w)
     const ws = ANDROID ? [] : await desk.windows()
     const now = ws.find((x) => x.active)
-    const of = now?.id === w.id && now.pid === w.pid ? alone(now, ws) : null
+    const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
+    const of = now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())

@@ -233,3 +233,22 @@ test('an expect whose window retitles itself before the shot shoots it by its cu
   assert.deepEqual(shots, [{ window: 'Portal - edited', pid: process.pid }])
   assert.match(asked[0] ?? '', /^You check the state of the app window "Portal - edited", which the image shows alone\./)
 })
+
+test('an expect while an untitled window of the plan window\'s app covers it checks the screen, and a titled one beside it keeps the window shot', async (t) => {
+  const shots: Record<string, unknown>[] = []
+  let other = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [-1300, 120, 300, 200] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([other, win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(846, 774).toString('base64') } }
+    if (tool === 'model_ask') return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage })
+    return '{"ok":true}'
+  })
+  const list = await main({ steps: [{ expect: "the suggestions show 'apple'" }] })
+  assert.equal(list.ok, true, JSON.stringify(list))
+  other = { ...other, title: 'Untitled 2', bounds: [-1390, 20, 846, 774] }
+  const cascade = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(cascade.ok, true, JSON.stringify(cascade))
+  assert.deepEqual(shots, [{}, own])
+})
