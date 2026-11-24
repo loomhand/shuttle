@@ -1519,8 +1519,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))
     if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
-    const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
-    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await unsure(title, await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e })) }
+    const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); if (!ANDROID) await desk.key('Escape', at(w))
+    if (ANDROID || titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await unsure(title, await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e })) }
     tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }
