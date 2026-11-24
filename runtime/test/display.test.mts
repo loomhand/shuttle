@@ -317,7 +317,7 @@ test('a state check whose window closed before the read stops and crops no scree
   assert.deepEqual(shots, [])
 })
 
-test('an expect that would fall back to the main display while its window is on another one stops as unverifiable', async (t) => {
+test('an expect that would fall back to the main display while its window is on another one, wholly or in part, stops as unverifiable', async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
   let at = bounds
   await daemon(t, ({ tool, args }) => {
@@ -336,11 +336,12 @@ test('an expect that would fall back to the main display while its window is on 
   assert.deepEqual([shots, asked], [[], []])
   at = [-400, 0, 846, 774]
   const partly = await main({ steps: [{ expect: 'the completion list is gone' }] })
-  assert.equal(partly.ok, true, JSON.stringify(partly))
-  assert.deepEqual([shots, asked.length], [[{}], 1])
+  assert.equal(partly.ok, false, JSON.stringify(partly))
+  assert.equal(partly.escalate?.reason, r.escalate?.reason)
+  assert.deepEqual([shots, asked], [[], []])
 })
 
-test('an expect on a window that straddles the main display with a focused untitled popup over it keeps the screen shot', async (t) => {
+test('an expect on a window that straddles the main display with a focused untitled popup over it stops as unverifiable', async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
   const here = { ...win, active: false, bounds: [-300, 100, 846, 774] }
   const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: true, bounds: [-100, 300, 300, 200] }
@@ -354,9 +355,9 @@ test('an expect on a window that straddles the main display with a focused untit
     return '{"ok":true}'
   })
   const r = await main({ steps: [{ expect: "the suggestions show 'apple'" }] })
-  assert.equal(r.ok, true, JSON.stringify(r))
-  assert.deepEqual([shots, asked.length], [[{}], 1])
-  assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, "the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: the suggestions show 'apple'")
+  assert.deepEqual([shots, asked], [[], []])
 })
 
 async function offMain(t: TestContext, before: number[], after: number[], popup: number[], focused = false) {
@@ -442,13 +443,30 @@ test('an expect whose window closed during the tree check stops before any shot 
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
 
-test('an expect while a sheet of another window of the app, on a second display, holds the focus stops as unverifiable', async (t) => {
+test('an expect on a plan window on the main display while a sheet of another window of the app holds the focus on a second display checks the screen', async (t) => {
   const here = { ...win, active: false, bounds: [0, 0, 846, 774] }
   const doc = { id: '4/1', title: 'Doc 2', role: 'window', pid: process.pid, active: false, bounds: [-1416, 0, 800, 600] }
-  const sheet = { id: '5/1', title: 'Warning', role: 'dialog', pid: process.pid, active: true, owner: '4/1' }
+  const sheet = { id: '5/1', title: '', role: 'dialog', pid: process.pid, active: true, owner: '4/1', bounds: [-1316, 22, 600, 300] }
   const seen = await fresh(t, () => [sheet, doc, here])
-  const r = await main({ steps: [{ expect: 'the warning is gone' }] })
-  assert.equal(r.ok, false, JSON.stringify(r))
-  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: /)
-  assert.deepEqual([seen.shots, seen.asked], [[], []])
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.shots, seen.asked.length], [[{}], 1])
+})
+
+test('an expect whose window without bounds is listed again under another id keeps the screen shot', async (t) => {
+  const { bounds: _, ...bare } = win
+  const again = { ...bare, id: '1/2' }
+  const shots: Record<string, unknown>[] = []; const asked: string[] = []
+  let read = false
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([read ? again : bare])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: bare, truncated: false, nodes: [root] })
+    if (tool === 'model_decide') { read = true; return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage }) }
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([shots, asked.length], [[{}], 1])
 })

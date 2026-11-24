@@ -508,6 +508,7 @@ async function windowView(w: Win | undefined, ws = picked): Promise<View | null>
 async function screenView(): Promise<View> {
   return { area: await desk.screen(), png: await desk.shot() }
 }
+function inside([x, y, w, h]: [number, number, number, number], { width, height }: { width: number; height: number }) { return x >= 0 && y >= 0 && x + w <= width && y + h <= height }
 function crosses([ax, ay, aw, ah]: [number, number, number, number], [bx, by, bw, bh]: [number, number, number, number]) { return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah }
 function unique(w: Win) {
   if (BG && listed.some((y) => y.id !== w.id && y.pid === w.pid && y.title === w.title)) throw new Surprise(`another window of the app is also titled "${w.title}", and background input names its window by title, so it never guesses which one gets it`)
@@ -1548,15 +1549,10 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const ws = ANDROID ? [] : await desk.windows()
     const now = ws.find((x) => x.active)
     const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
+    const me = ws.find((x) => x.id === w.id && x.pid === w.pid)
+    if (!ANDROID && w.bounds && !me) throw new Surprise(`"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
     const of = now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
-    const listed = ws.find((x) => x.id === w.id && x.pid === w.pid)
-    if (!ANDROID && !listed) throw new Surprise(`"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
-    const me = listed ?? w
-    const main = !of && !ANDROID && me.bounds ? await desk.screen() : null
-    const shown = main ? [main.left ?? 0, main.top ?? 0, main.width, main.height] as [number, number, number, number] : null
-    const involved = [me, now?.pid === me.pid ? now : undefined, ...ws.filter((x) => x.id !== me.id && x.pid === me.pid && !x.title.trim() && !!x.bounds && !!me.bounds && crosses(x.bounds, me.bounds))]
-    const box = (x?: Win) => x && [...chain(x, ws)].find((y) => !!y.bounds)?.bounds
-    if (shown && involved.some((x) => { const b = box(x); return !!b && !crosses(b, shown) })) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
+    if (!of && me?.bounds && !inside(me.bounds, await desk.screen())) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
     const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
