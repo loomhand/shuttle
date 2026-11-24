@@ -1388,6 +1388,9 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
 }
 
 async fn wiped(slot: &mut Option<Control>, owed: &AtomicBool) -> bool {
+    if !owed.load(Ordering::Relaxed) {
+        return false;
+    }
     if let Some(control) = slot.as_mut()
         && control.is_open()
         && control.set_clipboard("", owed).await.is_ok()
@@ -3173,6 +3176,7 @@ mod tests {
     #[tokio::test]
     async fn a_type_empties_the_device_clipboard_after_it() {
         let (android, mut peer) = session("/nonexistent/adb").await;
+        android.owed.store(true, Ordering::Relaxed);
         peer.write_all(&ack(1)).await.unwrap();
         let device = tokio::spawn(async move {
             let mut buf = [0; 64];
@@ -3265,6 +3269,70 @@ mod tests {
         android.close().await;
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
         assert_eq!(pasting.await.unwrap(), Err(CLOSED.to_owned()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_during_the_first_session_open_of_a_type_sends_the_device_nothing() {
+        let fake = Fake::new();
+        fake.put("focus.json", &focused(7, ""));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let (accepted, on_accept) = tokio::sync::oneshot::channel();
+        let (closing, on_close) = tokio::sync::oneshot::channel::<()>();
+        let device = tokio::spawn(async move {
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let _ = accepted.send(());
+            let _ = on_close.await;
+            fresh.write_all(&[0]).await.unwrap();
+            let mut buf = [0; 64];
+            match tokio::time::timeout(Duration::from_millis(500), fresh.read(&mut buf)).await {
+                Ok(Ok(n)) => buf[..n].to_vec(),
+                _ => Vec::new(),
+            }
+        });
+        let android = Arc::new(fake.android);
+        let typist = Arc::clone(&android);
+        let typing = tokio::spawn(async move {
+            typist
+                .type_text("secret", None, || async { Ok(None) })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), on_accept)
+            .await
+            .unwrap()
+            .unwrap();
+        let closer = Arc::clone(&android);
+        let close = tokio::spawn(async move { closer.close().await });
+        while !android.closed.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+        let _ = closing.send(());
+        assert_eq!(typing.await.unwrap(), Err(CLOSED.to_owned()));
+        close.await.unwrap();
+        assert_eq!(device.await.unwrap(), Vec::<u8>::new());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_type_refused_before_any_paste_leaves_the_clipboard_alone() {
+        let fake = Fake::new();
+        fake.put("focus.json", &focused(7, ""));
+        let mut peer = controlled(&fake.android).await;
+        let typed = fake
+            .android
+            .type_text("secret", None, || async { Ok(Some(9)) })
+            .await;
+        assert_eq!(
+            typed,
+            Err("the input focus is in another window, so the line was not pasted".to_owned())
+        );
+        let mut buf = [0; 64];
+        let sent = tokio::time::timeout(Duration::from_millis(300), peer.read(&mut buf)).await;
+        assert!(sent.is_err(), "the device got {sent:?}");
     }
 
     #[cfg(unix)]
@@ -3532,6 +3600,7 @@ mod tests {
     #[tokio::test]
     async fn a_type_dropped_before_its_end_still_empties_the_device_clipboard() {
         let (android, mut peer) = session("/nonexistent/adb").await;
+        android.owed.store(true, Ordering::Relaxed);
         let typing = android.type_text("secret", None, std::future::pending);
         assert!(
             tokio::time::timeout(Duration::from_millis(50), typing)
