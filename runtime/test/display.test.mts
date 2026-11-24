@@ -139,9 +139,11 @@ test('an expect on an Android device checks the device shot, which takes no wind
 test('an expect whose window gets a same-titled twin before the shot checks the screen, not a shot by title', async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
   let twin = false
+  const here = { ...win, bounds: [0, 0, 846, 774] }
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify(twin ? [win, { ...win, id: '2/1', active: false }] : [win])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_windows') return JSON.stringify(twin ? [here, { ...here, id: '2/1', active: false }] : [here])
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: here, truncated: false, nodes: [root] })
     if (tool === 'model_decide') { twin = true; return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage }) }
     if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
     if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage }) }
@@ -169,10 +171,12 @@ test('grounding on a window that moves after its shot grounds again on a fresh s
 
 test('an expect while an untitled popup of the plan window is in front checks the screen, which shows the popup', async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
-  const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: true, bounds: [-1300, 120, 300, 200] }
+  const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: true, bounds: [100, 120, 300, 200] }
+  const here = { ...win, bounds: [0, 0, 846, 774] }
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([popup, { ...win, active: false }])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_windows') return JSON.stringify([popup, { ...here, active: false }])
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: here, truncated: false, nodes: [root] })
     if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
     if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
     if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "the suggestions show apple"}', usage }) }
@@ -236,10 +240,12 @@ test('an expect whose window retitles itself before the shot shoots it by its cu
 
 test('an expect while an untitled window of the plan window\'s app covers it checks the screen, and a titled one beside it keeps the window shot', async (t) => {
   const shots: Record<string, unknown>[] = []
-  let other = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [-1300, 120, 300, 200] }
+  let other = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [100, 120, 300, 200] }
+  const here = { ...win, bounds: [0, 0, 846, 774] }
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([other, win])
-    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_windows') return JSON.stringify([other, here])
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: here, truncated: false, nodes: [root] })
     if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
     if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(846, 774).toString('base64') } }
     if (tool === 'model_ask') return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage })
@@ -247,7 +253,7 @@ test('an expect while an untitled window of the plan window\'s app covers it che
   })
   const list = await main({ steps: [{ expect: "the suggestions show 'apple'" }] })
   assert.equal(list.ok, true, JSON.stringify(list))
-  other = { ...other, title: 'Untitled 2', bounds: [-1390, 20, 846, 774] }
+  other = { ...other, title: 'Untitled 2', bounds: [26, 20, 846, 774] }
   const cascade = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(cascade.ok, true, JSON.stringify(cascade))
   assert.deepEqual(shots, [{}, own])
@@ -309,4 +315,22 @@ test('a state check whose window closed before the read stops and crops no scree
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /^"Portal" closed before the state of "Bold" was read$/)
   assert.deepEqual(shots, [])
+})
+
+test('an expect that would fall back to the main display while its window is on another one stops as unverifiable', async (t) => {
+  const shots: Record<string, unknown>[] = []; const asked: string[] = []
+  const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [-1300, 120, 300, 200] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([popup, win])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it is gone"}', usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: "Portal" is on another display than the main one, and another window holds the focus or overlaps it/)
+  assert.deepEqual([shots, asked], [[], []])
 })
