@@ -41,7 +41,7 @@ async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; r
     if (tool === 'desk_read' && o.read) return o.read(String(args.id))
     if (tool === 'desk_shot') {
       seen.shots.push(args)
-      if (args.window !== undefined && args.w === undefined) at = o.moves?.shift() ?? at
+      if (args.w === undefined) at = o.moves?.shift() ?? at
       const image = args.window === undefined ? args.w === undefined && o.screen ? o.screen : gray(Number(args.w ?? 1280), Number(args.h ?? 800)) : args.w === undefined ? o.window ?? gray(846, 774) : gray(Number(args.w), Number(args.h))
       return { text: '{"ok":true}', image: image.toString('base64') }
     }
@@ -213,6 +213,19 @@ test('grounding on a window that moves after its shot grounds again on a fresh s
   assert.deepEqual(seen.grounds, [{ left: -1416, top: 0, width: 846, height: 774 }, { left: -1400, top: 20, width: 846, height: 774 }])
   assert.deepEqual(seen.clicks, ['-1000,300'])
   const again = await second(t, { moves: [moved, [-1300, 40, 846, 774]] })
+  const stopped = await main({ steps: [{ click: 'the yellow star' }] })
+  assert.equal(stopped.ok, false, JSON.stringify(stopped))
+  assert.match(stopped.escalate?.reason ?? '', /^"Portal" moved, changed size or closed while its target was found in its shot, so nothing was clicked/)
+  assert.deepEqual(again.clicks, [])
+})
+
+test('grounding on a window on the main display that moves after the screen shot grounds again, and stops when it moves again', { skip: process.platform !== 'darwin' }, async (t) => {
+  const moved = [120, 20, 846, 774]
+  const seen = await second(t, { at: [100, 10, 846, 774], ground: [500, 300], moves: [moved] })
+  const r = await main({ steps: [{ click: 'the yellow star' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.grounds.length, seen.clicks], [2, ['500,300']])
+  const again = await second(t, { at: [100, 10, 846, 774], ground: [500, 300], moves: [moved, [140, 20, 846, 774]] })
   const stopped = await main({ steps: [{ click: 'the yellow star' }] })
   assert.equal(stopped.ok, false, JSON.stringify(stopped))
   assert.match(stopped.escalate?.reason ?? '', /^"Portal" moved, changed size or closed while its target was found in its shot, so nothing was clicked/)

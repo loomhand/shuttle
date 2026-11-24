@@ -901,7 +901,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
   const missed: string[] = []
   let v: View | undefined
   const settled = async (p: [number, number]): Promise<[number, number]> => {
-    const of = v?.of
+    const of = v?.of ?? (OS === 'darwin' && !ANDROID && w.bounds ? w : undefined)
     if (!of) return p
     const now = (await desk.windows()).find((x) => x.id === of.id && x.pid === of.pid)
     if (now && isDeepStrictEqual(now.bounds, of.bounds)) return p
