@@ -30,18 +30,18 @@ function size(b64: string): number[] {
   return [p.w, p.h]
 }
 
-async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number; moves?: number[][]; readMoves?: number[]; at?: number[]; ground?: [number, number]; screen?: Buffer } = {}): Promise<Seen> {
+async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number; moves?: number[][]; readMoves?: number[]; at?: number[]; ground?: [number, number]; screen?: Buffer; twin?: boolean } = {}): Promise<Seen> {
   const seen: Seen = { shots: [], asked: [], images: [], tones: [], grounds: [], prompts: [], clicks: [], pressed: [] }
-  let at = o.at ?? bounds
+  let at = o.at ?? bounds; let twin = false
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([{ ...win, bounds: at }])
+    if (tool === 'desk_windows') return JSON.stringify([{ ...win, bounds: at }, ...twin ? [{ ...win, id: '1/9', active: false, bounds: at }] : []])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: { ...win, bounds: at }, truncated: false, nodes: o.nodes ?? [root] })
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'desk_read' && o.readMoves) at = o.readMoves
     if (tool === 'desk_read' && o.read) return o.read(String(args.id))
     if (tool === 'desk_shot') {
       seen.shots.push(args)
-      if (args.w === undefined) at = o.moves?.shift() ?? at
+      if (args.w === undefined) { at = o.moves?.shift() ?? at; twin = !!o.twin }
       const image = args.window === undefined ? args.w === undefined && o.screen ? o.screen : gray(Number(args.w ?? 1280), Number(args.h ?? 800)) : args.w === undefined ? o.window ?? gray(846, 774) : gray(Number(args.w), Number(args.h))
       return { text: '{"ok":true}', image: image.toString('base64') }
     }
@@ -230,6 +230,12 @@ test('grounding on a window on the main display that moves after the screen shot
   assert.equal(stopped.ok, false, JSON.stringify(stopped))
   assert.match(stopped.escalate?.reason ?? '', /^"Portal" moved, changed size or closed while its target was found in its shot, so nothing was clicked/)
   assert.deepEqual(again.clicks, [])
+})
+
+test('grounding again after a window off the main display moved takes the screen shot once a same-titled twin is listed', async (t) => {
+  const seen = await second(t, { moves: [[-1400, 20, 846, 774]], twin: true })
+  await main({ steps: [{ click: 'the yellow star' }] })
+  assert.deepEqual(seen.shots.filter((x) => x.w === undefined), [own, {}])
 })
 
 test('an expect while an untitled popup of the plan window is in front checks the screen, which shows the popup', async (t) => {

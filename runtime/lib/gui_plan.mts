@@ -912,7 +912,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
   }
   if (same && r.crop) {
     let t0 = Date.now()
-    v = await windowView(w) ?? await screenView()
+    v = await windowView(w, ws) ?? await screenView()
     const { png, area } = v
     const screen = unpng(png), k = screen.w / area.width
     const m = match(screen, unpng(Buffer.from(r.crop, 'base64')), k, r.scale ?? 1)
@@ -924,7 +924,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
   }
   try {
     const t0 = Date.now()
-    v ??= await windowView(w) ?? await screenView()
+    v ??= await windowView(w, ws) ?? await screenView()
     const [x, y] = await desk.ground(v.png, `${target} in the "${w.title}" window`, v.area)
     tick('ground', t0)
     const g = await grounded(x, y, target, w, v, roots)
