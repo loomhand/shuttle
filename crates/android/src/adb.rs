@@ -3397,6 +3397,42 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_during_a_cleanup_reconnect_longer_than_its_bound_returns_in_time_and_opens_no_second_session()
+     {
+        let fake = Fake::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        fake.android.owed.store(true, Ordering::Relaxed);
+        let device = tokio::spawn(async move {
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(CLOSE_WAIT + Duration::from_secs(1)).await;
+            fresh.write_all(&[0]).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            let read =
+                tokio::time::timeout(Duration::from_secs(3), fresh.read_exact(&mut clear)).await;
+            let _ = fresh.write_all(&ack(1)).await;
+            read.is_ok_and(|r| r.is_ok()).then_some(clear)
+        });
+        let android = Arc::new(fake.android);
+        let typist = Arc::clone(&android);
+        let typing =
+            tokio::spawn(async move { typist.type_text("", None, || async { Ok(None) }).await });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let started = std::time::Instant::now();
+        android.close().await;
+        let took = started.elapsed();
+        assert!(
+            took >= CLOSE_WAIT && took < CLOSE_WAIT + Duration::from_millis(500),
+            "{took:?}"
+        );
+        assert_eq!(typing.await.unwrap(), Ok((Some(true), false)));
+        assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
+        let starts = std::fs::read_to_string(fake.dir.path().join("starts")).unwrap_or_default();
+        assert_eq!(starts.lines().count(), 1, "{starts}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_with_no_text_of_shuttle_on_the_clipboard_sends_nothing() {
         let (android, mut peer) = session("/nonexistent/adb").await;
         android.close().await;
