@@ -164,13 +164,17 @@ impl Proc {
     }
 
     async fn request_stop(&self) {
-        let stop = Command::new(&self.bin)
-            .args(["stop", "--socket", &self.endpoint])
+        let _ = tokio::time::timeout(STOP_WAIT, self.stop_command().status()).await;
+    }
+
+    fn stop_command(&self) -> Command {
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(["stop", "--socket", &self.endpoint])
+            .env_remove(crate::http::TOKEN_ENV)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .status();
-        let _ = tokio::time::timeout(STOP_WAIT, stop).await;
+            .kill_on_drop(true);
+        cmd
     }
 
     async fn stop_stale(&self) -> Result<(), String> {
@@ -294,14 +298,16 @@ while True:
             watch: false,
         };
         let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
-        let cmd = proc.command();
-        assert!(
-            cmd.as_std()
-                .get_envs()
-                .any(|(k, v)| k == token && v.is_none()),
-            "{:?}",
-            cmd.as_std().get_envs().collect::<Vec<_>>()
-        );
+        for cmd in [proc.command(), proc.stop_command()] {
+            assert!(
+                cmd.as_std()
+                    .get_envs()
+                    .any(|(k, v)| k == token && v.is_none()),
+                "{:?} {:?}",
+                cmd.as_std().get_args().collect::<Vec<_>>(),
+                cmd.as_std().get_envs().collect::<Vec<_>>()
+            );
+        }
     }
 
     #[tokio::test]
