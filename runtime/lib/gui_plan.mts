@@ -1195,6 +1195,9 @@ async function submit(w: Win, chooser = false) {
   if (titledIn(ws, title, pid) && frontOf(ws)?.title === title) throw new Surprise(`"${title}" is still open after Return`, await seen())
 }
 
+async function unsure(title: string, c: { unverified?: string }) {
+  if (c.unverified) throw new Surprise(`"${title}" may still be open after its close: ${c.unverified}`, await seen())
+}
 async function closed(title: string, pid: number | null, id?: string) {
   const t0 = Date.now()
   const landed = (ws: Win[]) => { const f = frontOf(ws); return !!f && f.title !== title && f.pid !== null }
@@ -1505,7 +1508,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
-    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid, twinId(w, ws)); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
+    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await unsure(w.title, await desk.close(w.title, w.pid, twinId(w, ws))); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
       let d: Win | null = many.find((x) => x.id !== self?.id) ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
@@ -1517,7 +1520,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
     const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
-    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e }) }
+    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await unsure(title, await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e })) }
     tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
     return
   }

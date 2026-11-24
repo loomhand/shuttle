@@ -138,3 +138,25 @@ test('a close step with no window in front and a window listed as not answering 
   assert.equal(r.escalate?.reason, 'no window is in front, and "~/a.txt - Mousepad" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app')
   assert.ok(!calls.includes('desk_key') && !calls.includes('desk_close'), calls.join(' '))
 })
+
+test('a close step whose close answers unverified stops with that note and sends nothing after it', async (t) => {
+  const note = 'the window was sent the back key and left the window list, but "com.android.settings" came to the front, not another app, so it may still be open: read the window list before closing again'
+  for (const hung of [false, true]) {
+    const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+    const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }
+    let open = true
+    const calls: string[] = []
+    await daemon(t, ({ tool }) => {
+      calls.push(tool)
+      if (tool === 'desk_windows') return JSON.stringify(open ? [editor, find] : [{ ...editor, active: true }])
+      if (tool === 'desk_snapshot') return hung ? { text: 'no accessibility answer within 2000 ms', error: true } : JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+      if (tool === 'desk_close') { open = false; return JSON.stringify({ ok: true, title: 'Find', unverified: note }) }
+      return '{"ok":true}'
+    })
+    const r = await main({ steps: [{ close: true }, { key: 'Return' }] })
+    assert.equal(r.ok, false, `${hung} ${JSON.stringify(r)}`)
+    assert.equal(r.escalate?.reason, `"Find" may still be open after its close: ${note}`, String(hung))
+    const after = calls.slice(calls.indexOf('desk_close') + 1)
+    assert.ok(!after.includes('desk_key'), `${hung} ${calls.join(' ')}`)
+  }
+})
