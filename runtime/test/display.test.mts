@@ -252,3 +252,29 @@ test('an expect while an untitled window of the plan window\'s app covers it che
   assert.equal(cascade.ok, true, JSON.stringify(cascade))
   assert.deepEqual(shots, [{}, own])
 })
+
+test('a window that moves after its shot and whose next shot fails never takes a click at its old place', async (t) => {
+  const clicks: string[] = []
+  let at = [0, 0, 800, 600]; let shots = 0
+  const pad = { id: '4/1', title: 'Sketch', role: 'window', pid: process.pid, active: true }
+  const crop = cut(unpng(pattern(800, 600, [100, 100])), 60, 80, 200, 100, 1).toString('base64')
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ ...pad, bounds: at }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: pad, truncated: false, nodes: [{ ref: 0, id: '4/1', parent: -1, depth: 0, role: 'window', name: 'Sketch', states: ['showing'] }] })
+    if (tool === 'desk_screen') return '{"width":800,"height":600}'
+    if (tool === 'desk_shot' && args.window !== undefined && args.w === undefined) {
+      shots += 1
+      if (shots > 1) return { text: 'the window shot failed', error: true }
+      at = [100, 50, 800, 600]
+    }
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 800), Number(args.h ?? 600)).toString('base64') }
+    if (tool === 'model_ground') return JSON.stringify({ x: 500, y: 300, usage })
+    if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '4/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '4/1', role: 'window', name: 'Sketch' }], pid: process.pid })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { on: { probability: 0.95 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_click') clicks.push(`${args.x},${args.y}`)
+    return '{"ok":true}'
+  })
+  await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop, at: [160, 130], size: [800, 600] } }] })
+  assert.ok(!clicks.includes('160,130'), JSON.stringify(clicks))
+  assert.deepEqual(clicks, ['260,180'])
+})
