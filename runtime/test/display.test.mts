@@ -317,7 +317,7 @@ test('a state check whose window closed before the read stops and crops no scree
   assert.deepEqual(shots, [])
 })
 
-test('an expect that would fall back to the main display while its window is on another one, wholly or in part, stops as unverifiable', async (t) => {
+test('an expect that would fall back to the main display while its window is on another one, wholly or in part, stops as unverifiable', { skip: process.platform !== 'darwin' }, async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
   let at = bounds
   await daemon(t, ({ tool, args }) => {
@@ -341,7 +341,7 @@ test('an expect that would fall back to the main display while its window is on 
   assert.deepEqual([shots, asked], [[], []])
 })
 
-test('an expect on a window that straddles the main display with a focused untitled popup over it stops as unverifiable', async (t) => {
+test('an expect on a window that straddles the main display with a focused untitled popup over it stops as unverifiable', { skip: process.platform !== 'darwin' }, async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
   const here = { ...win, active: false, bounds: [-300, 100, 846, 774] }
   const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: true, bounds: [-100, 300, 300, 200] }
@@ -376,7 +376,7 @@ async function offMain(t: TestContext, before: number[], after: number[], popup:
   return { shots, asked }
 }
 
-test('an expect whose window moved off the main display during the tree check stops as unverifiable', async (t) => {
+test('an expect whose window moved off the main display during the tree check stops as unverifiable', { skip: process.platform !== 'darwin' }, async (t) => {
   const seen = await offMain(t, [100, 0, 846, 774], [-1416, 0, 846, 774], [-1300, 120, 300, 200])
   const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
@@ -384,7 +384,7 @@ test('an expect whose window moved off the main display during the tree check st
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
 
-test('an expect on a straddling window whose popup lies wholly on another display stops as unverifiable', async (t) => {
+test('an expect on a straddling window whose popup lies wholly on another display stops as unverifiable', { skip: process.platform !== 'darwin' }, async (t) => {
   for (const focused of [false, true]) {
     const seen = await offMain(t, [-300, 100, 846, 774], [-300, 100, 846, 774], [-280, 300, 200, 150], focused)
     const r = await main({ steps: [{ expect: 'the completion list is gone' }] })
@@ -394,7 +394,7 @@ test('an expect on a straddling window whose popup lies wholly on another displa
   }
 })
 
-test('an expect on a window off the main display that has a same-titled twin stops with the neutral reason', async (t) => {
+test('an expect on a window off the main display that has a same-titled twin stops with the neutral reason', { skip: process.platform !== 'darwin' }, async (t) => {
   const shots: Record<string, unknown>[] = []
   await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([win, { ...win, id: '2/1', active: false }])
@@ -478,11 +478,12 @@ function sheetOn(at: [number, number, number, number]) {
 }
 
 test('an expect on a macOS sheet dismissed during the tree check stops before any shot or vision call', { skip: process.platform !== 'darwin' }, async (t) => {
-  const { doc, ws } = sheetOn([0, 0, 846, 774])
-  const seen = await fresh(t, () => [{ ...doc, active: true }], ws)
+  const { sheet, doc } = sheetOn([0, 0, 846, 774])
+  const untitled = { ...sheet, title: doc.title }
+  const seen = await fresh(t, () => [{ ...doc, active: true }], [untitled, doc])
   const r = await main({ steps: [{ expect: 'Report.pdf is selected' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
-  assert.equal(r.escalate?.reason, '"Export" closed before the condition was checked: Report.pdf is selected')
+  assert.equal(r.escalate?.reason, 'the sheet on "Report" closed before the condition was checked: Report.pdf is selected')
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
 
@@ -500,5 +501,15 @@ test('an expect on a macOS sheet of a window off the main display stops as unver
   const r = await main({ steps: [{ expect: 'no error message is shown' }] })
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.equal(r.escalate?.reason, 'the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: no error message is shown')
+  assert.deepEqual([seen.shots, seen.asked], [[], []])
+})
+
+test('an expect on a macOS window whose bounds the list does not give stops as unverifiable when it is not shot alone', { skip: process.platform !== 'darwin' }, async (t) => {
+  const { bounds: _, ...bare } = win
+  const other = { id: '7/1', title: 'Notes', role: 'window', pid: 4242, active: true, bounds: [0, 0, 800, 600] }
+  const seen = await fresh(t, () => [{ ...bare, active: false }, other], [bare])
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, 'the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: the text is bold')
   assert.deepEqual([seen.shots, seen.asked], [[], []])
 })
