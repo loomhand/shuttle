@@ -6,7 +6,7 @@ import { main } from '../lib/gui_plan.mts'
 import { cut, png, unpng } from '../lib/png.mts'
 
 type Part = string | { image_url?: { url: string } }
-type Seen = { shots: Record<string, unknown>[]; asked: string[]; images: number[][]; grounds: unknown[]; prompts: string[]; clicks: string[]; pressed: string[] }
+type Seen = { shots: Record<string, unknown>[]; asked: string[]; images: number[][]; tones: number[]; grounds: unknown[]; prompts: string[]; clicks: string[]; pressed: string[] }
 
 const usage = { model: 'm', input_tokens: 1, output_tokens: 1, cached_tokens: 0 }
 const bounds = [-1416, 0, 846, 774]
@@ -30,13 +30,14 @@ function size(b64: string): number[] {
   return [p.w, p.h]
 }
 
-async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number; moves?: number[][] } = {}): Promise<Seen> {
-  const seen: Seen = { shots: [], asked: [], images: [], grounds: [], prompts: [], clicks: [], pressed: [] }
+async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; read?: (id: string) => string | { text: string; error: boolean }; pick?: Record<string, number>; truth?: number; moves?: number[][]; readMoves?: number[] } = {}): Promise<Seen> {
+  const seen: Seen = { shots: [], asked: [], images: [], tones: [], grounds: [], prompts: [], clicks: [], pressed: [] }
   let at = bounds
   await daemon(t, ({ tool, args }) => {
     if (tool === 'desk_windows') return JSON.stringify([{ ...win, bounds: at }])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: o.nodes ?? [root] })
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_read' && o.readMoves) at = o.readMoves
     if (tool === 'desk_read' && o.read) return o.read(String(args.id))
     if (tool === 'desk_shot') {
       seen.shots.push(args)
@@ -49,6 +50,7 @@ async function second(t: TestContext, o: { nodes?: unknown[]; window?: Buffer; r
     if (tool === 'model_ask') {
       seen.asked.push(String(args.prompt))
       seen.images.push(...(args.images as string[]).map(size))
+      seen.tones.push(...(args.images as string[]).map((b64) => unpng(Buffer.from(b64, 'base64')).px[0] ?? -1))
       return JSON.stringify({ text: '{"ok": true, "on": true, "why": "it shows"}', usage })
     }
     if (tool === 'model_decide') {
@@ -202,4 +204,15 @@ test('a recorded point fallback places its point by where the window is now, not
   const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', at: [160, 130], size: [800, 600] } }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual([clicks, r.trace?.[0]?.how], [['260,180'], 'point'])
+})
+
+test('a state check crops the control from the window where the window list places it now', async (t) => {
+  const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [-1000, 100, 20, 20] }
+  const px = Buffer.alloc(846 * 774 * 4, 200)
+  for (let y = 0; y < 774; y++) for (let x = 360; x < 376; x++) px.fill(0, (y * 846 + x) * 4, (y * 846 + x) * 4 + 4)
+  let reads = 0
+  const seen = await second(t, { nodes: [root, box], window: png(846, 774, 6, 4, px), readMoves: [-1400, 20, 846, 774], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
+  const r = await main({ steps: [{ verify: 'Bold', on: true }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([seen.images, seen.tones], [[[100, 28]], [0]])
 })
