@@ -319,9 +319,10 @@ test('a state check whose window closed before the read stops and crops no scree
 
 test('an expect that would fall back to the main display while its window is on another one stops as unverifiable', async (t) => {
   const shots: Record<string, unknown>[] = []; const asked: string[] = []
-  const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [-1300, 120, 300, 200] }
+  let at = bounds
   await daemon(t, ({ tool, args }) => {
-    if (tool === 'desk_windows') return JSON.stringify([popup, win])
+    const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: false, bounds: [(at[0] ?? 0) + 116, 120, 300, 200] }
+    if (tool === 'desk_windows') return JSON.stringify([popup, { ...win, bounds: at }])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [root] })
     if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
@@ -333,4 +334,8 @@ test('an expect that would fall back to the main display while its window is on 
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.match(r.escalate?.reason ?? '', /^the condition cannot be checked: "Portal" is on another display than the main one, and another window holds the focus or overlaps it/)
   assert.deepEqual([shots, asked], [[], []])
+  at = [-400, 0, 846, 774]
+  const partly = await main({ steps: [{ expect: 'the completion list is gone' }] })
+  assert.equal(partly.ok, true, JSON.stringify(partly))
+  assert.deepEqual([shots, asked.length], [[{}], 1])
 })
