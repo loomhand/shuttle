@@ -3318,10 +3318,29 @@ mod tests {
         let peer = controlled(&fake.android).await;
         fake.android.owed.store(true, Ordering::Relaxed);
         drop(peer);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fake
+                .android
+                .control
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(Control::is_open)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let (accepted, on_accept) = tokio::sync::oneshot::channel();
+        let (closing, on_close) = tokio::sync::oneshot::channel::<()>();
         let device = tokio::spawn(async move {
-            let (mut fresh, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let _ = accepted.send(());
+            let _ = on_close.await;
             fresh.write_all(&[0]).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 1).len()];
             let read =
@@ -3332,8 +3351,17 @@ mod tests {
         let android = Arc::new(fake.android);
         let paster = Arc::clone(&android);
         let pasting = tokio::spawn(async move { paster.paste("line 2").await });
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        android.close().await;
+        tokio::time::timeout(Duration::from_secs(5), on_accept)
+            .await
+            .unwrap()
+            .unwrap();
+        let closer = Arc::clone(&android);
+        let close = tokio::spawn(async move { closer.close().await });
+        while !android.closed.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+        let _ = closing.send(());
+        close.await.unwrap();
         assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
         assert_eq!(pasting.await.unwrap(), Err(CLOSED.to_owned()));
     }
