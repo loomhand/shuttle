@@ -568,7 +568,12 @@ impl Android {
                 return Err(CLOSED.to_owned());
             }
             if let Err(e) = control.set_clipboard(text).await {
-                *slot = self.open_control().await.ok();
+                let filled = control.filled;
+                *slot = self
+                    .open_control()
+                    .await
+                    .ok()
+                    .map(|fresh| Control { filled, ..fresh });
                 return Err(e);
             }
         }
@@ -3204,6 +3209,31 @@ mod tests {
             "the device got {sent:?}"
         );
         assert_eq!(pasting.await.unwrap(), Err(CLOSED.to_owned()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_after_a_paste_whose_ack_failed_empties_the_clipboard_through_the_new_session()
+    {
+        let fake = Fake::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let mut peer = controlled(&fake.android).await;
+        let device = tokio::spawn(async move {
+            let mut set = vec![0; clipboard_message("secret", 1).len()];
+            peer.read_exact(&mut set).await.unwrap();
+            drop(peer);
+            let (mut fresh, _) = listener.accept().await.unwrap();
+            fresh.write_all(&[0]).await.unwrap();
+            let mut clear = vec![0; clipboard_message("", 1).len()];
+            let read =
+                tokio::time::timeout(Duration::from_secs(5), fresh.read_exact(&mut clear)).await;
+            let _ = fresh.write_all(&ack(1)).await;
+            read.is_ok_and(|r| r.is_ok()).then_some(clear)
+        });
+        assert!(fake.android.paste("secret").await.is_err());
+        fake.android.close().await;
+        assert_eq!(device.await.unwrap(), Some(clipboard_message("", 1)));
     }
 
     #[cfg(unix)]
