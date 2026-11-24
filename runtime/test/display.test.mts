@@ -181,3 +181,25 @@ test('an expect while an untitled popup of the plan window is in front checks th
   assert.deepEqual(shots, [{}])
   assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
 })
+
+test('a recorded point fallback places its point by where the window is now, not where it was at the step start', async (t) => {
+  const clicks: string[] = []
+  let at = [0, 0, 800, 600]
+  const pad = { id: '3/1', title: 'Canvas', role: 'window', pid: process.pid, active: true }
+  const hit = { ref: 1, id: '3/2', parent: 0, depth: 1, role: 'button', name: 'Green', states: [] }
+  const page = { ref: 1, id: '3/3', parent: 0, depth: 1, role: 'document', name: '', states: [] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([{ ...pad, bounds: at }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: pad, truncated: false, nodes: [{ ref: 0, id: '3/1', parent: -1, depth: 0, role: 'window', name: 'Canvas', states: ['showing'] }] })
+    if (tool === 'desk_screen') return '{"width":800,"height":600}'
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 800), Number(args.h ?? 600)).toString('base64') }
+    if (tool === 'model_ground') { at = [100, 50, 800, 600]; return JSON.stringify({ x: 500, y: 300, usage }) }
+    if (tool === 'desk_at') return JSON.stringify({ found: args.x === 260 && args.y === 180 ? hit : page, path: [{ id: '3/1', role: 'window', name: 'Canvas' }], pid: process.pid })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { on: { probability: 0.95 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_click') clicks.push(`${args.x},${args.y}`)
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', at: [160, 130], size: [800, 600] } }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([clicks, r.trace?.[0]?.how], [['260,180'], 'point'])
+})

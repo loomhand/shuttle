@@ -84,7 +84,7 @@ When the accessibility tree has no match for such a click, the step tries, in th
 
 1. the crop, found with a normalized cross-correlation of at least 0.8 on the plan window's own shot on macOS, on any display, or on a screenshot elsewhere ([config.md](config.md#models-bring-your-own-key) says when), when the step's target is the recorded text;
 2. grounding the target, which may land on the window or document itself when `root` is set. On a target with no accessibility element, such as a button drawn on a canvas, grounding can click a control that looks like the target, or one it takes for a target that is not there; the step's `after` stops the plan then, but the click has happened;
-3. the recorded point in the window, when the step's target is the recorded text and the window has the recorded size, within 2 desk units (macOS, where windows have `bounds`).
+3. the recorded point in the window, when the step's target is the recorded text and the window has the recorded size, within 2 desk units (macOS, where windows have `bounds`), placed by the window's bounds as a new window list reads them, and skipped when the window is no longer listed.
 
 A target that a parameter changed skips the crop and the point, since both show the recorded target. Each point must pass the hit test of a grounded click: inside the plan's window or a window it owns, under no other window. The trace names the one that clicked in `how`: `crop`, `ground` or `point`. A click without `recorded` grounds as before and refuses a point on a window or document root.
 
