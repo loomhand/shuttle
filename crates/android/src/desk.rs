@@ -38,6 +38,7 @@ const UNSETTLED: &str = "the device lists no window in front at this moment, as 
 const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
 const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
 const STILL_LISTED: &str = "the window was sent the back key and is still listed 1 s later, while the device lists no window in front: read the window list before closing again";
+const LEFT_EMPTY: &str = "the window was sent the back key and left the window list with no window in front, so it may still be open: read the window list before closing again";
 const STILL_OPEN: &str = "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again";
 
 /// One element of a window as the desk and computer_state show it.
@@ -137,6 +138,7 @@ pub(crate) struct Frame {
     package: String,
     title: String,
     dialog: bool,
+    system: bool,
     pid: u32,
     active: bool,
     guessed: bool,
@@ -380,7 +382,7 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                         e
                     }
                 })?;
-                stayed = still_open(android, &frame.id).await?;
+                stayed = still_open(android, &frame).await?;
             }
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
@@ -498,6 +500,7 @@ fn frames_of(list: Vec<WindowInfo>, screen: (i32, i32)) -> Vec<Frame> {
             Frame {
                 covers,
                 keyboard,
+                system: w.kind != APPLICATION,
                 guessed,
                 ..frame(w, alone, screen)
             }
@@ -520,7 +523,7 @@ fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
 /// A window short of the screen is a dialog over another window; alone it is an activity in a transition.
 fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
     let [l, t, r, b] = w.bounds;
-    let full = alone || (r - l >= screen.0 && b - t >= screen.1 * 9 / 10);
+    let full = alone || fills([l, t, r - l, b - t], screen);
     let title = if w.title.trim().is_empty() || w.title == w.package {
         w.package.clone()
     } else {
@@ -537,6 +540,10 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         screen,
         ..Frame::default()
     }
+}
+
+fn fills([_, _, w, h]: [i32; 4], (sw, sh): (i32, i32)) -> bool {
+    w >= sw && h >= sh * 9 / 10
 }
 
 /// A stable stand-in pid for an Android package, above Linux's pid range so it names no host process.
@@ -1180,20 +1187,33 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String>
     ))
 }
 
-async fn still_open(android: &Android, id: &str) -> Result<Option<String>, String> {
-    let (mut active, mut front) = (true, None);
+async fn still_open(android: &Android, closing: &Frame) -> Result<Option<String>, String> {
+    let (mut active, mut front, mut left) = (true, None, None);
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
         let frames = frames(android)
             .await
             .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
-        let Some(own) = frames.iter().find(|f| f.id == id) else {
-            return Ok(None);
+        let Some(own) = frames.iter().find(|f| f.id == closing.id) else {
+            let top = frames.into_iter().find(|f| f.active && !f.guessed);
+            if top.as_ref().is_some_and(|f| {
+                !f.system && (f.package != closing.package || fills(f.bounds, f.screen))
+            }) {
+                return Ok(None);
+            }
+            left = Some(top);
+            continue;
         };
-        active = own.active && !own.guessed;
+        (active, left) = (own.active && !own.guessed, None);
         front = frames
             .into_iter()
-            .find(|f| f.active && !f.guessed && f.id != id);
+            .find(|f| f.active && !f.guessed && f.id != closing.id);
+    }
+    if let Some(top) = left {
+        return Ok(Some(top.map_or_else(|| LEFT_EMPTY.to_owned(), |f| format!(
+            "the window was sent the back key and left the window list, but {:?} came to the front, not another app, so it may still be open: read the window list before closing again",
+            f.title
+        ))));
     }
     Ok(Some(match (active, front) {
         (true, _) => STILL_OPEN.to_owned(),

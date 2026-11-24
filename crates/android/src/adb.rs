@@ -2416,6 +2416,73 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn closed_into(after: &str) -> (serde_json::Value, String) {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
+        fake.put("after-input.json", &format!("[{bar}{after}]"));
+        let out = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        (out, log(&fake, "requests"))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_whose_window_leaves_the_list_under_a_dialog_of_its_app_says_it_may_still_be_open()
+     {
+        let (out, requests) = closed_into(r#",{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}"#).await;
+        assert_eq!(
+            out["unverified"],
+            "the window was sent the back key and left the window list, but \"com.android.settings\" came to the front, not another app, so it may still be open: read the window list before closing again",
+            "{out}"
+        );
+        assert_eq!(requests.matches("windows").count(), 11, "{requests}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_whose_window_leaves_the_list_under_the_notification_shade_says_it_may_still_be_open()
+     {
+        let (out, _) = closed_into(r#",{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
+        assert_eq!(
+            out["unverified"],
+            "the window was sent the back key and left the window list, but \"Shade - com.android.systemui\" came to the front, not another app, so it may still be open: read the window list before closing again",
+            "{out}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_whose_window_loses_its_package_as_the_screen_goes_off_says_it_may_still_be_open()
+     {
+        let (out, _) = closed_into(r#",{"id":7,"type":1,"layer":0,"title":"Settings","package":"","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
+        assert_eq!(
+            out["unverified"],
+            "the window was sent the back key and left the window list with no window in front, so it may still be open: read the window list before closing again",
+            "{out}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_to_another_app_or_a_full_screen_window_of_its_own_app_is_closed_at_once() {
+        for after in [
+            r#",{"id":3,"type":1,"layer":0,"title":"","package":"com.android.launcher3","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
+            r#",{"id":13,"type":1,"layer":0,"title":"Network","package":"com.android.settings","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
+        ] {
+            let (out, requests) = closed_into(after).await;
+            assert!(out.get("unverified").is_none(), "{out}");
+            assert_eq!(requests, "windows\nkey 4\nwindows\n");
+        }
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_close_whose_window_stays_listed_with_no_window_in_front_says_only_that_it_is_listed()
     {
