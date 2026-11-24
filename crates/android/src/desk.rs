@@ -462,18 +462,22 @@ pub(crate) async fn screen(android: &Android) -> Result<(i32, i32), String> {
 
 /// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
 async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
-    let natural = android.natural().await?;
     let mut shown = Vec::new();
     for _ in 0..SWITCH_POLLS {
-        let list = window_list(android).await?;
-        let screen = turned(natural, &list);
-        shown = frames_of(list, screen);
+        shown = frames_now(android).await?;
         if !shown.is_empty() {
             break;
         }
         tokio::time::sleep(FOCUS_POLL).await;
     }
     Ok(shown)
+}
+
+async fn frames_now(android: &Android) -> Result<Vec<Frame>, String> {
+    let natural = android.natural().await?;
+    let list = window_list(android).await?;
+    let screen = turned(natural, &list);
+    Ok(frames_of(list, screen))
 }
 
 async fn window_list(android: &Android) -> Result<Vec<WindowInfo>, String> {
@@ -1172,7 +1176,7 @@ async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<Option<Option
     let mut gone = None;
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
-        let frames = frames(android).await.map_err(|e| {
+        let frames = frames_now(android).await.map_err(|e| {
             format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
         })?;
         let Some(own) = frames.iter().position(|f| f.id == frame.id) else {
@@ -1228,7 +1232,7 @@ async fn still_open(android: &Android, closing: &Frame) -> Result<Option<String>
     let (mut active, mut front, mut gone) = (true, None, None);
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
-        let frames = frames(android)
+        let frames = frames_now(android)
             .await
             .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
         let Some(own) = frames.iter().find(|f| f.id == closing.id) else {

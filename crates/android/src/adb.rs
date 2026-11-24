@@ -2500,6 +2500,28 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn a_close_into_an_empty_window_list_reads_the_list_once_per_poll() {
+        let fake = Fake::new();
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        fake.put("after-input.json", "[]");
+        let out = desk(
+            &fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            out["unverified"],
+            "the window was sent the back key and left the window list with no window in front, so it may still be open: read the window list before closing again",
+            "{out}"
+        );
+        assert_eq!(log(&fake, "requests").matches("windows").count(), 11);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn a_close_to_another_app_or_a_full_screen_window_of_its_own_app_is_closed_at_once() {
         for after in [
             r#",{"id":3,"type":1,"layer":0,"title":"","package":"com.android.launcher3","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
