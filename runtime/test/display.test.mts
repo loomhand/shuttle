@@ -339,3 +339,22 @@ test('an expect that would fall back to the main display while its window is on 
   assert.equal(partly.ok, true, JSON.stringify(partly))
   assert.deepEqual([shots, asked.length], [[{}], 1])
 })
+
+test('an expect on a window that straddles the main display with a focused untitled popup over it keeps the screen shot', async (t) => {
+  const shots: Record<string, unknown>[] = []; const asked: string[] = []
+  const here = { ...win, active: false, bounds: [-300, 100, 846, 774] }
+  const popup = { id: '9/1', title: '', role: 'window', pid: process.pid, active: true, bounds: [-100, 300, 300, 200] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([popup, here])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: here, truncated: false, nodes: [root] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_shot') { shots.push(args); return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') } }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "the list shows apple"}', usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: "the suggestions show 'apple'" }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual([shots, asked.length], [[{}], 1])
+  assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
+})
