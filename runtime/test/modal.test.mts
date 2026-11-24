@@ -200,3 +200,27 @@ test('an Android close step sends no Escape before its close, so a back that tak
   assert.equal(r.escalate?.reason, `"Find" may still be open after its close: ${note}`)
   assert.deepEqual(calls.filter((c) => c === 'desk_key' || c === 'desk_close'), ['desk_close'])
 })
+
+async function deviceClose(t: TestContext, stays: boolean) {
+  const mode = `android-close-id-${stays}`
+  process.env.SHUTTLE_DESK = 'android'
+  let device: typeof main
+  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
+  const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+  const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }
+  let open = true
+  const sent: Record<string, unknown>[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(open ? [editor, find] : [{ ...editor, active: true }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+    if (tool === 'desk_close') { sent.push(args); open = stays }
+    return '{"ok":true}'
+  })
+  return { r: await device({ steps: [{ close: true }] }), sent }
+}
+
+test('an Android close step names the window it picked by id', async (t) => {
+  const { r, sent } = await deviceClose(t, false)
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent, [{ window: 'Find', pid: process.pid, id: '2' }])
+})
