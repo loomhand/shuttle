@@ -564,6 +564,9 @@ impl Android {
                 Some(control) if control.is_open() => slot.insert(control),
                 _ => slot.insert(self.open_control().await?),
             };
+            if self.closed.load(Ordering::Relaxed) {
+                return Err(CLOSED.to_owned());
+            }
             if let Err(e) = control.set_clipboard(text).await {
                 *slot = self.open_control().await.ok();
                 return Err(e);
@@ -3174,6 +3177,33 @@ mod tests {
         let sent = tokio::time::timeout(Duration::from_secs(5), device).await;
         assert_eq!(sent.unwrap().unwrap(), clipboard_message("", 1));
         assert!(android.control.lock().await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_close_during_a_slow_first_session_start_lets_the_paste_send_no_text() {
+        let fake = Fake::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        fake.put("port", &listener.local_addr().unwrap().port().to_string());
+        let device = tokio::spawn(async move {
+            let (mut peer, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(CLOSE_WAIT + Duration::from_millis(500)).await;
+            peer.write_all(&[0]).await.unwrap();
+            let mut buf = [0; 64];
+            let sent = tokio::time::timeout(Duration::from_secs(1), peer.read(&mut buf)).await;
+            sent.ok().and_then(Result::ok).map(|n| buf[..n].to_vec())
+        });
+        let android = Arc::new(fake.android);
+        let paster = Arc::clone(&android);
+        let pasting = tokio::spawn(async move { paster.paste("secret").await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        android.close().await;
+        let sent = device.await.unwrap();
+        assert!(
+            sent.as_deref().is_none_or(|b| b.is_empty()),
+            "the device got {sent:?}"
+        );
+        assert_eq!(pasting.await.unwrap(), Err(CLOSED.to_owned()));
     }
 
     #[cfg(unix)]
