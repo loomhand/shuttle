@@ -1421,6 +1421,7 @@ async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), 
 mod tests {
     use super::*;
 
+    const BAR: &str = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
     const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
 
     #[test]
@@ -2416,32 +2417,17 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn closed_into(after: &str) -> (serde_json::Value, String) {
-        let fake = Fake::new();
-        fake.put("inject.answer", "true");
-        fake.windows("");
-        let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
-        fake.put("after-input.json", &format!("[{bar}{after}]"));
-        let out = desk(
-            &fake,
-            "desk_close",
-            serde_json::json!({"window": "Settings"}),
-        )
-        .await
-        .unwrap();
-        (out, log(&fake, "requests"))
-    }
-
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_close_whose_window_leaves_the_list_under_a_dialog_of_its_app_says_it_may_still_be_open()
      {
-        let (out, requests) = closed_into(r#",{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}"#).await;
+        let fake = Fake::new();
+        let out = closed_into(&fake, r#",{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}"#).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list, but \"com.android.settings\" came to the front, not another app, so it may still be open: read the window list before closing again",
             "{out}"
         );
+        let requests = log(&fake, "requests");
         assert_eq!(requests.matches("windows").count(), 11, "{requests}");
     }
 
@@ -2449,7 +2435,7 @@ mod tests {
     #[tokio::test]
     async fn a_close_whose_window_leaves_the_list_under_the_notification_shade_says_it_may_still_be_open()
      {
-        let (out, _) = closed_into(r#",{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
+        let out = closed_into(&Fake::new(), r#",{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list, but \"Shade - com.android.systemui\" came to the front, not another app, so it may still be open: read the window list before closing again",
@@ -2461,7 +2447,7 @@ mod tests {
     #[tokio::test]
     async fn a_close_whose_window_loses_its_package_as_the_screen_goes_off_says_it_may_still_be_open()
      {
-        let (out, _) = closed_into(r#",{"id":7,"type":1,"layer":0,"title":"Settings","package":"","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
+        let out = closed_into(&Fake::new(), r#",{"id":7,"type":1,"layer":0,"title":"Settings","package":"","active":true,"focused":true,"bounds":[0,0,720,1280]}"#).await;
         assert_eq!(
             out["unverified"],
             "the window was sent the back key and left the window list with no window in front, so it may still be open: read the window list before closing again",
@@ -2476,11 +2462,10 @@ mod tests {
         let fake = Fake::new();
         fake.put("inject.answer", "true");
         fake.windows("keyboard");
-        let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
         fake.put(
             "after-input.json",
             &format!(
-                r#"[{bar},{{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}}]"#
+                r#"[{BAR},{{"id":12,"type":1,"layer":0,"title":"","package":"com.android.settings","active":true,"focused":true,"bounds":[18,480,702,752]}}]"#
             ),
         );
         let out = desk(
@@ -2527,9 +2512,10 @@ mod tests {
             r#",{"id":3,"type":1,"layer":0,"title":"","package":"com.android.launcher3","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
             r#",{"id":13,"type":1,"layer":0,"title":"Network","package":"com.android.settings","active":true,"focused":true,"bounds":[0,0,720,1280]}"#,
         ] {
-            let (out, requests) = closed_into(after).await;
+            let fake = Fake::new();
+            let out = closed_into(&fake, after).await;
             assert!(out.get("unverified").is_none(), "{out}");
-            assert_eq!(requests, "windows\nkey 4\nwindows\n");
+            assert_eq!(log(&fake, "requests"), "windows\nkey 4\nwindows\n");
         }
     }
 
@@ -4658,6 +4644,20 @@ mod tests {
     }
 
     #[cfg(unix)]
+    async fn closed_into(fake: &Fake, after: &str) -> Value {
+        fake.put("inject.answer", "true");
+        fake.windows("");
+        fake.put("after-input.json", &format!("[{BAR}{after}]"));
+        desk(
+            fake,
+            "desk_close",
+            serde_json::json!({"window": "Settings"}),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[cfg(unix)]
     fn focused(id: i64, text: &str) -> String {
         format!(
             r#"{{"editable":true,"password":false,"window":true,"id":{id},"len":{},"hash":{},"tail":"{text}","bounds":[0,0,720,100]}}"#,
@@ -4710,14 +4710,13 @@ mod tests {
                     r#"{{"id":7,"type":1,"layer":0,"title":"Settings","package":"com.android.settings","active":{active},"focused":{active},"bounds":[0,0,720,1280]}}"#
                 )
             };
-            let bar = r#"{"id":5,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,1184,720,1280]}"#;
             let list = match layout {
                 "shade" => format!(
-                    r#"[{bar},{{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}},{}]"#,
+                    r#"[{BAR},{{"id":9,"type":3,"layer":4,"title":"Shade","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,0,720,1280]}},{}]"#,
                     app(false)
                 ),
                 "keyboard" => format!(
-                    r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{bar},{}]"#,
+                    r#"[{{"id":8,"type":2,"layer":3,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,700,720,1184]}},{BAR},{}]"#,
                     app(true)
                 ),
                 "landscape" => format!(
@@ -4725,8 +4724,8 @@ mod tests {
                     app(true).replace("[0,0,720,1280]", "[0,0,1280,720]")
                 ),
                 "none" => "[]".to_owned(),
-                "unsettled" => format!("[{bar},{}]", app(false)),
-                _ => format!("[{bar},{}]", app(true)),
+                "unsettled" => format!("[{BAR},{}]", app(false)),
+                _ => format!("[{BAR},{}]", app(true)),
             };
             self.put("windows.json", &list);
         }

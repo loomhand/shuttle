@@ -536,7 +536,8 @@ fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
 /// A window short of the screen is a dialog over another window; alone it is an activity in a transition.
 fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
     let [l, t, r, b] = w.bounds;
-    let full = alone || fills([l, t, r - l, b - t], screen);
+    let bounds = [l, t, r - l, b - t];
+    let full = alone || fills(bounds, screen);
     let title = if w.title.trim().is_empty() || w.title == w.package {
         w.package.clone()
     } else {
@@ -549,7 +550,7 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         title,
         dialog: !full,
         active: w.active,
-        bounds: [l, t, r - l, b - t],
+        bounds,
         screen,
         ..Frame::default()
     }
