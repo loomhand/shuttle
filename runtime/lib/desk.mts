@@ -57,7 +57,7 @@ export const typeText = async (text: string, to: Target = {}): Promise<Sent> => 
 export const chooserName = async (text: string, to: Target): Promise<Sent & { pressed?: string }> => ran(await call('type', { text, ...target(to), chooser: true }))
 export const click = async (x: number, y: number, o: { button?: string; count?: number; modifiers?: string[] } & Target = {}): Promise<Sent> => ran(await call('click', { x, y, ...o, pid: o.pid ?? undefined }))
 export const focus = (window: string, pid?: number | null, id?: string): Promise<{ ok: boolean; title: string; pid: number | null; path?: string; front?: number | null }> => call('focus', { window, pid: pid ?? undefined, id })
-export const close = (window: string, pid?: number | null, id?: string): Promise<unknown> => call('close', { window, pid: pid ?? undefined, id })
+export const close = (window: string, pid?: number | null, id?: string): Promise<{ unverified?: string }> => call('close', { window, pid: pid ?? undefined, id })
 export const launch = (app: string, args?: string[]): Promise<{ ok: boolean; launched: string; background?: boolean; running?: boolean; title?: string; pid?: number | null }> => call('launch', { app, args })
 /** Turns a browser's web accessibility tree on or off; `was` is its state before. */
 export const web = (pid: number, on: boolean): Promise<{ ok: boolean; was: boolean }> => call('web', { pid, on })

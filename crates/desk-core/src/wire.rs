@@ -11,6 +11,8 @@ pub use zeroize::Zeroizing;
 
 /// The text of a call that succeeds with nothing to report.
 pub const OK: &str = r#"{"ok":true}"#;
+/// The environment variable that holds the bearer token every HTTP request must carry, which no child of the daemon gets.
+pub const MCP_TOKEN_ENV: &str = "SHUTTLE_MCP_TOKEN";
 pub const INTO_PASSWORD_FIELD: &str = " (into a password field)";
 pub const CHOOSER_WINDOWS: &str =
     "chooser: true sets a file name through UI Automation on Windows only, so nothing was sent";

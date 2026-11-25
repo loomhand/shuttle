@@ -35,6 +35,10 @@ const APPLICATION: &str = "org.a11y.atspi.Application";
 const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
+const STALE: [&str; 2] = [
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.DBus.Error.UnknownMethod",
+];
 const GONE: [&str; 2] = [
     "org.freedesktop.DBus.Error.ServiceUnknown",
     "org.freedesktop.DBus.Error.NameHasNoOwner",
@@ -1362,6 +1366,7 @@ fn read_into<T>(
             Ok(v) => {
                 into.insert(o, v);
             }
+            Err(e) if STALE.iter().any(|s| e.contains(s)) => {}
             Err(_) => cut = true,
         }
     }
@@ -1701,6 +1706,38 @@ mod tests {
             ),
             ("Three", false, 4)
         );
+    }
+
+    #[test]
+    fn a_listed_child_that_no_longer_exists_is_left_out_without_cutting_the_tree() {
+        let o = |p: &str| Rc::new(Obj::at(":1.9", &format!("{PATH_PREFIX}/{p}")));
+        let call = zbus::Message::method_call(ROOT, "GetRole")
+            .unwrap()
+            .build(&())
+            .unwrap();
+        let stale = |name: &str| {
+            let reply = zbus::Error::from(
+                zbus::Message::error(&call.header(), name)
+                    .unwrap()
+                    .build(&("no such object",))
+                    .unwrap(),
+            );
+            failed(&o("c2"), ACCESSIBLE, "GetRole", &reply)
+        };
+        let r = Raw {
+            role: 33,
+            name: "One".to_owned(),
+            ..Raw::default()
+        };
+        for name in STALE {
+            let mut raw = HashMap::new();
+            let fetched = [(o("c1"), Ok(r.clone())), (o("c2"), Err(stale(name)))];
+            assert!(!read_into(&mut raw, fetched), "{name}");
+            assert_eq!(
+                (raw.contains_key(&o("c1")), raw.contains_key(&o("c2"))),
+                (true, false)
+            );
+        }
     }
 
     #[test]

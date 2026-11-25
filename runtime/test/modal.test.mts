@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 
 import { daemon } from './daemon.mts'
 import { main } from '../lib/gui_plan.mts'
@@ -137,4 +137,89 @@ test('a close step with no window in front and a window listed as not answering 
   assert.equal(r.ok, false, JSON.stringify(r))
   assert.equal(r.escalate?.reason, 'no window is in front, and "~/a.txt - Mousepad" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app')
   assert.ok(!calls.includes('desk_key') && !calls.includes('desk_close'), calls.join(' '))
+})
+
+async function unconfirmed(t: TestContext, note: string) {
+  const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+  const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }
+  let open = true
+  const calls: string[] = []
+  await daemon(t, ({ tool }) => {
+    calls.push(tool)
+    if (tool === 'desk_windows') return JSON.stringify(open ? [editor, find] : [{ ...editor, active: true }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+    if (tool === 'desk_close') { open = false; return JSON.stringify({ ok: true, title: 'Find', unverified: note }) }
+    return '{"ok":true}'
+  })
+  return calls
+}
+
+test('an Android close step whose close answers unverified stops with that note and sends nothing after it', async (t) => {
+  const note = 'the window was sent the back key and left the window list, but "com.android.settings" came to the front, not another app, so it may still be open: read the window list before closing again'
+  const mode = 'android-close'
+  process.env.SHUTTLE_DESK = 'android'
+  let device: typeof main
+  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
+  const calls = await unconfirmed(t, note)
+  const r = await device({ steps: [{ close: true }, { key: 'Return' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, `"Find" may still be open after its close: ${note}`)
+  assert.deepEqual(calls.filter((c) => c === 'desk_key' || c === 'desk_close'), ['desk_close'])
+})
+
+test('a desktop close step whose close answers unverified passes once the window leaves the list', async (t) => {
+  const calls = await unconfirmed(t, 'the window did not answer the close within 500 ms, so it may still be closing, be asking to save, or not respond: read the window list before closing again')
+  const r = await main({ steps: [{ close: true }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.ok(calls.includes('desk_close'), calls.join(' '))
+})
+
+async function deviceClose(t: TestContext, stays: boolean) {
+  const mode = `android-close-id-${stays}`
+  process.env.SHUTTLE_DESK = 'android'
+  let device: typeof main
+  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
+  const editor = { id: '1', title: 'a.txt - Editor', role: 'window', pid: process.pid, active: false }
+  const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: true }
+  let open = true
+  const sent: Record<string, unknown>[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify(open ? [editor, find] : [{ ...editor, active: true }])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: find, truncated: false, nodes: [{ ref: 0, id: '2/1', parent: -1, depth: 0, role: 'dialog', name: 'Find', states: ['showing'] }] })
+    if (tool === 'desk_close') { sent.push(args); open = stays }
+    return '{"ok":true}'
+  })
+  return { r: await device({ steps: [{ close: true }] }), sent }
+}
+
+test('an Android close step names the window it picked by id', async (t) => {
+  const { r, sent } = await deviceClose(t, false)
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.deepEqual(sent, [{ window: 'Find', pid: process.pid, id: '2' }])
+})
+
+test('an Android close step whose window stays says it is still open after a close, with no Escape in the text', async (t) => {
+  const { r } = await deviceClose(t, true)
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.equal(r.escalate?.reason, '"Find" is still open after a close')
+})
+
+test('an Android close step that names a window behind another app focuses it by id and stops at the device\'s refusal', async (t) => {
+  const mode = 'android-close-named'
+  process.env.SHUTTLE_DESK = 'android'
+  let device: typeof main
+  try { device = ((await import(`../lib/gui_plan.mts?${mode}`)) as { main: typeof main }).main } finally { delete process.env.SHUTTLE_DESK }
+  const home = { id: '7', title: 'Home', role: 'window', pid: 4242, active: true }
+  const find = { id: '2', title: 'Find', role: 'dialog', pid: process.pid, active: false }
+  const refused = 'Find is not in front, and a device brings a window to the front only by launching its app'
+  const focused: Record<string, unknown>[] = []
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([home, find])
+    if (tool === 'desk_focus') { focused.push(args); return { text: refused, error: true } }
+    return '{"ok":true}'
+  })
+  const r = await device({ steps: [{ close: true, window: 'Find' }] })
+  assert.equal(r.ok, false, JSON.stringify(r))
+  assert.deepEqual(focused, [{ window: 'Find', pid: process.pid, id: '2' }])
+  assert.match(r.escalate?.reason ?? r.error ?? '', new RegExp(refused))
 })

@@ -112,10 +112,7 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
     if let Some(app) = app_bundle(&exe) {
         let _ = std::fs::remove_file(failed(endpoint));
         // TCC attributes a daemon LaunchServices starts to its app, not to the terminal or agent that runs `mcp`
-        let status = Command::new("open")
-            .args(["-n", "-g", "-a"])
-            .arg(app)
-            .args(["--args", "serve", endpoint])
+        let status = open_command(app, endpoint)
             .status()
             .await
             .map_err(|e| format!("start the daemon: {e}"))?;
@@ -130,9 +127,19 @@ async fn start(endpoint: &str) -> Result<Option<Child>, String> {
         .map_err(|e| format!("start the daemon: {e}"))
 }
 
+fn open_command(app: &Path, endpoint: &str) -> Command {
+    let mut cmd = Command::new("open");
+    cmd.args(["-n", "-g", "-a"])
+        .arg(app)
+        .args(["--args", "serve", endpoint])
+        .env_remove(crate::http::TOKEN_ENV);
+    cmd
+}
+
 fn daemon(exe: &Path, endpoint: &str) -> Command {
     let mut cmd = Command::new(exe);
     cmd.args(["serve", endpoint])
+        .env_remove(crate::http::TOKEN_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -167,6 +174,32 @@ mod tests {
     use desk_core::wire::read_frame;
 
     use super::*;
+
+    #[test]
+    fn the_daemon_starts_without_the_http_token_its_children_would_inherit() {
+        let cmd = daemon(Path::new("/bin/true"), "desk.sock");
+        let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
+        assert!(
+            cmd.as_std()
+                .get_envs()
+                .any(|(k, v)| k == token && v.is_none()),
+            "{:?}",
+            cmd.as_std().get_envs().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_app_bundle_daemon_starts_through_open_without_the_http_token() {
+        let cmd = open_command(Path::new("/Applications/Shuttle.app"), "desk.sock");
+        let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
+        assert!(
+            cmd.as_std()
+                .get_envs()
+                .any(|(k, v)| k == token && v.is_none()),
+            "{:?}",
+            cmd.as_std().get_envs().collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn only_a_macos_binary_inside_an_app_bundle_starts_through_its_app() {

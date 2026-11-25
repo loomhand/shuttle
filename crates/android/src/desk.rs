@@ -37,6 +37,10 @@ const WAIT_POLL: Duration = Duration::from_millis(10);
 const UNSETTLED: &str = "the device lists no window in front at this moment, as while a window opens or closes, so the input was refused: retry once the screen settles";
 const FRONT_BY_PID: &str = "input on a device reaches only the front window, so send it with pid alone, which reaches the one of them in front";
 const FRONT_BY_ITS_PID: &str = "input on a device reaches only the front window, so send it with the window's pid from desk windows alone, which reaches the one of them in front";
+const STILL_LISTED: &str = "the window was sent the back key and is still listed 1 s later, while the device lists no window in front: read the window list before closing again";
+const BACK_SENT: &str = "the window was sent the back key and left the window list";
+const KEYBOARD_SENT: &str =
+    "only the back key that hides the keyboard was sent, and the window left the window list";
 const STILL_OPEN: &str = "the window was sent the back key and is still open in front 1 s later, so a popup may have taken the key, or the app keeps the window open on back: read the window list before closing again";
 
 /// One element of a window as the desk and computer_state show it.
@@ -136,6 +140,7 @@ pub(crate) struct Frame {
     package: String,
     title: String,
     dialog: bool,
+    system: bool,
     pid: u32,
     active: bool,
     guessed: bool,
@@ -155,9 +160,10 @@ impl Frame {
     }
 
     pub(crate) fn settled(&self) -> Result<(), String> {
-        match self.guessed {
-            true => Err(UNSETTLED.to_owned()),
-            false => Ok(()),
+        if self.guessed {
+            Err(UNSETTLED.to_owned())
+        } else {
+            Ok(())
         }
     }
 
@@ -369,21 +375,28 @@ pub async fn run(android: &Android, verb: &str, args: Value) -> Result<Output, S
                     frame.title
                 ));
             }
-            let mut stayed = false;
-            if !frame.keyboard || hide_keyboard(android, &frame).await? {
-                android
-                    .keys("back")
-                    .await
-                    .map_err(|e| match frame.keyboard {
-                        true => format!("{e}; a back key had hidden the keyboard before it"),
-                        false => e,
+            let hidden = if frame.keyboard {
+                hide_keyboard(android, &frame).await?
+            } else {
+                None
+            };
+            let stayed = match hidden {
+                Some(stayed) => stayed,
+                None => {
+                    android.keys("back").await.map_err(|e| {
+                        if frame.keyboard {
+                            format!("{e}; a back key had hidden the keyboard before it")
+                        } else {
+                            e
+                        }
                     })?;
-                stayed = still_in_front(android, &frame.id).await?;
-            }
+                    still_open(android, &frame).await?
+                }
+            };
             let mut out = json!({"ok": true});
             out["title"] = frame.title.into();
-            if stayed {
-                out["unverified"] = STILL_OPEN.into();
+            if let Some(note) = stayed {
+                out["unverified"] = note.into();
             }
             out.to_string()
         }
@@ -449,18 +462,22 @@ pub(crate) async fn screen(android: &Android) -> Result<(i32, i32), String> {
 
 /// The listed windows, the front one active; an activity switch lists none for a moment, which this waits out.
 async fn frames(android: &Android) -> Result<Vec<Frame>, String> {
-    let natural = android.natural().await?;
     let mut shown = Vec::new();
     for _ in 0..SWITCH_POLLS {
-        let list = window_list(android).await?;
-        let screen = turned(natural, &list);
-        shown = frames_of(list, screen);
+        shown = frames_now(android).await?;
         if !shown.is_empty() {
             break;
         }
         tokio::time::sleep(FOCUS_POLL).await;
     }
     Ok(shown)
+}
+
+async fn frames_now(android: &Android) -> Result<Vec<Frame>, String> {
+    let natural = android.natural().await?;
+    let list = window_list(android).await?;
+    let screen = turned(natural, &list);
+    Ok(frames_of(list, screen))
 }
 
 async fn window_list(android: &Android) -> Result<Vec<WindowInfo>, String> {
@@ -518,7 +535,8 @@ fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
 /// A window short of the screen is a dialog over another window; alone it is an activity in a transition.
 fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
     let [l, t, r, b] = w.bounds;
-    let full = alone || (r - l >= screen.0 && b - t >= screen.1 * 9 / 10);
+    let bounds = [l, t, r - l, b - t];
+    let full = alone || fills(bounds, screen);
     let title = if w.title.trim().is_empty() || w.title == w.package {
         w.package.clone()
     } else {
@@ -530,11 +548,16 @@ fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
         package: w.package,
         title,
         dialog: !full,
+        system: w.kind != APPLICATION,
         active: w.active,
-        bounds: [l, t, r - l, b - t],
+        bounds,
         screen,
         ..Frame::default()
     }
+}
+
+fn fills([_, _, w, h]: [i32; 4], (sw, sh): (i32, i32)) -> bool {
+    w >= sw && h >= sh * 9 / 10
 }
 
 /// A stable stand-in pid for an Android package, above Linux's pid range so it names no host process.
@@ -1149,46 +1172,85 @@ fn named(frames: Vec<Frame>, a: &WindowArgs) -> Result<Frame, String> {
     Ok(frame)
 }
 
-async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<bool, String> {
+async fn hide_keyboard(android: &Android, frame: &Frame) -> Result<Option<Option<String>>, String> {
     android.keys("back").await?;
+    let mut gone = None;
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
-        match frames(android)
-            .await
-            .map_err(|e| {
-                format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
-            })?
-            .into_iter()
-            .find(|f| f.id == frame.id)
-        {
-            None => return Ok(false),
-            Some(f) if f.keyboard || f.guessed => {}
-            Some(f) if f.active => return Ok(true),
-            Some(_) => {
-                return Err(format!(
-                    "{} left the front after a back key to hide the keyboard, so no closing back was sent",
-                    frame.title
-                ));
+        let frames = frames_now(android).await.map_err(|e| {
+            format!("{e}, after a back key to hide the keyboard, so no closing back was sent")
+        })?;
+        let Some(own) = frames.iter().find(|f| f.id == frame.id) else {
+            match unverified(frames, frame, KEYBOARD_SENT) {
+                None => return Ok(Some(None)),
+                note => gone = note,
             }
+            continue;
+        };
+        gone = None;
+        if own.keyboard || own.guessed {
+            continue;
         }
+        if own.active {
+            return Ok(None);
+        }
+        return Err(format!(
+            "{} left the front after a back key to hide the keyboard, so no closing back was sent",
+            frame.title
+        ));
     }
-    Err(format!(
-        "the keyboard stayed up after a back key, so {} was not closed",
-        frame.title
-    ))
+    match gone {
+        Some(note) => Ok(Some(Some(note))),
+        None => Err(format!(
+            "the keyboard stayed up after a back key, so {} was not closed",
+            frame.title
+        )),
+    }
 }
 
-async fn still_in_front(android: &Android, id: &str) -> Result<bool, String> {
+fn unverified(frames: Vec<Frame>, closing: &Frame, sent: &str) -> Option<String> {
+    match frames.into_iter().find(|f| f.active && !f.guessed) {
+        Some(f) if !f.system && (f.package != closing.package || fills(f.bounds, f.screen)) => None,
+        Some(f) => Some(format!(
+            "{sent}, but {:?} came to the front, not another app, so it may still be open: read the window list before closing again",
+            f.title
+        )),
+        None => Some(format!(
+            "{sent} with no window in front, so it may still be open: read the window list before closing again"
+        )),
+    }
+}
+
+async fn still_open(android: &Android, closing: &Frame) -> Result<Option<String>, String> {
+    let (mut active, mut front, mut gone) = (true, None, None);
     for _ in 0..SWITCH_POLLS {
         tokio::time::sleep(FOCUS_POLL).await;
-        let frames = frames(android)
+        let frames = frames_now(android)
             .await
             .map_err(|e| format!("{e}; the closing back key was sent before it"))?;
-        if !frames.iter().any(|f| f.id == id && f.active) {
-            return Ok(false);
-        }
+        let Some(own) = frames.iter().find(|f| f.id == closing.id) else {
+            match unverified(frames, closing, BACK_SENT) {
+                None => return Ok(None),
+                note => gone = note,
+            }
+            continue;
+        };
+        (active, gone) = (own.active && !own.guessed, None);
+        front = frames
+            .into_iter()
+            .find(|f| f.active && !f.guessed && f.id != closing.id);
     }
-    Ok(true)
+    if gone.is_some() {
+        return Ok(gone);
+    }
+    Ok(Some(match (active, front) {
+        (true, _) => STILL_OPEN.to_owned(),
+        (false, Some(f)) => format!(
+            "the window was sent the back key and is still open behind {:?}, which came to the front: read that window before closing again",
+            f.title
+        ),
+        (false, None) => STILL_LISTED.to_owned(),
+    }))
 }
 
 /// The window `window` names, which must be in front; a package name without a window starts its app.

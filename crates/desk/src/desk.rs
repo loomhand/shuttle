@@ -1589,7 +1589,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         let (named, (x, y), listed) =
             match self.pointed(a.window.as_deref(), a.pid, (a.x, a.y)).await? {
                 Some((w, point, listed)) => (Some(w), point, listed),
-                None => (None, (a.x, a.y), None),
+                None => {
+                    self.check_on_screen(&[(a.x, a.y)], "click").await?;
+                    (None, (a.x, a.y), None)
+                }
             };
         if let Some(w) = named.as_ref().filter(|_| !self.bg() && self.os != Os::Mac) {
             self.front(w, (x, y), listed).await?;
@@ -1812,6 +1815,20 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
         self.check_point(x, y, under.as_ref()).await
     }
 
+    async fn check_on_screen(&self, points: &[(f64, f64)], verb: &str) -> Result<(), String> {
+        if self.os != Os::Linux {
+            return Ok(());
+        }
+        let v = self.call("get_screen_size", json!({})).await?;
+        let size = &v["structuredContent"];
+        let k = size["scale_factor"].as_f64().unwrap_or(1.0);
+        let _ = SCALE.try_with(|s| s.set(Some(k)));
+        points
+            .iter()
+            .find_map(|&p| off_desk(p, size, verb))
+            .map_or(Ok(()), Err)
+    }
+
     async fn scroll(&self, a: ScrollArgs) -> Result<String, String> {
         if a.x.is_some() != a.y.is_some() {
             return Err(SCROLL_POINT.to_owned());
@@ -1844,7 +1861,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                     }
                     point
                 }
-                None => (x, y),
+                None => {
+                    self.check_on_screen(&[(x, y)], "scroll").await?;
+                    (x, y)
+                }
             },
             _ => {
                 let named = a.window.is_some() || a.pid.is_some();
@@ -1955,6 +1975,9 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
 
     async fn drag(&self, a: DragArgs) -> Result<String, String> {
         let (mut from, mut to) = ((a.x, a.y), (a.to_x, a.to_y));
+        if a.window.is_none() {
+            self.check_on_screen(&[from, to], "drag").await?;
+        }
         if self.bg() {
             let (target, w) = match a.window.as_deref() {
                 Some(window) => self.shot_window(window, a.pid).await?,
@@ -3270,6 +3293,18 @@ fn on_desktop(req: &Value) -> bool {
     req["scope"] == "desktop" || req["target"]["kind"] == "desktop"
 }
 
+fn off_desk((x, y): (f64, f64), size: &Value, verb: &str) -> Option<String> {
+    let (w, h) = (size["width"].as_f64()?, size["height"].as_f64()?);
+    if (0.0..w).contains(&x.round()) && (0.0..h).contains(&y.round()) {
+        return None;
+    }
+    Some(format!(
+        "({x},{y}) is off the screen, which is {w}x{h} desk pixels over every display (x 0 to {}, y 0 to {}); the {verb} did not run, and nothing was sent: use a point inside it",
+        w - 1.0,
+        h - 1.0
+    ))
+}
+
 fn opens(prelude: &str, name: &str) -> bool {
     let prelude = prelude.to_ascii_lowercase();
     let tag = format!("<{}", name.to_ascii_lowercase());
@@ -3727,6 +3762,8 @@ pub(crate) mod tests {
         ("desk_close", r#"{"window": "Notepad", "pid": 4}"#),
     ];
 
+    const CLASS_REFUSED: &str = "Background delivery is not available for target window class 'Chrome_WidgetWin_1' on this event kind (key_combo). Retry this action with delivery_mode:\"foreground\".";
+    const MENU_REFUSED: &str = "Select All is disabled. invoke_menu does not activate a background app: macOS keeps this menu item unavailable while the app is behind the user's window. If the user allows it, call bring_to_front for this window first, then invoke_menu, or send the app's keyboard shortcut with hotkey and delivery_mode:\"foreground\".";
     const LONG_TITLE: &str = "Example Competitive Analysis: Pricing and GTM (October 2026) - Example Docs - Google Chrome \u{2013} Work (example.com)";
 
     static ACTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -3829,7 +3866,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
-            Refuses(Behind(Arc::clone(&calls)), |t, _| t == "hotkey"),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                CLASS_REFUSED,
+            ),
             Os::Windows,
         )
         .background(true)
@@ -3851,7 +3892,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let linux = Desk::new(
             || Ok(Apps),
-            Refuses(Behind(Arc::clone(&calls)), |t, _| t == "hotkey"),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                CLASS_REFUSED,
+            ),
             Os::Linux,
         )
         .background(true)
@@ -3867,6 +3912,45 @@ pub(crate) mod tests {
             order(&calls),
             ["hotkey background", "bring_to_front -", "hotkey desktop"]
         );
+    }
+
+    #[tokio::test]
+    async fn an_auto_macos_key_whose_menu_item_is_disabled_in_the_background_runs_once_in_the_foreground()
+     {
+        let key = json!({"keys": "cmd+a", "window": "Untitled - Notepad"});
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(
+            || Ok(Apps),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                MENU_REFUSED,
+            ),
+            Os::Mac,
+        )
+        .background(true)
+        .auto(true);
+        let out = desk.run("desk_key", key.clone()).await.unwrap();
+        let v: Value = serde_json::from_str(&out.text).unwrap();
+        assert_eq!(v["input"], "foreground", "{v}");
+        assert_eq!(
+            order(&calls),
+            ["hotkey background", "bring_to_front -", "hotkey desktop"]
+        );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let behind = Desk::new(
+            || Ok(Apps),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, _| t == "hotkey",
+                MENU_REFUSED,
+            ),
+            Os::Mac,
+        )
+        .background(true);
+        let err = behind.run("desk_key", key).await.unwrap_err();
+        assert!(err.contains(MENU_REFUSED), "{err}");
+        assert_eq!(order(&calls), ["hotkey background"]);
     }
 
     #[tokio::test]
@@ -5563,9 +5647,11 @@ pub(crate) mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let desk = Desk::new(
             || Ok(Apps),
-            Refuses(Behind(Arc::clone(&calls)), |t, a| {
-                t == "press_key" && a["key"] == "return"
-            }),
+            Refuses(
+                Behind(Arc::clone(&calls)),
+                |t, a| t == "press_key" && a["key"] == "return",
+                CLASS_REFUSED,
+            ),
             Os::Windows,
         )
         .background(true)
@@ -9446,14 +9532,9 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(*GLIDES.lock().unwrap(), [(300.0, 200.0)]);
         assert_eq!(*TYPED_HUMAN.lock().unwrap(), [false, true]);
-        assert_eq!(
-            *calls.lock().unwrap(),
-            [
-                ("click".to_owned(), click.clone()),
-                ("spaced".to_owned(), json!([300.0, 200.0])),
-                ("click".to_owned(), click)
-            ]
-        );
+        assert_eq!(tools(&calls), ["click", "spaced", "click"]);
+        assert_eq!(sent(&calls, "click"), [click.clone(), click]);
+        assert_eq!(sent(&calls, "spaced"), [json!([300.0, 200.0])]);
     }
 
     #[tokio::test]
@@ -9548,13 +9629,10 @@ pub(crate) mod tests {
                 Gesture::Keys(vec![0xffe3, 0x61])
             ]
         );
-        let tools: Vec<String> = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(t, _)| t.clone())
-            .collect();
-        assert_eq!(tools, ["spaced", "spaced", "click", "scroll", "press_key"]);
+        assert_eq!(
+            tools(&calls),
+            ["spaced", "spaced", "click", "scroll", "press_key"]
+        );
     }
 
     #[tokio::test]
@@ -9599,6 +9677,110 @@ pub(crate) mod tests {
             .collect();
         assert!(!tools.contains(&"spaced".to_owned()), "{tools:?}");
         assert!(tools.contains(&"click".to_owned()), "{tools:?}");
+    }
+
+    #[tokio::test]
+    async fn a_linux_desktop_click_off_every_display_is_refused_before_anything_is_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), TwoDisplays(calls.clone()), Os::Linux)
+            .with_hand(|_, _| panic!("an off-screen click reaches no hand"));
+        for human in [false, true] {
+            let err = desk
+                .run(
+                    "desk_click",
+                    json!({"x": 180.0, "y": -349.0, "human": human}),
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                "(180,-349) is off the screen, which is 3840x1080 desk pixels over every display (x 0 to 3839, y 0 to 1079); the click did not run, and nothing was sent: use a point inside it"
+            );
+        }
+        for (x, y) in [(3840.0, 10.0), (-1.0, 10.0), (10.0, 1080.0)] {
+            let refused = desk.run("desk_click", json!({"x": x, "y": y})).await;
+            assert!(refused.is_err(), "{x},{y}");
+        }
+        assert!(tools(&calls).is_empty(), "{:?}", tools(&calls));
+        for (x, y) in [(2500.0, 500.0), (3839.0, 1079.0), (0.0, 0.0)] {
+            desk.run("desk_click", json!({"x": x, "y": y}))
+                .await
+                .unwrap();
+        }
+        assert_eq!(tools(&calls), ["click", "click", "click"]);
+        let mac_calls = Arc::new(Mutex::new(Vec::new()));
+        let mac = Desk::new(|| Ok(notepad()), TwoDisplays(mac_calls.clone()), Os::Mac);
+        mac.run("desk_click", json!({"x": 180.0, "y": -349.0}))
+            .await
+            .unwrap();
+        assert!(tools(&mac_calls).contains(&"click".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_linux_desktop_scroll_or_drag_off_every_display_is_refused_before_anything_is_sent() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let desk = Desk::new(|| Ok(notepad()), TwoDisplays(calls.clone()), Os::Linux)
+            .with_hand(|_, _| panic!("an off-screen point reaches no hand"));
+        let off = |verb: &str, x: i32, y: i32| {
+            format!(
+                "({x},{y}) is off the screen, which is 3840x1080 desk pixels over every display (x 0 to 3839, y 0 to 1079); the {verb} did not run, and nothing was sent: use a point inside it"
+            )
+        };
+        let scroll = json!({"direction": "down", "x": 180.0, "y": -349.0});
+        assert_eq!(
+            desk.run("desk_scroll", scroll).await.unwrap_err(),
+            off("scroll", 180, -349)
+        );
+        let drag = |from: (f64, f64), to: (f64, f64)| json!({"x": from.0, "y": from.1, "to_x": to.0, "to_y": to.1, "human": true});
+        assert_eq!(
+            desk.run("desk_drag", drag((-5.0, 10.0), (100.0, 100.0)))
+                .await
+                .unwrap_err(),
+            off("drag", -5, 10)
+        );
+        assert_eq!(
+            desk.run("desk_drag", drag((100.0, 100.0), (100.0, 1200.0)))
+                .await
+                .unwrap_err(),
+            off("drag", 100, 1200)
+        );
+        assert_eq!(sent(&calls, "get_screen_size").len(), 3);
+        assert!(tools(&calls).is_empty(), "{:?}", tools(&calls));
+        calls.lock().unwrap().clear();
+        desk.run(
+            "desk_drag",
+            json!({"x": 100.0, "y": 100.0, "to_x": 2500.0, "to_y": 500.0}),
+        )
+        .await
+        .unwrap();
+        desk.run(
+            "desk_scroll",
+            json!({"direction": "down", "x": 3000.0, "y": 900.0}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent(&calls, "get_screen_size").len(), 2);
+        assert_eq!(tools(&calls), ["drag", "scroll"]);
+        let mac_calls = Arc::new(Mutex::new(Vec::new()));
+        let mac = Desk::new(|| Ok(notepad()), TwoDisplays(mac_calls.clone()), Os::Mac);
+        mac.run(
+            "desk_drag",
+            json!({"x": -5.0, "y": 10.0, "to_x": 100.0, "to_y": 100.0}),
+        )
+        .await
+        .unwrap();
+        assert!(tools(&mac_calls).contains(&"drag".to_owned()));
+    }
+
+    #[test]
+    fn a_desk_point_is_checked_as_the_driver_rounds_it() {
+        let screen = json!({"width": 1920, "height": 1080});
+        for (x, y) in [(1919.75, 5.0), (5.0, 1079.5), (-0.6, 5.0)] {
+            assert!(off_desk((x, y), &screen, "click").is_some(), "{x},{y}");
+        }
+        for (x, y) in [(1919.4, 5.0), (-0.4, 1079.4), (0.0, 0.0)] {
+            assert_eq!(off_desk((x, y), &screen, "click"), None, "{x},{y}");
+        }
     }
 
     #[test]
@@ -11907,11 +12089,27 @@ pub(crate) mod tests {
         }
     }
 
+    struct TwoDisplays(Arc<Mutex<Vec<(String, Value)>>>);
+
+    impl Input for TwoDisplays {
+        async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
+            self.0.lock().unwrap().push((tool.to_owned(), args));
+            Ok(match tool {
+                "get_screen_size" => {
+                    json!({"structuredContent": {"width": 3840, "height": 1080, "scale_factor": 1.0}})
+                }
+                _ => json!({}),
+            })
+        }
+    }
+
     struct Ordered;
 
     impl Input for Ordered {
         async fn call(&self, tool: &str, _: Value) -> Result<Value, String> {
-            SENT_ORDER.lock().unwrap().push(tool.to_owned());
+            if tool != "get_screen_size" {
+                SENT_ORDER.lock().unwrap().push(tool.to_owned());
+            }
             Ok(json!({}))
         }
     }
@@ -12322,15 +12520,13 @@ pub(crate) mod tests {
         }
     }
 
-    struct Refuses(Behind, fn(&str, &Value) -> bool);
+    struct Refuses(Behind, fn(&str, &Value) -> bool, &'static str);
 
     impl Input for Refuses {
         async fn call(&self, tool: &str, args: Value) -> Result<Value, String> {
             if args["delivery_mode"] == "background" && (self.1)(tool, &args) {
                 self.0.0.lock().unwrap().push((tool.to_owned(), args));
-                return Err(format!(
-                    "{tool}: Background delivery is not available for target window class 'Chrome_WidgetWin_1' on this event kind (key_combo). Retry this action with delivery_mode:\"foreground\"."
-                ));
+                return Err(format!("{tool}: {}", self.2));
             }
             self.0.call(tool, args).await
         }
@@ -12611,6 +12807,16 @@ pub(crate) mod tests {
                 _ => json!({}),
             })
         }
+    }
+
+    fn tools(calls: &Mutex<Vec<(String, Value)>>) -> Vec<String> {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(t, _)| t.clone())
+            .filter(|t| t != "get_screen_size")
+            .collect()
     }
 
     fn sent(calls: &Mutex<Vec<(String, Value)>>, tool: &str) -> Vec<Value> {

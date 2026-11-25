@@ -46,12 +46,14 @@ type Bare = Omit<Step, 'recorded' | 'fp' | 'blank'>
 type Escalation = Seen & { reason: string; step?: number; plan_step?: Bare }
 type Grounding = { what: string; ok: boolean; check: string; p?: number; p_zoom?: number | null; p_full?: number | null; why?: string; cover?: string }
 type Ground = Omit<Grounding, 'what' | 'ok' | 'why' | 'cover'> & { hit: string }
+type View = { png: Buffer; area: desk.Size; of?: Win }
 type Trace = { i: number; op?: string; how?: string; input?: 'foreground'; ms?: number; was?: 'on' | 'off' | 'mixed'; now?: 'on' | 'off'; noop?: boolean; ground?: Ground }
 
 const OS = process.platform
 const BEHIND = process.env.SHUTTLE_INPUT === 'background' || process.env.SHUTTLE_INPUT === 'auto'
 const AUTO = process.env.SHUTTLE_INPUT === 'auto'
 const ANDROID = process.env.SHUTTLE_DESK === 'android'
+const MAC = OS === 'darwin' && !ANDROID
 const FG: desk.Target = AUTO ? { delivery_mode: 'foreground' } : {}
 const NO_PIXELS = 'background gui_plan does not read the screen, which shows whatever covers the plan\'s window'
 const NO_FRONT = 'no focused window'
@@ -497,6 +499,18 @@ function lined(w: Win | null, ws: Win[], text: string): desk.Target {
   const under = (y: Win) => { let z: Win | undefined = y; for (let k = 0; z && k <= ws.length; k++, z = ws.find((v) => v.id === z?.owner)) if (z.id === to.id) return true; return false }
   return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
+function alone(w: Win | null | undefined, ws = picked): Win | null {
+  return w && !ANDROID && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, ws) ? w : null
+}
+async function windowView(w: Win | undefined, ws = picked): Promise<View | null> {
+  const of = alone(w, ws); const b = of?.bounds
+  return of && b && !inside(b, await desk.screen()) ? { png: await desk.shot({ window: of.title, pid: of.pid }), area: { left: b[0], top: b[1], width: b[2], height: b[3] }, of } : null
+}
+async function screenView(): Promise<View> {
+  return { area: await desk.screen(), png: await desk.shot() }
+}
+function inside([x, y, w, h]: [number, number, number, number], { width, height }: { width: number; height: number }) { return x >= 0 && y >= 0 && x + w <= width && y + h <= height }
+function crosses([ax, ay, aw, ah]: [number, number, number, number], [bx, by, bw, bh]: [number, number, number, number]) { return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah }
 function unique(w: Win) {
   if (BG && listed.some((y) => y.id !== w.id && y.pid === w.pid && y.title === w.title)) throw new Surprise(`another window of the app is also titled "${w.title}", and background input names its window by title, so it never guesses which one gets it`)
 }
@@ -755,7 +769,7 @@ async function windowFor(want: string | undefined, ms = 3000, saw?: string, kept
     } else if ((!w || known.has(w.title)) && Date.now() - t0 > 150) {
       const hits = ws.filter((x) => norm(x.title).includes(norm(want)) && (!!w || x.role !== 'alert'))
       const [bg, other] = hits; many = hits.length
-      if (bg && !other) { if (!w || !alertIn(w, bg)) await desk.focus(bg.title, bg.pid, twinId(bg, ws)); return found(bg, t0) }
+      if (bg && !other) { if (!w || !alertIn(w, bg)) await desk.focus(bg.title, bg.pid, ANDROID ? bg.id : twinId(bg, ws)); return found(bg, t0) }
     }
     if (w && !known.has(w.title) && !prior.has(w.id) && w.title !== asked && Date.now() - t0 > 250) {
       asked = w.title
@@ -806,7 +820,7 @@ function candidates(nodes: Node[], role?: string, within?: number) {
   return nodes.map((n, i) => ({ n, i })).filter(({ n, i }) => (roles ? roles.has(n.role) : ACTIVE.has(n.role) || item(n)) && inside(i))
 }
 
-async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp, ask = true): Promise<Hit | null> {
+async function resolve(nodes: Node[], target: string, role?: string, within?: number, bar = 0.5, fp?: Fp, ask = true, w?: Win): Promise<Hit | null> {
   const t0 = Date.now()
   const pinned = byFp(nodes, fp, within)
   if (pinned) { tick('ax', t0); return pinned }
@@ -840,7 +854,7 @@ async function resolve(nodes: Node[], target: string, role?: string, within?: nu
   }
   const opts: Record<string, string> = { none: 'none of these elements' }
   for (const { c } of ranked) opts[`r${c.n.ref}`] = label(c)
-  const { d, viewed } = await pick(target, ranked.map(({ c }) => c.n), opts)
+  const { d, viewed } = await pick(target, ranked.map(({ c }) => c.n), opts, w)
   const probs = Object.entries(d.pick?.probabilities ?? {}).sort((a, b) => b[1] - a[1])
   const [top, p1] = probs[0] ?? ['none', 0]; const p2 = probs[1]?.[1] ?? 0
   const hit = ranked.find(({ c }) => `r${c.n.ref}` === top)
@@ -863,16 +877,18 @@ function barMenu(nodes: Node[], name: string): Hit | null {
 }
 
 // the screenshot tells apart same-named elements by position
-async function pick(target: string, pool: Node[], opts: Record<string, string>) {
+async function pick(target: string, pool: Node[], opts: Record<string, string>, w?: Win) {
   const t0 = Date.now()
   try {
     if (BG) throw new Error(NO_PIXELS)
-    const area = await desk.screen()
-    const at = (n: Node) => n.bounds ? ` at (${((n.bounds[0] + n.bounds[2] / 2) / area.width).toFixed(2)}, ${((n.bounds[1] + n.bounds[3] / 2) / area.height).toFixed(2)})` : ''
+    const { png, area, of } = await windowView(w) ?? await screenView()
+    const [ox, oy] = [area.left ?? 0, area.top ?? 0]
+    const at = (n: Node) => n.bounds ? ` at (${((n.bounds[0] + n.bounds[2] / 2 - ox) / area.width).toFixed(2)}, ${((n.bounds[1] + n.bounds[3] / 2 - oy) / area.height).toFixed(2)})` : ''
     const placed: Record<string, string> = { none: opts.none ?? '' }
     for (const n of pool) placed[`r${n.ref}`] = `${opts[`r${n.ref}`]}${at(n)}`
-    const list = `Elements of the focused window, with their centres as fractions of the screenshot:\n${pool.map((n) => placed[`r${n.ref}`]).join('\n')}`
-    const d = await desk.look([list, desk.image(await desk.shot())], { pick: desk.choice(`Which element is "${target}"? Use the screenshot to tell apart elements with the same name.`, placed) })
+    const image = of ? 'image of the window' : 'screenshot'
+    const list = `Elements of the focused window, with their centres as fractions of the ${image}:\n${pool.map((n) => placed[`r${n.ref}`]).join('\n')}`
+    const d = await desk.look([list, desk.image(png)], { pick: desk.choice(`Which element is "${target}"? Use the ${image} to tell apart elements with the same name.`, placed) })
     return { d, viewed: true }
   } catch (e: unknown) {
     if (spent(e)) throw e
@@ -880,37 +896,47 @@ async function pick(target: string, pool: Node[], opts: Record<string, string>) 
   } finally { tick('jev', t0); T.jev_calls = (T.jev_calls ?? 0) + 1 }
 }
 
-async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec): Promise<[number, number]> {
+async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, again = false, ws = picked): Promise<[number, number]> {
   const same = r?.text === target
   const roots = !!r?.root
-  const area = await desk.screen()
   const missed: string[] = []
-  let shot: Buffer | undefined
+  let v: View | undefined
+  const settled = async (p: [number, number]): Promise<[number, number]> => {
+    const of = v?.of ?? (MAC ? host(w, ws) : undefined)
+    if (!of?.bounds) return p
+    const list = await desk.windows(); const get = (x: Win) => list.find((y) => y.id === x.id && y.pid === x.pid)
+    const [now, fresh] = [get(of), get(w)]
+    if (now && fresh && isDeepStrictEqual(now.bounds, of.bounds)) return p
+    if (!now || !fresh || again) throw new Surprise(`"${w.title}" moved, changed size or closed while its target was found in its shot, so nothing was clicked`, await seen())
+    return spot(r, target, fresh, rec, true, list)
+  }
   if (same && r.crop) {
     let t0 = Date.now()
-    shot = await desk.shot()
-    const screen = unpng(shot), k = screen.w / area.width
+    v = await windowView(w, ws) ?? await screenView()
+    const { png, area } = v
+    const screen = unpng(png), k = screen.w / area.width
     const m = match(screen, unpng(Buffer.from(r.crop, 'base64')), k, r.scale ?? 1)
     const [x, y] = [(area.left ?? 0) + m.x / k + (r.offset?.[0] ?? 0), (area.top ?? 0) + m.y / k + (r.offset?.[1] ?? 0)]
     tick('crop', t0); rec.p = +m.score.toFixed(2)
     t0 = Date.now(); const c = m.score >= MATCH_BAR ? await placed(x, y, w, roots) : null; tick('check', t0)
-    if (c?.ok) { rec.how = 'crop'; return [x, y] }
+    if (c?.ok) { rec.how = 'crop'; return settled([x, y]) }
     missed.push(c ? `the recorded crop matched ${told(c)}` : `the recorded crop matched nothing (best ${rec.p})`)
   }
   try {
     const t0 = Date.now()
-    const [x, y] = await desk.ground(shot ?? await desk.shot(), `${target} in the "${w.title}" window`, area)
+    v ??= await windowView(w, ws) ?? await screenView()
+    const [x, y] = await desk.ground(v.png, `${target} in the "${w.title}" window`, v.area)
     tick('ground', t0)
-    const g = await grounded(x, y, target, w, area, roots)
+    const g = await grounded(x, y, target, w, v, roots)
     rec.ground_hit = g.what.slice(0, 80); rec.checked = g.check; rec.p = g.p; rec.p_zoom = g.p_zoom; rec.p_full = g.p_full
     const c = g.ok ? await placed(x, y, w, roots) : g
-    if (c.ok) { rec.how = 'ground'; return [x, y] }
+    if (c.ok) { rec.how = 'ground'; return await settled([x, y]) }
     missed.push(`grounding pointed at ${told(c)}`)
   } catch (e: unknown) {
-    if (!r || spent(e)) throw e
+    if (!r || spent(e) || e instanceof Surprise) throw e
     missed.push(`grounding failed: ${e instanceof Error ? e.message : String(e)}`)
   }
-  const b = w.bounds
+  const b = same && r.at && r.size ? (await desk.windows()).find((x) => x.id === w.id && x.pid === w.pid)?.bounds : undefined
   if (same && r.at && r.size && b && Math.abs(b[2] - r.size[0]) <= 2 && Math.abs(b[3] - r.size[1]) <= 2) {
     const [x, y] = [b[0] + r.at[0], b[1] + r.at[1]]
     const t0 = Date.now(); const c = await placed(x, y, w, roots); tick('check', t0)
@@ -1058,17 +1084,21 @@ async function placed(x: number, y: number, w: Win, roots = false): Promise<Grou
   return { what, ok: true, check: 'placed', found: under.found }
 }
 
-async function grounded(x: number, y: number, target: string, w: Win, area: desk.Size, roots = false): Promise<Grounding> {
+async function grounded(x: number, y: number, target: string, w: Win, v: View, roots = false): Promise<Grounding> {
   const t0 = Date.now()
+  const { area, of } = v
   const [ox, oy] = [area.left ?? 0, area.top ?? 0]
+  const k0 = v.png.readUInt32BE(16) / area.width
+  const shoot = (r?: { x: number; y: number; w: number; h: number }) => of ? desk.shot({ window: of.title, pid: of.pid, ...(r && { x: Math.round(r.x * k0), y: Math.round(r.y * k0), w: Math.round(r.w * k0), h: Math.round(r.h * k0) }) }) : desk.shot(r)
+  const shown = of ? 'window' : 'screen'
   const fit = (cw: number, ch: number): [number, number] => [Math.max(ox, Math.min(ox + area.width - cw, Math.round(x - cw / 2))), Math.max(oy, Math.min(oy + area.height - ch, Math.round(y - ch / 2)))]
   const yes = async (state: unknown[], question: string) => +prob((await desk.look(state, { on: desk.yes(question) })).on).toFixed(2)
   const peek = async (png: Buffer, at: number[]) => {
     const [px, py] = at.map(Math.round)
-    return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the screen. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
+    return yes([`A ${png.readUInt32BE(16)}x${png.readUInt32BE(20)} crop of the ${shown}. A click is about to land on its pixel (${px}, ${py}).`, desk.image(png)], `Is the pixel at (${px}, ${py}) of the image on ${target}?`)
   }
   const [cw, ch] = [Math.min(CROP.w, area.width), Math.min(CROP.h, area.height)], [left, top] = fit(cw, ch)
-  const shooting = desk.shot({ x: left - ox, y: top - oy, w: cw, h: ch }); shooting.catch(() => {})
+  const shooting = shoot({ x: left - ox, y: top - oy, w: cw, h: ch }); shooting.catch(() => {})
   let what = ''
   try {
     const { found, ...hit } = await placed(x, y, w, roots)
@@ -1081,7 +1111,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     if (out.ok) return out
     const b = found.bounds ?? (found.id ? (await desk.read(found.id).catch(() => null))?.bounds : undefined)
     const el = b && b[2] > 0 && b[3] > 0 ? b : null
-    const screen = unpng(await desk.shot()), s = screen.w / area.width
+    const screen = unpng(await shoot()), s = screen.w / area.width
     const crop = async (cw: number, ch: number, k: number) => {
       const [left, top] = fit(cw, ch)
       return peek(cut(screen, Math.round((left - ox) * s), Math.round((top - oy) * s), Math.round(cw * s), Math.round(ch * s), k), [(x - left) * s * k, (y - top) * s * k])
@@ -1094,7 +1124,7 @@ async function grounded(x: number, y: number, target: string, w: Win, area: desk
     }
     if (!out.ok && desk.setting('DESK_FULL_CHECK') !== 'off') {
       const [px, py] = [Math.round((x - ox) * s), Math.round((y - oy) * s)]
-      const full = async () => yes([`The screen, ${screen.w}x${screen.h}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${px}, ${py}).`, desk.image(ring(screen, px, py, Math.round(RING * s)))], `Is the spot marked by the red ring on ${target}?`)
+      const full = async () => yes([`The ${shown}, ${screen.w}x${screen.h}. A red ring with four ticks marks the spot a click is about to land on, centred at pixel (${px}, ${py}).`, desk.image(ring(screen, px, py, Math.round(RING * s)))], `Is the spot marked by the red ring on ${target}?`)
       out.check += '+full'; out.p_full = await full().catch(unspent)
       out.ok = (out.p_full ?? 0) >= FULL_BAR
     }
@@ -1167,6 +1197,9 @@ async function submit(w: Win, chooser = false) {
   if (titledIn(ws, title, pid) && frontOf(ws)?.title === title) throw new Surprise(`"${title}" is still open after Return`, await seen())
 }
 
+async function unsure(title: string, c: { unverified?: string }) {
+  if (ANDROID && c.unverified) throw new Surprise(`"${title}" may still be open after its close: ${c.unverified}`, await seen())
+}
 async function closed(title: string, pid: number | null, id?: string) {
   const t0 = Date.now()
   const landed = (ws: Win[]) => { const f = frontOf(ws); return !!f && f.title !== title && f.pid !== null }
@@ -1312,15 +1345,15 @@ function holds(role: string, got: string, want: string) {
   return (role === 'spinbutton' || role === 'slider') && !!n && !!want.trim() && Number(n.replace(',', '.')) === Number(want.trim().replace(',', '.'))
 }
 
-async function setState(s: Step, hit: Hit, rec: Rec) {
+async function setState(s: Step, hit: Hit, rec: Rec, w: Win) {
   const on = s.on ?? true
   let was = await checked(hit.n)
-  if (was === null) was = await cropState(hit.n)
+  if (was === null) was = await cropState(hit.n, true, w)
   rec.was = was
   if (was === on) { rec.noop = true; return }
   let now = await flip(hit.n, on)
   if (now !== on && (was === 'mixed' || now === 'mixed')) now = await flip(hit.n, on)
-  if (now === null) now = await cropState(hit.n, false)
+  if (now === null) now = await cropState(hit.n, false, w)
   if (now !== on) throw new Surprise(`"${hit.n.name}" is still ${now === 'mixed' ? 'mixed' : now ? 'on' : 'off'}`, await seen())
   rec.confirmed = true
 }
@@ -1347,13 +1380,19 @@ async function option(combo: Node, opts: Node[], value: string, target: string, 
   throw new Surprise(`"${target}" reads "${got}" after set`, await seen())
 }
 
-async function cropState(n: Node, unsent = true) {
+async function cropState(n: Node, unsent = true, w?: Win) {
   if (BG && (!AUTO || !unsent)) throw new Surprise(`${unsent ? `the state of "${n.name}"` : `"${n.name}" was pressed, and its state after the press`} needs a look at the screen: ${NO_PIXELS}`, await seen())
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
-  const area = await desk.screen(); const [x, y] = [b[0] - 40 - (area.left ?? 0), b[1] - 4 - (area.top ?? 0)]
-  const shot = await desk.shot({ x: Math.max(0, x), y: Math.max(0, y), w: b[2] + 80 + Math.min(0, x), h: b[3] + 8 + Math.min(0, y) })
+  const ws = w?.bounds ? await desk.windows() : []
+  const fresh = ws.find((x) => x.id === w?.id && x.pid === w.pid)
+  if (w?.bounds && !fresh) throw new Surprise(`"${w.title}" closed before the state of "${n.name}" was read`, await seen())
+  const v = await windowView(fresh, ws)
+  const area = v?.area ?? await desk.screen(); const [x, y] = [b[0] - 40 - (area.left ?? 0), b[1] - 4 - (area.top ?? 0)]
+  const r = { x: Math.max(0, x), y: Math.max(0, y), w: b[2] + 80 + Math.min(0, x), h: b[3] + 8 + Math.min(0, y) }
+  const img = v && unpng(v.png); const k = img ? img.w / area.width : 1
+  const shot = img ? cut(img, Math.round(r.x * k), Math.round(r.y * k), Math.round(r.w * k), Math.round(r.h * k), 1) : await desk.shot(r)
   return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot, 'on')).on === true
 }
 
@@ -1471,7 +1510,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const o = w && !s.window ? await outline(w, {}, kept) : ''
     const self = w
     const others = self ? ws.filter((x) => x.pid === self.pid && x.title !== self.title && (!BG || ours(x, ws))) : []
-    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await desk.close(w.title, w.pid, twinId(w, ws)); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
+    if (w && blocked(o) && others.length) { rec.seen = w.title; rec.how = 'wm'; unique(w); await unsure(w.title, await desk.close(w.title, w.pid, twinId(w, ws))); await settle(w.title); tick('act', t0); if (!await closed(w.title, w.pid, w.id)) throw new Surprise(`"${w.title}" is still open after a close`, await seen()); return }
     if (w && blocked(o)) throw new Surprise(unanswered(w.title), await seen())
     if (w && !s.window && !isDialog(o)) {
       let d: Win | null = many.find((x) => x.id !== self?.id) ?? null; if (!d) for (const x of others) if (isDialog(await outline(x))) { d = x; break }
@@ -1482,9 +1521,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const hung = self ? undefined : ws.find((x) => x.stale && !isShell(x))
     if (hung) throw new Surprise(`no window is in front, and "${hung.title || hung.app}" is listed as not answering accessibility, as an app hung behind its own dialog leaves it: nothing was sent; wait for it, or close the app`, await seen())
     if (!w) { rec.noop = true; tick('act', t0); return }
-    const [title, pid, id, twin] = [w.title, w.pid, w.id, twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); await desk.key('Escape', at(w))
-    if (titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e }) }
-    tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after Escape and a close`, await seen())
+    const [title, pid, id, twin] = [w.title, w.pid, w.id, ANDROID ? w.id : twinId(w, s.window ? picked : ws)]; rec.seen = title; if (!w.active && !BG) await desk.focus(title, pid, twin); if (!ANDROID) await desk.key('Escape', at(w))
+    if (ANDROID || titledIn(await settle(w.title), title, pid, id)) { unique(w); const one = w; await unsure(title, await desk.close(title, pid, twin).catch((e: unknown) => { throw lone(one) ? new Surprise(`${e instanceof Error ? e.message : String(e)}, and the Escape sent before it did not close the dialog: ${ALERT_DESK}`) : e })) }
+    tick('act', t0); if (!await closed(title, pid, id)) throw new Surprise(`"${title}" is still open after ${ANDROID ? '' : 'Escape and '}a close`, await seen())
     return
   }
   const w = await windowFor(s.window, 3000, s.seen, kept)
@@ -1512,7 +1551,17 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     } else if (BG && !AUTO) throw new Surprise(`${busy(w, t1)}; ${NO_PIXELS}`, await seen())
     else if (Date.now() >= deadline) throw new Surprise(busy(w, t1), await seen())
     if (BG) await front(w)
-    const v = await vision(`You check the state of a computer screen.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(), 'ok'); rec.verdict = v
+    const ws = MAC ? await desk.windows() : []
+    const now = ws.find((x) => x.active)
+    const over = (f: Win) => ws.some((x) => x.id !== f.id && x.pid === f.pid && !x.title.trim() && !!x.bounds && !!f.bounds && crosses(x.bounds, f.bounds))
+    const me = ws.find((x) => x.id === w.id && x.pid === w.pid)
+    if (MAC && !me) throw new Surprise(`${w.owner === undefined ? '' : 'the sheet listed as '}"${w.title}" closed before the condition was checked: ${s.expect}`, await seen())
+    const b = me && host(me, ws).bounds
+    const off = MAC && !(b && inside(b, await desk.screen()))
+    const of = off && now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
+    if (off && !of) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
+    const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
+    const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return
   }
@@ -1526,13 +1575,13 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
         if (kept) { observed = true; return `verify: "${kept.name}" is still there` }
         return snap.truncated ? `verify: snapshot is truncated; cannot confirm "${want}" is gone` : ''
       }
-      const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask)
+      const hit = await resolve(nodes, want, targetRole(s), undefined, 0.7, s.fp, ask, w)
       if (!hit) { observed ||= !snap.truncated || (OS === 'darwin' && !!read.menus && nodes.some((n) => n.role === 'menubar' && n.depth === 1 && n.parent === 0)); return `verify: no element matches "${want}"` }
       rec.how = hit.how; rec.fp = fingerprint(nodes, hit)
       const bad: string[] = []
       if (s.value !== undefined) { let v = ''; let url: string | undefined; try { const r = await desk.read(hit.n.id); url = r.url; v = r.url ?? r.value ?? '' } catch (e: unknown) { await unblocked(e, w); v = hit.n.value }; if (url !== undefined ? url !== s.value : !holds(hit.n.role, v, s.value)) bad.push(`reads "${v}"`) }
       if (s.enabled !== undefined && hit.n.disabled === s.enabled) bad.push(hit.n.disabled ? 'is disabled' : 'is enabled')
-      if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? (ask ? await cropState(hit.n) : null); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
+      if (s.on !== undefined) { const c = (w.pid === null ? null : gtkToggle(w.pid, hit.n.name)) ?? (await checked(hit.n)) ?? (ask ? await cropState(hit.n, true, w) : null); rec.was = c; if (c !== s.on) bad.push(c === 'mixed' ? 'is mixed' : c ? 'is on' : 'is off') }
       return bad.length ? `verify: "${hit.n.name || want}" ${bad.join(', ')}` : ''
     }
     const end = Math.min(Date.now() + (s.timeout_ms ?? 0), deadline)
@@ -1619,8 +1668,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
   }
   const target = s.click ?? s.check ?? s.set ?? ''
   const least = s.set ? 0.5 : 0.7
-  let hit = await resolve(nodes, target, targetRole(s), undefined, least, s.fp, !s.web?.id)
-  if (s.web?.id) hit = await byDom(nodes, s.web.id, hit, target, targetRole(s)) ?? await resolve(nodes, target, targetRole(s), undefined, least, s.fp)
+  let hit = await resolve(nodes, target, targetRole(s), undefined, least, s.fp, !s.web?.id, w)
+  if (s.web?.id) hit = await byDom(nodes, s.web.id, hit, target, targetRole(s)) ?? await resolve(nodes, target, targetRole(s), undefined, least, s.fp, true, w)
   if (!hit) {
     if (!s.click) throw new Surprise(`no element matches "${target}"`, {}, true)
     if (BG && !AUTO) throw new Surprise(`no element of "${w.title}" matches "${target}", and finding it on the screen is out: ${NO_PIXELS}`, {}, true)
@@ -1664,7 +1713,7 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     if (read) await replaced(nodes, read, before); else await settle(w.title)
     return
   }
-  if (s.check) { await setState(s, hit, rec); return }
+  if (s.check) { await setState(s, hit, rec, w); return }
   const raw = s.value
   if (raw === undefined) throw new Surprise(`set "${target}" needs a value`, await seen())
   const guarded = !!tree.snap.nodes[hit.i]?.states.includes('protected')
@@ -1837,11 +1886,15 @@ function store(chain: Chain) {
   const targets = chain.steps.filter((s) => s.menu || s.check || s.set || s.click || SHORTCUT_VERBS[s.key?.toLowerCase() ?? '']).slice(-2).map((s) => s.key ? SHORTCUT_VERBS[s.key.toLowerCase()] : (s.menu ?? s.check ?? s.set ?? s.click ?? '').split('>').at(-1))
   const base = slug([chain.steps[0]?.app, ...targets].filter((x): x is string => !!x).map((x) => x.split(' ').slice(0, 3).join(' ')).join(' ')) || undefined
   let auto = base
-  for (let n = 2; !chain.named && base && auto && byName(auto); n++) auto = slug(`${base.slice(0, 39 - String(n).length)}-${n}`)
+  for (let n = 2; !chain.named && base && auto && (byName(auto) || othersHold(auto)); n++) auto = slug(`${base.slice(0, 39 - String(n).length)}-${n}`)
   if (!chain.named && auto && chain.name && auto !== chain.name && !byName(chain.name)) rmSync(`${FLOWS}/${chain.name}.json`, { force: true })
   if (!chain.named) chain.name = auto
   if (chain.name) saveFlow({ name: chain.name, ...(chain.named ? { named: true } : {}), params: tpl.params, steps: tpl.steps, idempotent: idempotent(chain.steps), saved_at: new Date().toISOString(), usage: chain.usage ?? {} }, `saved from ${chain.steps.length} passing steps`)
   return chain.name
+}
+
+function othersHold(name: string) {
+  return Object.entries(chains()).some(([k, c]) => k !== caller() && Date.now() - c.at < CHAIN_AGE && c.name === name)
 }
 
 function byName(name: string) {

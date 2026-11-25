@@ -230,7 +230,10 @@ async fn listening(socket: &str) -> Result<server::Conn, String> {
     let deadline = tokio::time::Instant::now() + LISTEN_WAIT;
     loop {
         let e = match tokio::time::timeout_at(deadline, server::connect(socket)).await {
-            Ok(Ok(conn)) => return Ok(conn),
+            Ok(Ok(conn)) => {
+                lock(&LAST_RUN).remove(socket);
+                return Ok(conn);
+            }
             Ok(Err(e)) => e.to_string(),
             Err(_) => "the pipe stays busy".to_owned(),
         };
@@ -630,6 +633,21 @@ server.serve_forever()
             errs[0]
         );
         assert!(errs[1].contains("start /no/such/bin: "), "{}", errs[1]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_service_that_listened_again_no_longer_names_the_run_that_ended_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("s.sock").to_string_lossy().into_owned();
+        lock(&LAST_RUN).insert(socket.clone(), "exited with exit status: 3".into());
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        listening(&socket).await.unwrap();
+        drop(listener);
+        std::fs::remove_file(&socket).unwrap();
+        tokio::time::pause();
+        let e = listening(&socket).await.unwrap_err();
+        assert!(!e.contains("last run"), "{e}");
     }
 
     #[tokio::test]

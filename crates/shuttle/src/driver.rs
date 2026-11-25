@@ -90,20 +90,7 @@ impl Proc {
     async fn spawn(&self) -> Result<Running, String> {
         #[cfg(unix)]
         clear_stale(&self.endpoint).await;
-        let mut cmd = Command::new(&self.bin);
-        cmd.args(["serve", "--socket", &self.endpoint, "--pid-file"])
-            .arg(&self.pid_file)
-            .args(["--glide-ms", GLIDE_MS])
-            .args((!self.overlay).then_some("--no-overlay"))
-            .env(TELEMETRY, "false")
-            .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
-            .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
-            .envs((!self.embedded && cfg!(target_os = "macos")).then_some((CONSENT_ALERT, "1")))
-            .envs(cfg!(target_os = "linux").then_some((REMOVE_MASTERS, "1")))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut running = Running::spawn(&mut cmd, true)?;
+        let mut running = Running::spawn(&mut self.command(), true)?;
         let mut waited = Duration::ZERO;
         while server::connect(&self.endpoint).await.is_err() {
             if let Ok(Some(status)) = running.child.try_wait() {
@@ -122,6 +109,24 @@ impl Proc {
             waited += LISTEN_POLL;
         }
         Ok(running)
+    }
+
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(["serve", "--socket", &self.endpoint, "--pid-file"])
+            .arg(&self.pid_file)
+            .args(["--glide-ms", GLIDE_MS])
+            .args((!self.overlay).then_some("--no-overlay"))
+            .env(TELEMETRY, "false")
+            .env_remove(crate::http::TOKEN_ENV)
+            .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
+            .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
+            .envs((!self.embedded && cfg!(target_os = "macos")).then_some((CONSENT_ALERT, "1")))
+            .envs(cfg!(target_os = "linux").then_some((REMOVE_MASTERS, "1")))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        cmd
     }
 
     async fn supervise(self, first: Running, mut stopped: oneshot::Receiver<()>) {
@@ -159,13 +164,17 @@ impl Proc {
     }
 
     async fn request_stop(&self) {
-        let stop = Command::new(&self.bin)
-            .args(["stop", "--socket", &self.endpoint])
+        let _ = tokio::time::timeout(STOP_WAIT, self.stop_command().status()).await;
+    }
+
+    fn stop_command(&self) -> Command {
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(["stop", "--socket", &self.endpoint])
+            .env_remove(crate::http::TOKEN_ENV)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .status();
-        let _ = tokio::time::timeout(STOP_WAIT, stop).await;
+            .kill_on_drop(true);
+        cmd
     }
 
     async fn stop_stale(&self) -> Result<(), String> {
@@ -277,6 +286,29 @@ s.listen(8)
 while True:
     s.accept()[0].close()
 "#;
+
+    #[test]
+    fn the_driver_starts_without_the_http_token() {
+        let proc = Proc {
+            bin: "/bin/true".into(),
+            endpoint: "driver.sock".into(),
+            pid_file: "driver.pid".into(),
+            overlay: true,
+            embedded: false,
+            watch: false,
+        };
+        let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
+        for cmd in [proc.command(), proc.stop_command()] {
+            assert!(
+                cmd.as_std()
+                    .get_envs()
+                    .any(|(k, v)| k == token && v.is_none()),
+                "{:?} {:?}",
+                cmd.as_std().get_args().collect::<Vec<_>>(),
+                cmd.as_std().get_envs().collect::<Vec<_>>()
+            );
+        }
+    }
 
     #[tokio::test]
     async fn no_bundled_driver_starts_nothing() {
