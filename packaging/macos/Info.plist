@@ -22,6 +22,8 @@
 	<string>13.5</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Shuttle sends Apple events to the apps you ask it to control.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>AGPL-3.0-only</string>
 </dict>

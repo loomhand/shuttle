@@ -36,6 +36,7 @@ const MAC_HIDDEN: &str = "is minimized or its application is hidden";
 const MAC_OFF_SPACE: &str = "is not among the process's current AXWindows";
 const MAC_OCCLUDED: &str = "Background pointer press refused at screen";
 const MAC_MENU_BEHIND: &str = "invoke_menu does not activate a background app";
+const MAC_CONSENT_PENDING: &str = "automation_consent_pending";
 
 /// Whether error `e` of background `tool` on `os` came before anything was delivered, so the foreground may run it once.
 pub(crate) fn pre_send(tool: &str, os: Os, args: &Value, e: &str) -> bool {
@@ -54,7 +55,9 @@ pub(crate) fn pre_send(tool: &str, os: Os, args: &Value, e: &str) -> bool {
             && (e.contains(MAC_HIDDEN)
                 || e.contains(MAC_OFF_SPACE)
                 || e.contains(MAC_OCCLUDED)
-                || (tool == "desk_key" && e.contains(MAC_MENU_BEHIND))))
+                || (tool == "desk_key"
+                    && e.contains(MAC_MENU_BEHIND)
+                    && !e.contains(MAC_CONSENT_PENDING))))
 }
 
 fn class_only(e: &str) -> bool {
@@ -88,6 +91,24 @@ mod tests {
         ] {
             assert!(!pre_send(tool, os, &none, refused), "{tool} {os:?}");
         }
+    }
+
+    #[test]
+    fn a_macos_save_waiting_on_consent_is_not_retried_but_a_denied_one_is() {
+        let none = json!({});
+        let save = |cause: &str| {
+            format!(
+                "hotkey: cmd+s is the key equivalent of File > Save. Key events do not reach a background app's menus, so no keys were sent. invoke_menu: path segment 1 is disabled while the app is in the background, and saving through TextEdit's scripting interface did not complete ({cause}). Nothing was saved. invoke_menu does not activate a background app: macOS keeps this menu item unavailable while the app is behind the user's window."
+            )
+        };
+        let pending = save(
+            "automation_consent_pending: macOS may ask the user for Automation consent for TextEdit; nothing was sent, and the background route works once it is granted",
+        );
+        let denied = save(
+            "automation_denied: macOS does not allow Cua Driver to control TextEdit. The user can allow it in System Settings > Privacy & Security > Automation",
+        );
+        assert!(!pre_send("desk_key", Os::Mac, &none, &pending));
+        assert!(pre_send("desk_key", Os::Mac, &none, &denied));
     }
 
     #[test]
