@@ -29,7 +29,7 @@ for archive in "$@"; do
 	codesign --verify --strict --deep --verbose=2 "$app"
 	ditto -c -k --keepParent "$app" "$WORK/notarize.zip"
 	xcrun notarytool submit "$WORK/notarize.zip" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
-		--wait --output-format plist >"$WORK/notary.plist"
+		--wait --output-format plist >"$WORK/notary.plist" || { cat "$WORK/notary.plist" >&2; exit 1; }
 	status=$(plutil -extract status raw "$WORK/notary.plist")
 	id=$(plutil -extract id raw "$WORK/notary.plist")
 	[ "$status" = Accepted ] || { echo "notarization of $archive: $status (xcrun notarytool log $id …)" >&2; exit 1; }
