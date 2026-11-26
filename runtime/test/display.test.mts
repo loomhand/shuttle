@@ -82,7 +82,7 @@ test('an expect on a window wholly on the main display checks the screen shot, a
   assert.match(seen.asked[0] ?? '', /^You check the state of the app window "Portal", with its menus and pop-ups, on a computer screen that can show other windows too\.\nCondition: the text is bold\n/)
 })
 
-test('an expect checked on the screen shot names the plan window and its app, so a condition true only in another window does not pass', async (t) => {
+test('an expect checked on the screen shot names the plan window and its app in the prompt', async (t) => {
   const asked: string[] = []
   const here = { ...win, app: 'Pages', bounds: [0, 0, 640, 774] }
   const other = { id: '7/1', title: 'Notes', role: 'window', pid: 4242, active: false, app: 'Notes', bounds: [640, 0, 640, 774] }
@@ -98,6 +98,23 @@ test('an expect checked on the screen shot names the plan window and its app, so
   const r = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.equal(asked[0], 'You check the state of the app window "Portal" of the app "Pages", with its menus and pop-ups, on a computer screen that can show other windows too.\nCondition: the text is bold\n{"ok": true or false, "why": "one short sentence"}\nAnswer with one JSON object and nothing else.')
+})
+
+test('an expect checked on the screen shot names an untitled dialog by its role and app in the prompt', async (t) => {
+  const asked: string[] = []
+  const dialog = { id: '5/1', title: '', role: 'dialog', pid: process.pid, active: true, app: 'Pages', bounds: [100, 100, 400, 200] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([dialog])
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: dialog, truncated: false, nodes: [{ ...root, id: '5/1', role: 'dialog', name: '' }] })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.match(asked[0] ?? '', /^You check the state of the untitled dialog of the app "Pages", with its menus and pop-ups, on a computer screen that can show other windows too\.\nCondition: the text is bold\n/)
 })
 
 test('an expect off macOS on a window of a second display checks the screen shot, as 0.1.60 did', { skip: process.platform === 'darwin' }, async (t) => {
