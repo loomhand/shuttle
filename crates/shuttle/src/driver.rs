@@ -40,6 +40,7 @@ impl Bundled {
         overlay: bool,
         embedded: bool,
         foreground: bool,
+        key_vars: &[String],
     ) -> Result<Option<Self>, String> {
         let bin = exe.with_file_name(if cfg!(windows) {
             "cua-driver.exe"
@@ -61,6 +62,7 @@ impl Bundled {
             overlay: overlay || cfg!(target_os = "macos"),
             embedded,
             watch: foreground && cfg!(target_os = "macos"),
+            key_vars: key_vars.to_vec(),
         };
         if server::connect(endpoint).await.is_ok() {
             proc.stop_stale().await?;
@@ -85,6 +87,7 @@ struct Proc {
     overlay: bool,
     embedded: bool,
     watch: bool,
+    key_vars: Vec<String>,
 }
 
 impl Proc {
@@ -120,7 +123,6 @@ impl Proc {
             .args((!self.overlay).then_some("--no-overlay"))
             .env(TELEMETRY, "false")
             .env(UPDATE_CHECK, "false")
-            .env_remove(crate::http::TOKEN_ENV)
             .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
             .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
             .envs((!self.embedded && cfg!(target_os = "macos")).then_some((CONSENT_ALERT, "1")))
@@ -128,6 +130,9 @@ impl Proc {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        for var in &self.key_vars {
+            cmd.env_remove(var);
+        }
         cmd
     }
 
@@ -173,10 +178,12 @@ impl Proc {
         let mut cmd = Command::new(&self.bin);
         cmd.args(["stop", "--socket", &self.endpoint])
             .env(TELEMETRY, "false")
-            .env_remove(crate::http::TOKEN_ENV)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        for var in &self.key_vars {
+            cmd.env_remove(var);
+        }
         cmd
     }
 
@@ -234,6 +241,8 @@ fn pid_file(endpoint: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
+    use shuttle_models::config::DEFAULT_KEY_ENV;
+
     use super::*;
     use crate::NAME;
 
@@ -291,7 +300,8 @@ while True:
 "#;
 
     #[test]
-    fn the_driver_and_its_stop_start_without_the_http_token_telemetry_or_update_check() {
+    fn the_driver_and_its_stop_start_without_the_model_key_http_token_telemetry_or_update_check() {
+        let key_vars = [DEFAULT_KEY_ENV, crate::http::TOKEN_ENV, "MY_KEY"];
         let proc = Proc {
             bin: "/bin/true".into(),
             endpoint: "driver.sock".into(),
@@ -299,13 +309,15 @@ while True:
             overlay: true,
             embedded: false,
             watch: false,
+            key_vars: key_vars.map(str::to_owned).to_vec(),
         };
-        let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
         let telemetry = std::ffi::OsStr::new(TELEMETRY);
         for cmd in [proc.command(), proc.stop_command()] {
             let envs = || cmd.as_std().get_envs();
             assert!(
-                envs().any(|(k, v)| k == token && v.is_none())
+                key_vars
+                    .iter()
+                    .all(|var| envs().any(|(k, v)| k == *var && v.is_none()))
                     && envs().any(|(k, v)| k == telemetry && v == Some("false".as_ref())),
                 "{:?} {:?}",
                 cmd.as_std().get_args().collect::<Vec<_>>(),
@@ -325,7 +337,8 @@ while True:
     async fn no_bundled_driver_starts_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let started = Bundled::start(&dir.path().join(NAME), &endpoint, true, false, false).await;
+        let started =
+            Bundled::start(&dir.path().join(NAME), &endpoint, true, false, false, &[]).await;
         assert!(matches!(started, Ok(None)));
     }
 
@@ -400,7 +413,7 @@ while True:
         for (foreground, want) in [(true, bounded), (false, "")] {
             let sock = dir.path().join(format!("{foreground}.sock"));
             let endpoint = endpoint(&sock.to_string_lossy());
-            let driver = Bundled::start(&exe, &endpoint, true, false, foreground)
+            let driver = Bundled::start(&exe, &endpoint, true, false, foreground, &[])
                 .await
                 .unwrap()
                 .unwrap();
@@ -418,7 +431,7 @@ while True:
         for (embedded, want) in [(false, own), (true, "")] {
             let sock = dir.path().join(format!("{embedded}.sock"));
             let endpoint = endpoint(&sock.to_string_lossy());
-            let driver = Bundled::start(&exe, &endpoint, true, embedded, false)
+            let driver = Bundled::start(&exe, &endpoint, true, embedded, false, &[])
                 .await
                 .unwrap()
                 .unwrap();
@@ -437,7 +450,7 @@ while True:
         for embedded in [false, true] {
             let sock = dir.path().join(format!("{embedded}.sock"));
             let endpoint = endpoint(&sock.to_string_lossy());
-            let driver = Bundled::start(&exe, &endpoint, true, embedded, false)
+            let driver = Bundled::start(&exe, &endpoint, true, embedded, false, &[])
                 .await
                 .unwrap()
                 .unwrap();
@@ -495,7 +508,7 @@ while True:
             tokio::time::sleep(POLL).await;
         }
         let stale = pid(&endpoint).unwrap();
-        let driver = Bundled::start(&exe, &endpoint, true, false, false)
+        let driver = Bundled::start(&exe, &endpoint, true, false, false, &[])
             .await
             .unwrap()
             .unwrap();
@@ -514,7 +527,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), "#!/bin/sh\nexit 3\n").unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let err = Bundled::start(&exe, &endpoint, true, false, false)
+        let err = Bundled::start(&exe, &endpoint, true, false, false, &[])
             .await
             .err()
             .unwrap_or_default();
@@ -533,7 +546,7 @@ while True:
             .unwrap()
             .bind(&endpoint)
             .unwrap();
-        let driver = Bundled::start(&exe, &endpoint, true, true, false)
+        let driver = Bundled::start(&exe, &endpoint, true, true, false, &[])
             .await
             .unwrap()
             .unwrap();
@@ -614,7 +627,7 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), script).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        let driver = Bundled::start(&exe, &endpoint, overlay, false, false)
+        let driver = Bundled::start(&exe, &endpoint, overlay, false, false, &[])
             .await
             .unwrap()
             .unwrap();

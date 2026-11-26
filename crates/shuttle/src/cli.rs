@@ -328,6 +328,7 @@ async fn serve(
             overlay,
             crate::embedded(),
             input == InputMode::Foreground,
+            &key_vars,
         )
         .await?
     } else {
@@ -348,12 +349,12 @@ async fn serve(
         &exe,
         endpoint.to_owned(),
         path.with_file_name("flows"),
-        key_vars,
+        key_vars.clone(),
     )
     .input(mode)
     .android(!local);
     let desk = match android {
-        Some(settings) => Desks::Android(Box::new(android::device(settings, &exe)?)),
+        Some(settings) => Desks::Android(Box::new(android::device(settings, &exe, &key_vars)?)),
         None => Desks::Native(server::native(
             driver,
             &apps,

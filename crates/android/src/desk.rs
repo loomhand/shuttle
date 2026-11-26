@@ -2155,6 +2155,7 @@ mod tests {
             ui_jar: "/u.jar".into(),
             scrcpy_jar: "/s.jar".into(),
             su: None,
+            key_vars: Vec::new(),
         });
         let launch = json!({"app": "com.android.settings", "args": ["https://example.test"]});
         let err = run(&android, "desk_launch", launch).await.unwrap_err();

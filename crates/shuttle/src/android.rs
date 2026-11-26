@@ -45,13 +45,18 @@ impl<N: Handler> Handler for Desks<N> {
     }
 }
 
-pub fn device(settings: AndroidSettings, exe: &Path) -> Result<Android, String> {
+pub fn device(
+    settings: AndroidSettings,
+    exe: &Path,
+    key_vars: &[String],
+) -> Result<Android, String> {
     Ok(Android::new(Device {
         ui_jar: ui_jar(settings.ui_jar, exe)?,
         adb: settings.adb,
         serial: settings.serial,
         scrcpy_jar: settings.scrcpy_jar,
         su: settings.su,
+        key_vars: key_vars.to_vec(),
     }))
 }
 
@@ -163,6 +168,7 @@ esac
                     su: None,
                 },
                 Path::new("/shuttle"),
+                &[],
             )
             .unwrap(),
         ));
@@ -290,6 +296,7 @@ esac
                 su: None,
             },
             Path::new("/shuttle"),
+            &[],
         )
         .unwrap()
     }
