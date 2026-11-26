@@ -28,6 +28,23 @@ fn a_missing_file_is_openrouter_with_its_key_variable() {
 }
 
 #[test]
+fn a_file_load_refuses_still_names_its_key_variable() {
+    let refused = file("api_key_env = \"MY_MODEL_KEY\"\ndecide_build = \"\"\n");
+    assert!(Config::load(refused.path()).is_err());
+    assert_eq!(
+        Config::key_env(refused.path()).as_deref(),
+        Some("MY_MODEL_KEY")
+    );
+    let unknown = file("api_key_env = \"MY_MODEL_KEY\"\napi_kee = \"k\"\n");
+    assert_eq!(
+        Config::key_env(unknown.path()).as_deref(),
+        Some("MY_MODEL_KEY")
+    );
+    let broken = file("api_key_env = \n");
+    assert_eq!(Config::key_env(broken.path()), None);
+}
+
+#[test]
 fn a_file_overrides_some_fields_and_unknown_fields_are_refused() {
     let f = file(
         "base_url = \"http://127.0.0.1:8000/v1\"\ndecide_api = \"chat\"\ntimeout_ms = 5000\n\n[models]\ndecide = \"local-vl\"\nverify = \"local-vl-small\"\n",

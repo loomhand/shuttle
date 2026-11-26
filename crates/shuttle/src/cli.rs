@@ -284,7 +284,10 @@ async fn serve(
 ) -> Result<(), String> {
     let path = default_path(home());
     let mut config = Config::load(&path);
-    let key_vars = key_vars(config.as_ref().ok().map(|c| c.api_key_env.as_str()));
+    let named = config
+        .as_ref()
+        .map_or_else(|_| Config::key_env(&path), |c| Some(c.api_key_env.clone()));
+    let key_vars = key_vars(named.as_deref());
     let android = config.as_mut().ok().and_then(|c| c.android.take());
     let local = android.is_none();
     let mut safety = config
