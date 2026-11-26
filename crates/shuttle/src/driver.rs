@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use crate::{Backoff, Running, home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
+const UPDATE_CHECK: &str = "CUA_DRIVER_RS_UPDATE_CHECK";
 const DRIVER_EMBEDDED: &str = "CUA_DRIVER_EMBEDDED";
 const CONSENT_ALERT: &str = "CUA_DRIVER_ALLOW_CAPTURE_CONSENT_ALERT";
 const WINDOW_WATCH: &str = "CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS";
@@ -118,6 +119,7 @@ impl Proc {
             .args(["--glide-ms", GLIDE_MS])
             .args((!self.overlay).then_some("--no-overlay"))
             .env(TELEMETRY, "false")
+            .env(UPDATE_CHECK, "false")
             .env_remove(crate::http::TOKEN_ENV)
             .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
             .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
@@ -289,7 +291,7 @@ while True:
 "#;
 
     #[test]
-    fn the_driver_and_its_stop_start_without_the_http_token_or_telemetry() {
+    fn the_driver_and_its_stop_start_without_the_http_token_telemetry_or_update_check() {
         let proc = Proc {
             bin: "/bin/true".into(),
             endpoint: "driver.sock".into(),
@@ -310,6 +312,13 @@ while True:
                 cmd.as_std().get_envs().collect::<Vec<_>>()
             );
         }
+        let update = std::ffi::OsStr::new(UPDATE_CHECK);
+        assert!(
+            proc.command()
+                .as_std()
+                .get_envs()
+                .any(|(k, v)| k == update && v == Some("false".as_ref()))
+        );
     }
 
     #[tokio::test]

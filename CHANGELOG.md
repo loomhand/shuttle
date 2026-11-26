@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **The bundled cua-driver's `stop` runs with its telemetry off, so a shutdown leaves no telemetry worker behind and sends no telemetry.** shuttle starts the driver with its telemetry off, but stopped it, at every daemon shutdown and when it cleared a stale driver at start, with a `cua-driver stop` that did not carry that setting. The driver counted that command as telemetry: it started a detached copy of itself with no arguments to send a content-free usage event, and on its first run and the first run of each new driver version a registration event, to the driver's upstream analytics. That copy was left orphaned, with parent pid 1; a hardware round on Linux saw it for up to about two minutes after a `SIGTERM` to the daemon. Both commands now carry the setting, on every platform. Cost: none.
+- **The bundled cua-driver no longer checks for a newer release of itself.** The driver's `serve` looks up the latest cua-driver release at start, from its installer pin or GitHub's API, to print an update banner that shuttle never shows, since shuttle ships the driver and updates it with each release. A hardware round on Linux saw the started driver resolve a name even with telemetry off. shuttle now starts it with `CUA_DRIVER_RS_UPDATE_CHECK=false`, on every platform. Cost: none.
 
 ## 0.1.61 - 2026-11-26
 
