@@ -1560,7 +1560,8 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const off = MAC && !(b && inside(b, await desk.screen()))
     const of = off && now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
     if (off && !of) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
-    const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
+    const mine = me ?? w
+    const what = of ? `the app window "${of.title}", which the image shows alone` : mine.title.trim() ? `the app window "${mine.title}"${mine.app ? ` of the app "${mine.app}"` : ''}, with its menus and pop-ups, on a computer screen that can show other windows too` : 'a computer screen'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return

@@ -79,7 +79,25 @@ test('an expect on a window wholly on the main display checks the screen shot, a
   const r = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(seen.shots, [{}])
-  assert.match(seen.asked[0] ?? '', /^You check the state of a computer screen\.\nCondition: the text is bold\n/)
+  assert.match(seen.asked[0] ?? '', /^You check the state of the app window "Portal", with its menus and pop-ups, on a computer screen that can show other windows too\.\nCondition: the text is bold\n/)
+})
+
+test('an expect checked on the screen shot names the plan window and its app, so a condition true only in another window does not pass', async (t) => {
+  const asked: string[] = []
+  const here = { ...win, app: 'Pages', bounds: [0, 0, 640, 774] }
+  const other = { id: '7/1', title: 'Notes', role: 'window', pid: 4242, active: false, app: 'Notes', bounds: [640, 0, 640, 774] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([here, other])
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: here, truncated: false, nodes: [root] })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { ok: { probability: 0.2 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(1280, 800).toString('base64') }
+    if (tool === 'model_ask') { asked.push(String(args.prompt)); return JSON.stringify({ text: '{"ok": true, "why": "it shows"}', usage }) }
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ expect: 'the text is bold' }] })
+  assert.equal(r.ok, true, JSON.stringify(r))
+  assert.equal(asked[0], 'You check the state of the app window "Portal" of the app "Pages", with its menus and pop-ups, on a computer screen that can show other windows too.\nCondition: the text is bold\n{"ok": true or false, "why": "one short sentence"}\nAnswer with one JSON object and nothing else.')
 })
 
 test('an expect off macOS on a window of a second display checks the screen shot, as 0.1.60 did', { skip: process.platform === 'darwin' }, async (t) => {
@@ -87,7 +105,7 @@ test('an expect off macOS on a window of a second display checks the screen shot
   const r = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(seen.shots, [{}])
-  assert.match(seen.asked[0] ?? '', /^You check the state of a computer screen\./)
+  assert.match(seen.asked[0] ?? '', /^You check the state of the app window "Portal", with its menus and pop-ups, on a computer screen/)
 })
 
 test('grounding on a window wholly on the main display reads the screen shot', async (t) => {
@@ -183,7 +201,7 @@ test('an expect on an Android device checks the device shot, which takes no wind
   const r = await device({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(seen.shots, [{}])
-  assert.match(seen.asked[0] ?? '', /^You check the state of a computer screen\./)
+  assert.match(seen.asked[0] ?? '', /^You check the state of the app window "Portal", with its menus and pop-ups, on a computer screen/)
 })
 
 test('an expect whose window gets a same-titled twin before the shot checks the screen, not a shot by title', async (t) => {
@@ -202,7 +220,7 @@ test('an expect whose window gets a same-titled twin before the shot checks the 
   const r = await main({ steps: [{ expect: 'the text is bold' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(shots, [{}])
-  assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
+  assert.match(asked[0] ?? '', /^You check the state of the app window "Portal", with its menus and pop-ups, on a computer screen/)
 })
 
 test('grounding on a window that moves after its shot grounds again on a fresh shot, and stops when it moves again', async (t) => {
@@ -254,7 +272,7 @@ test('an expect while an untitled popup of the plan window is in front checks th
   const r = await main({ steps: [{ expect: "the suggestions show 'apple'" }] })
   assert.equal(r.ok, true, JSON.stringify(r))
   assert.deepEqual(shots, [{}])
-  assert.match(asked[0] ?? '', /^You check the state of a computer screen\./)
+  assert.match(asked[0] ?? '', /^You check the state of the app window "Portal", with its menus and pop-ups, on a computer screen/)
 })
 
 test('a recorded point fallback places its point by where the window is now, not where it was at the step start', async (t) => {
