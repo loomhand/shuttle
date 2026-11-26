@@ -7,8 +7,8 @@ REPO=loomhand/shuttle
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 [ $# -eq 1 ] || { echo "usage: $0 TAG" >&2; exit 2; }
 TAG=$1
-[ "$(git -C "$ROOT" rev-parse HEAD)" = "$(git -C "$ROOT" rev-parse "$TAG^{commit}")" ] || {
-	echo "check out $TAG first: the entitlements are read from this checkout" >&2
+git -C "$ROOT" diff --quiet "$TAG" -- packaging || {
+	echo "packaging/ differs from $TAG: sign from a clean checkout of $TAG" >&2
 	exit 1
 }
 
