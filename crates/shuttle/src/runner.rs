@@ -351,7 +351,9 @@ async fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     open.write(true).create_new(true);
     #[cfg(unix)]
     open.mode(0o600);
-    open.open(path).await?.write_all(bytes).await
+    let mut file = open.open(path).await?;
+    file.write_all(bytes).await?;
+    file.flush().await
 }
 
 async fn capture(mut r: impl AsyncRead + Unpin, into: Captured) {
@@ -461,6 +463,18 @@ mod tests {
             .await
             .unwrap();
         assert!(none.get("usage").is_none(), "{none}");
+    }
+
+    #[tokio::test]
+    async fn a_private_file_is_whole_on_disk_when_its_write_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = vec![b'x'; 4 << 20];
+        for i in 0..200 {
+            let path = dir.path().join(format!("{i}.json"));
+            write_private(&path, &bytes).await.unwrap();
+            assert_eq!(std::fs::read(&path).unwrap().len(), bytes.len(), "file {i}");
+            std::fs::remove_file(&path).unwrap();
+        }
     }
 
     #[tokio::test]
