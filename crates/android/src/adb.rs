@@ -3346,7 +3346,10 @@ mod tests {
             let mut set = vec![0; clipboard_message("secret", 1).len()];
             peer.read_exact(&mut set).await.unwrap();
             drop(peer);
-            let (mut fresh, _) = listener.accept().await.unwrap();
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
             fresh.write_all(&[0]).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 1).len()];
             let read =
@@ -3499,7 +3502,20 @@ mod tests {
             c.set_clipboard("line 1", &fake.android.owed).await.unwrap();
         }
         assert_eq!(device.await.unwrap(), clipboard_message("line 1", 1));
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fake
+                .android
+                .control
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(Control::is_open)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
         assert!(fake.android.paste("line 2").await.is_err());
         assert!(fake.android.control.lock().await.is_none());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3648,7 +3664,10 @@ mod tests {
         let (accepted, on_accept) = tokio::sync::oneshot::channel();
         let (closed, on_close) = tokio::sync::oneshot::channel::<()>();
         let device = tokio::spawn(async move {
-            let (mut fresh, _) = listener.accept().await.unwrap();
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
             let _ = accepted.send(());
             let _ = on_close.await;
             fresh.write_all(&[0]).await.unwrap();
@@ -3696,10 +3715,13 @@ mod tests {
     #[tokio::test]
     async fn a_close_waits_out_a_paste_whose_ack_is_slow_then_empties_the_clipboard() {
         let (android, mut peer) = session("/nonexistent/adb").await;
+        let (read, on_read) = tokio::sync::oneshot::channel();
+        let (closing, on_close) = tokio::sync::oneshot::channel::<()>();
         let device = tokio::spawn(async move {
             let mut set = vec![0; clipboard_message("secret", 1).len()];
             peer.read_exact(&mut set).await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            let _ = read.send(());
+            let _ = on_close.await;
             peer.write_all(&ack(1)).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 2).len()];
             let cleared =
@@ -3710,8 +3732,17 @@ mod tests {
         let android = Arc::new(android);
         let paster = Arc::clone(&android);
         let pasting = tokio::spawn(async move { paster.paste("secret").await });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        android.close().await;
+        tokio::time::timeout(Duration::from_secs(5), on_read)
+            .await
+            .unwrap()
+            .unwrap();
+        let closer = Arc::clone(&android);
+        let close = tokio::spawn(async move { closer.close().await });
+        while !android.closed.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+        let _ = closing.send(());
+        close.await.unwrap();
         let (set, clear) = device.await.unwrap();
         assert_eq!(set, clipboard_message("secret", 1));
         assert_eq!(clear, Some(clipboard_message("", 2)));
@@ -3753,11 +3784,19 @@ mod tests {
         });
         let android = Arc::new(android);
         let typist = Arc::clone(&android);
-        let typing =
-            tokio::spawn(
-                async move { typist.type_text("secret", None, std::future::pending).await },
-            );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (checked, mut on_check) = tokio::sync::mpsc::unbounded_channel();
+        let typing = tokio::spawn(async move {
+            typist
+                .type_text("secret", None, move || {
+                    let _ = checked.send(());
+                    std::future::pending()
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), on_check.recv())
+            .await
+            .unwrap()
+            .unwrap();
         tokio::time::timeout(Duration::from_secs(5), android.close())
             .await
             .expect("the close did not end");

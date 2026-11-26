@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use crate::{Backoff, Running, home, log};
 
 const TELEMETRY: &str = "CUA_DRIVER_RS_TELEMETRY_ENABLED";
+const UPDATE_CHECK: &str = "CUA_DRIVER_RS_UPDATE_CHECK";
 const DRIVER_EMBEDDED: &str = "CUA_DRIVER_EMBEDDED";
 const CONSENT_ALERT: &str = "CUA_DRIVER_ALLOW_CAPTURE_CONSENT_ALERT";
 const WINDOW_WATCH: &str = "CUA_DRIVER_WINDOW_CHANGE_TIMEOUT_MS";
@@ -118,6 +119,7 @@ impl Proc {
             .args(["--glide-ms", GLIDE_MS])
             .args((!self.overlay).then_some("--no-overlay"))
             .env(TELEMETRY, "false")
+            .env(UPDATE_CHECK, "false")
             .env_remove(crate::http::TOKEN_ENV)
             .envs(self.embedded.then_some((DRIVER_EMBEDDED, "1")))
             .envs(self.watch.then_some((WINDOW_WATCH, WINDOW_WATCH_MS)))
@@ -170,6 +172,7 @@ impl Proc {
     fn stop_command(&self) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.args(["stop", "--socket", &self.endpoint])
+            .env(TELEMETRY, "false")
             .env_remove(crate::http::TOKEN_ENV)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -288,7 +291,7 @@ while True:
 "#;
 
     #[test]
-    fn the_driver_starts_without_the_http_token() {
+    fn the_driver_and_its_stop_start_without_the_http_token_telemetry_or_update_check() {
         let proc = Proc {
             bin: "/bin/true".into(),
             endpoint: "driver.sock".into(),
@@ -298,16 +301,24 @@ while True:
             watch: false,
         };
         let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
+        let telemetry = std::ffi::OsStr::new(TELEMETRY);
         for cmd in [proc.command(), proc.stop_command()] {
+            let envs = || cmd.as_std().get_envs();
             assert!(
-                cmd.as_std()
-                    .get_envs()
-                    .any(|(k, v)| k == token && v.is_none()),
+                envs().any(|(k, v)| k == token && v.is_none())
+                    && envs().any(|(k, v)| k == telemetry && v == Some("false".as_ref())),
                 "{:?} {:?}",
                 cmd.as_std().get_args().collect::<Vec<_>>(),
                 cmd.as_std().get_envs().collect::<Vec<_>>()
             );
         }
+        let update = std::ffi::OsStr::new(UPDATE_CHECK);
+        assert!(
+            proc.command()
+                .as_std()
+                .get_envs()
+                .any(|(k, v)| k == update && v == Some("false".as_ref()))
+        );
     }
 
     #[tokio::test]
@@ -518,7 +529,10 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        drop(std::os::unix::net::UnixListener::bind(&endpoint).unwrap());
+        tokio::net::UnixSocket::new_stream()
+            .unwrap()
+            .bind(&endpoint)
+            .unwrap();
         let driver = Bundled::start(&exe, &endpoint, true, true, false)
             .await
             .unwrap()
@@ -559,7 +573,10 @@ while True:
         let file = dir.path().join("file.sock").to_string_lossy().into_owned();
         let link = dir.path().join("link.sock").to_string_lossy().into_owned();
         let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
-        drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
+        tokio::net::UnixSocket::new_stream()
+            .unwrap()
+            .bind(&dead)
+            .unwrap();
         std::fs::write(&file, "").unwrap();
         std::os::unix::fs::symlink(&file, &link).unwrap();
         for socket in [&live, &dead, &missing, &file, &link] {
