@@ -425,8 +425,11 @@ mod tests {
 
     const UTF8: u32 = 0x0800_0100;
 
+    static TIS: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_chord_records_the_key_it_is_on_and_plain_typing_the_character_it_makes() {
+        let _tis = lock(&TIS);
         let layout = Mutex::new(layout());
         let press = |code: u16, text: &str, flags: u64| {
             let units: Vec<u16> = text.encode_utf16().collect();
@@ -455,6 +458,7 @@ mod tests {
 
     #[test]
     fn a_chord_after_an_input_source_switch_is_named_by_the_layout_it_switched_to() {
+        let _tis = lock(&TIS);
         let (tx, _inputs) = tokio::sync::mpsc::unbounded_channel();
         let seen = Seen {
             tx,
