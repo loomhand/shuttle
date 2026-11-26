@@ -209,6 +209,17 @@ test('a state check on a control that lies wholly outside the shot of its window
   }
 })
 
+test('a state check on a control with no width or height stops and asks no model', async (t) => {
+  for (const size of [[0, 20], [20, 0]] as const) {
+    const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [300, 100, ...size] }
+    let reads = 0
+    const seen = await second(t, { at: [100, 10, 846, 774], nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
+    const r = await main({ steps: [{ verify: 'Bold', on: true }] })
+    assert.equal(r.escalate?.reason, 'the state of "Bold" cannot be read: it has no size on the screen', JSON.stringify(r))
+    assert.deepEqual(seen.asked, [], `${size}`)
+  }
+})
+
 test('a state check on a control partly inside the shot of its window or the screen reads the visible part', async (t) => {
   for (const [at, place, shots, images] of [[[100, 10, 846, 774], [1270, 100], [{ x: 1230, y: 96, w: 50, h: 28 }], [[50, 28]]], [bounds, [-1426, 100], [own], [[50, 28]]]] as const) {
     const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [...place, 20, 20] }

@@ -1385,6 +1385,7 @@ async function cropState(n: Node, unsent = true, w?: Win) {
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
+  if (b[2] <= 0 || b[3] <= 0) throw new Surprise(`the state of "${n.name}" cannot be read: it has no size on the screen`, await seen())
   const ws = w?.bounds ? await desk.windows() : []
   const fresh = ws.find((x) => x.id === w?.id && x.pid === w.pid)
   if (w?.bounds && !fresh) throw new Surprise(`"${w.title}" closed before the state of "${n.name}" was read`, await seen())
