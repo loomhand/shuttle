@@ -1203,10 +1203,10 @@ mod tests {
         let mut d = daemon(Echo, Guard::default());
         let up = Arc::new(AtomicBool::new(false));
         let tap = Mutex::new(Some(Witness(d.halted.subscribe(), Arc::clone(&up))));
-        let listen = move |_, _, _: &[String], _| -> Result<(Box<dyn Send>, bool), String> {
+        let listen = move |_, _, _: &[String]| -> Result<(Box<dyn Send>, bool), String> {
             Ok((Box::new(tap.lock().unwrap().take()), false))
         };
-        d.recorder = Recorder::new(std::env::temp_dir(), Arc::default()).tapped(Vec::new, listen);
+        d.recorder = Recorder::new(std::env::temp_dir(), Arc::default()).tapped(|| {}, listen);
         assert_eq!(d.record(true), Ok(None));
         d.halt(true);
         assert!(
@@ -1852,9 +1852,8 @@ mod tests {
                 early.send(()).unwrap();
                 done.lock().unwrap().recv().unwrap();
             }
-            Vec::new()
         };
-        let listen = move |_, _, _: &[String], _| -> Result<(Box<dyn Send>, bool), String> {
+        let listen = move |_, _, _: &[String]| -> Result<(Box<dyn Send>, bool), String> {
             if before_lock {
                 flag.store(true, Ordering::Relaxed);
                 return Ok((Box::new(()), false));

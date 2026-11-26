@@ -2,13 +2,14 @@
 
 use std::cell::Cell;
 use std::ffi::c_void;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Once};
 use std::thread::JoinHandle;
 
 use shuttle_desk::ax;
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::lock;
 use crate::record::{Field, Hit, Input};
 
 const SESSION_TAP: u32 = 1;
@@ -25,6 +26,7 @@ const KEYBOARD_TYPE: u32 = 10;
 const KEY_ACTION_DOWN: u16 = 0;
 const NO_DEAD_KEYS: u32 = 1;
 const TURN_S: f64 = 0.1;
+const DELIVER_IMMEDIATELY: isize = 4;
 const CMD: u64 = 1 << 20;
 const CTRL: u64 = 1 << 18;
 const MODIFIERS: [(u64, &str); 4] = [
@@ -34,7 +36,12 @@ const MODIFIERS: [(u64, &str); 4] = [
     (1 << 17, "shift"),
 ];
 
+static LAYOUT: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+static WATCHED: Once = Once::new();
+
 type Callback = extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> *mut c_void;
+type Notified =
+    extern "C" fn(*mut c_void, *const c_void, *const c_void, *const c_void, *const c_void);
 
 /// A running tap; dropping it stops it.
 pub struct Tap {
@@ -47,7 +54,6 @@ impl Tap {
     pub fn start(
         tx: UnboundedSender<Input>,
         acting: Arc<AtomicUsize>,
-        layout: Vec<u32>,
     ) -> Result<(Self, bool), String> {
         let (ready, started) = std::sync::mpsc::channel();
         let done = Arc::new(AtomicBool::new(false));
@@ -59,7 +65,6 @@ impl Tap {
                 port: std::ptr::null_mut(),
                 scale: ax::display_scale(),
                 fresh: Cell::new(true),
-                layout,
             }));
             let mask = (1u64 << LEFT_DOWN) | (1u64 << RIGHT_DOWN) | (1u64 << KEY_DOWN);
             // SAFETY: `seen` outlives the tap: it is freed below, after the run loop that calls `heard` ends; the source and port are released after use.
@@ -132,7 +137,6 @@ struct Seen {
     scale: f64,
     /// Whether the next key starts a run of typing, whose target the tap reads.
     fresh: Cell<bool>,
-    layout: Vec<u32>,
 }
 
 /// The live event a tap callback gets, for the length of the call.
@@ -154,12 +158,15 @@ impl Event {
         unsafe { CGEventGetIntegerValueField(self.0, f) }
     }
 
-    fn text(&self, flags: u64, layout: &[u32]) -> String {
+    fn text(&self, flags: u64, layout: &Mutex<Vec<u32>>) -> String {
         let mut buf = [0u16; 8];
         let mut len = 0usize;
         // SAFETY: the event is live for the callback that wraps it, `layout` holds a whole keyboard layout, and each call writes at most `buf.len()` units into `buf`.
         unsafe {
-            if flags & (CMD | CTRL) != 0 && !layout.is_empty() {
+            if let Some(layout) = (flags & (CMD | CTRL) != 0)
+                .then(|| lock(layout))
+                .filter(|l| !l.is_empty())
+            {
                 let mut dead = 0u32;
                 UCKeyTranslate(
                     layout.as_ptr().cast(),
@@ -222,9 +229,23 @@ extern "C" fn heard(
     event
 }
 
-pub(crate) fn layout() -> Vec<u32> {
-    // SAFETY: the source is released after its layout data, which it owns, is copied out whole.
+pub(crate) fn watch() {
+    *lock(&LAYOUT) = layout();
+}
+
+fn layout() -> Vec<u32> {
+    // SAFETY: the observer is a function that lives as long as the process; the source is released after its layout data, which it owns, is copied out whole.
     unsafe {
+        WATCHED.call_once(|| {
+            CFNotificationCenterAddObserver(
+                CFNotificationCenterGetDistributedCenter(),
+                std::ptr::null(),
+                switched,
+                kTISNotifySelectedKeyboardInputSourceChanged,
+                std::ptr::null(),
+                DELIVER_IMMEDIATELY,
+            );
+        });
         let source = TISCopyCurrentKeyboardLayoutInputSource();
         if source.is_null() {
             return Vec::new();
@@ -239,6 +260,16 @@ pub(crate) fn layout() -> Vec<u32> {
         CFRelease(source);
         words
     }
+}
+
+extern "C" fn switched(
+    _: *mut c_void,
+    _: *const c_void,
+    _: *const c_void,
+    _: *const c_void,
+    _: *const c_void,
+) {
+    watch();
 }
 
 fn focused() -> Option<Field> {
@@ -297,7 +328,7 @@ fn read(e: &Event, kind: u32, seen: &Seen) -> Option<Input> {
             let text = if secret {
                 String::new()
             } else {
-                e.text(flags, &seen.layout)
+                e.text(flags, &LAYOUT)
             };
             let plain = !text.is_empty()
                 && !text.chars().any(char::is_control)
@@ -357,11 +388,21 @@ unsafe extern "C" {
     fn CFRelease(cf: *const c_void);
     fn CFDataGetLength(data: *const c_void) -> isize;
     fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+    fn CFNotificationCenterGetDistributedCenter() -> *mut c_void;
+    fn CFNotificationCenterAddObserver(
+        center: *mut c_void,
+        observer: *const c_void,
+        callback: Notified,
+        name: *const c_void,
+        object: *const c_void,
+        suspension: isize,
+    );
 }
 
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
     static kTISPropertyUnicodeKeyLayoutData: *const c_void;
+    static kTISNotifySelectedKeyboardInputSourceChanged: *const c_void;
     fn TISCopyCurrentKeyboardLayoutInputSource() -> *mut c_void;
     fn TISGetInputSourceProperty(source: *mut c_void, key: *const c_void) -> *const c_void;
     fn UCKeyTranslate(
@@ -382,9 +423,11 @@ unsafe extern "C" {
 mod tests {
     use super::*;
 
+    const UTF8: u32 = 0x0800_0100;
+
     #[test]
     fn a_chord_records_the_key_it_is_on_and_plain_typing_the_character_it_makes() {
-        let layout = layout();
+        let layout = Mutex::new(layout());
         let press = |code: u16, text: &str, flags: u64| {
             let units: Vec<u16> = text.encode_utf16().collect();
             // SAFETY: the event is created here, read while it lives and released after.
@@ -411,6 +454,58 @@ mod tests {
     }
 
     #[test]
+    fn a_chord_after_an_input_source_switch_is_named_by_the_layout_it_switched_to() {
+        let (tx, _inputs) = tokio::sync::mpsc::unbounded_channel();
+        let seen = Seen {
+            tx,
+            acting: Arc::default(),
+            port: std::ptr::null_mut(),
+            scale: 1.0,
+            fresh: Cell::new(false),
+        };
+        let mut named = Vec::new();
+        // SAFETY: each layout is copied whole out of a source its list owns before the list, query and id are released, and each event is read while it lives and released after.
+        unsafe {
+            for id in [c"com.apple.keylayout.US", c"com.apple.keylayout.German"] {
+                let id = CFStringCreateWithCString(std::ptr::null(), id.as_ptr(), UTF8);
+                let key = kTISPropertyInputSourceID;
+                let query = CFDictionaryCreate(
+                    std::ptr::null(),
+                    &key,
+                    &id,
+                    1,
+                    (&raw const kCFTypeDictionaryKeyCallBacks).cast(),
+                    (&raw const kCFTypeDictionaryValueCallBacks).cast(),
+                );
+                let list = TISCreateInputSourceList(query, true);
+                assert!(!list.is_null() && CFArrayGetCount(list) > 0);
+                let data = TISGetInputSourceProperty(
+                    CFArrayGetValueAtIndex(list, 0).cast_mut(),
+                    kTISPropertyUnicodeKeyLayoutData,
+                );
+                let len = usize::try_from(CFDataGetLength(data)).unwrap_or_default();
+                let mut words = vec![0u32; len.div_ceil(4)];
+                std::ptr::copy_nonoverlapping(
+                    CFDataGetBytePtr(data),
+                    words.as_mut_ptr().cast(),
+                    len,
+                );
+                CFRelease(list);
+                CFRelease(query);
+                CFRelease(id);
+                *lock(&LAYOUT) = words;
+                let event = CGEventCreateKeyboardEvent(std::ptr::null(), 6, true);
+                CGEventSetFlags(event, CTRL);
+                if let Some(Input::Key { text, .. }) = read(&Event(event), KEY_DOWN, &seen) {
+                    named.push(text);
+                }
+                CFRelease(event);
+            }
+        }
+        assert_eq!(named, ["z", "y"]);
+    }
+
+    #[test]
     fn typing_names_the_app_in_front_when_no_focused_element_names_one() {
         assert!(ax::typing().0.is_some() || ax::front_app().is_none());
     }
@@ -420,5 +515,32 @@ mod tests {
         fn CGEventCreateKeyboardEvent(source: *const c_void, code: u16, down: bool) -> *mut c_void;
         fn CGEventKeyboardSetUnicodeString(event: *mut c_void, len: usize, chars: *const u16);
         fn CGEventSetFlags(event: *mut c_void, flags: u64);
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static kCFTypeDictionaryKeyCallBacks: [usize; 6];
+        static kCFTypeDictionaryValueCallBacks: [usize; 5];
+        fn CFStringCreateWithCString(
+            alloc: *const c_void,
+            chars: *const std::ffi::c_char,
+            encoding: u32,
+        ) -> *const c_void;
+        fn CFDictionaryCreate(
+            alloc: *const c_void,
+            keys: *const *const c_void,
+            values: *const *const c_void,
+            count: isize,
+            key_callbacks: *const c_void,
+            value_callbacks: *const c_void,
+        ) -> *const c_void;
+        fn CFArrayGetCount(array: *const c_void) -> isize;
+        fn CFArrayGetValueAtIndex(array: *const c_void, index: isize) -> *const c_void;
+    }
+
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        static kTISPropertyInputSourceID: *const c_void;
+        fn TISCreateInputSourceList(query: *const c_void, all: bool) -> *const c_void;
     }
 }
