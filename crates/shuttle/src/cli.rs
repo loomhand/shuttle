@@ -234,15 +234,12 @@ fn controls_serve(endpoint: String) -> ExitCode {
                 about: format!("Shuttle {VERSION}, {input} input"),
             });
         };
-        let done = block_on(
-            Builder::new_multi_thread(),
-            serve(&endpoint, Some(controls::asker()), ready),
-        );
-        if let Err(e) = &done {
-            log(e);
-            #[cfg(target_os = "macos")]
-            let _ = crate::write_private(&crate::proxy::failed(&endpoint), e.as_bytes());
-        }
+        let done = ended(&endpoint, || {
+            block_on(
+                Builder::new_multi_thread(),
+                serve(&endpoint, Some(controls::asker()), ready),
+            )
+        });
         #[cfg(windows)]
         controls::shutdown();
         std::process::exit(i32::from(done.is_err()));
@@ -253,6 +250,26 @@ fn controls_serve(endpoint: String) -> ExitCode {
             std::thread::park();
         },
     }
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn ended(endpoint: &str, serve: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    #[cfg(windows)]
+    let _ = endpoint;
+    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(serve)).unwrap_or_else(|p| {
+        let why = p
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| p.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or_default();
+        Err(format!("serve panicked: {why}"))
+    });
+    if let Err(e) = &done {
+        log(e);
+        #[cfg(target_os = "macos")]
+        let _ = crate::write_private(&crate::proxy::failed(endpoint), e.as_bytes());
+    }
+    done
 }
 
 async fn serve(
@@ -483,6 +500,19 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), stopping)
             .await
             .expect("the signal sent before the first poll ends the shutdown wait");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_serve_that_panics_before_it_binds_leaves_the_panic_for_the_proxy() {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("desk.sock").to_string_lossy().into_owned();
+        let done = ended(&endpoint, || panic!("bad config"));
+        let left = std::fs::read_to_string(crate::proxy::failed(&endpoint));
+        assert_eq!(done, Err("serve panicked: bad config".to_owned()));
+        assert_eq!(left.ok().as_deref(), Some("serve panicked: bad config"));
+        let formatted = ended(&endpoint, || panic!("bad {}", "hotkey"));
+        assert_eq!(formatted, Err("serve panicked: bad hotkey".to_owned()));
     }
 
     #[test]
