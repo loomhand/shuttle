@@ -230,13 +230,9 @@ extern "C" fn heard(
 }
 
 pub(crate) fn watch() {
-    *lock(&LAYOUT) = layout();
-}
-
-fn layout() -> Vec<u32> {
-    // SAFETY: the observer is a function that lives as long as the process; the source is released after its layout data, which it owns, is copied out whole.
-    unsafe {
-        WATCHED.call_once(|| {
+    WATCHED.call_once(|| {
+        // SAFETY: the observer is a function that lives as long as the process.
+        unsafe {
             CFNotificationCenterAddObserver(
                 CFNotificationCenterGetDistributedCenter(),
                 std::ptr::null(),
@@ -245,7 +241,14 @@ fn layout() -> Vec<u32> {
                 std::ptr::null(),
                 DELIVER_IMMEDIATELY,
             );
-        });
+        }
+    });
+    *lock(&LAYOUT) = layout();
+}
+
+fn layout() -> Vec<u32> {
+    // SAFETY: the source is released after its layout data, which it owns, is copied out whole.
+    unsafe {
         let source = TISCopyCurrentKeyboardLayoutInputSource();
         if source.is_null() {
             return Vec::new();
