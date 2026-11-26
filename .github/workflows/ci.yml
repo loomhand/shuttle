@@ -148,7 +148,7 @@ jobs:
         if: matrix.runner == 'ubuntu-24.04'
         run: |
           shellcheck -s sh packaging/install.sh
-          shellcheck packaging/package.sh packaging/fetch.sh
+          shellcheck packaging/package.sh packaging/fetch.sh packaging/sign-macos.sh packaging/release-macos.sh
 
       - name: Parse install.ps1
         if: matrix.runner == 'windows-2025'

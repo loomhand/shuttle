@@ -22,10 +22,10 @@ gh release download "$TAG" -R "$REPO" -D "$WORK" -p "shuttle-$TAG-macos-*.tar.gz
 set -- "$WORK"/shuttle-"$TAG"-macos-*.tar.gz
 [ $# -eq 2 ] || { echo "$TAG has $# macOS archives, not 2; fix it in the next patch release" >&2; exit 1; }
 (cd "$WORK" && shasum -a 256 -c SHA256SUMS --ignore-missing)
-for a in "$WORK"/shuttle-"$TAG"-macos-*.tar.gz; do
+for a in "$@"; do
 	gh attestation verify "$a" -R "$REPO" --signer-workflow "$REPO/.github/workflows/release.yml" --source-ref "refs/tags/$TAG"
 done
-"$ROOT/packaging/sign-macos.sh" "$WORK"/shuttle-"$TAG"-macos-*.tar.gz
+"$ROOT/packaging/sign-macos.sh" "$@"
 (
 	cd "$WORK"
 	for a in shuttle-"$TAG"-macos-*.tar.gz; do
@@ -34,7 +34,7 @@ done
 	done
 	shasum -a 256 -c SHA256SUMS --ignore-missing
 )
-gh release upload "$TAG" -R "$REPO" --clobber "$WORK"/shuttle-"$TAG"-macos-*.tar.gz
+gh release upload "$TAG" -R "$REPO" --clobber "$@"
 gh release upload "$TAG" -R "$REPO" --clobber "$WORK/SHA256SUMS"
 gh workflow run release-verify.yml -R "$REPO" -f tag="$TAG"
 rm -rf "$WORK"

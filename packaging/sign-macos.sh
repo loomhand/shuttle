@@ -33,7 +33,6 @@ for archive in "$@"; do
 	status=$(plutil -extract status raw "$WORK/notary.plist")
 	id=$(plutil -extract id raw "$WORK/notary.plist")
 	[ "$status" = Accepted ] || { echo "notarization of $archive: $status (xcrun notarytool log $id …)" >&2; exit 1; }
-	rm "$WORK/notarize.zip" "$WORK/notary.plist"
 	xcrun stapler staple "$app"
 	spctl --assess --type execute --verbose=2 "$app"
 	COPYFILE_DISABLE=1 tar -czf "$archive" -C "$WORK" Shuttle.app
