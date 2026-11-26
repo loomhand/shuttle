@@ -18,10 +18,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: The tag is a prerelease
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$TAG is not a vX.Y.Z tag"; exit 1 ;; esac
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a vX.Y.Z tag"; exit 1; }
           [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = true ] || { echo "::error::$TAG is not a prerelease"; exit 1; }
 
   install:
@@ -73,6 +74,9 @@ jobs:
           spctl --assess --type execute --verbose=2 "$app" 2>&1 | tee spctl.txt
           grep -q 'source=Notarized Developer ID' spctl.txt
           xcrun stapler validate "$app"
+          codesign -dv "$app" 2>&1 | tee codesign.txt
+          grep -qx 'Identifier=io.github.loomhand.shuttle' codesign.txt
+          grep -qx 'TeamIdentifier=9M3JGFG665' codesign.txt
 
       - name: Status over MCP
         shell: bash
@@ -122,7 +126,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          newest=$({ echo "$TAG"; gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName'; } | sort -V | tail -1)
+          released=$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName')
+          newest=$(printf '%s\n' "$TAG" "$released" | sort -V | tail -1)
           latest=false
           [ "$newest" != "$TAG" ] || latest=true
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --prerelease=false --latest="$latest"

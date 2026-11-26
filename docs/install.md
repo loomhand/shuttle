@@ -22,7 +22,7 @@ irm https://github.com/loomhand/shuttle/releases/latest/download/install.ps1 | i
 
 It installs to `%LOCALAPPDATA%\Programs\loomhand\shuttle` (`SHUTTLE_HOME` overrides it) and adds that directory to your user `PATH`. `SHUTTLE_VERSION` picks a release.
 
-Both installers download the archive and the release's `SHA256SUMS`, refuse an archive whose sha256 does not match, and need no administrator rights. The checksums come from the same release, so they catch a damaged download, not a replaced release: to check that a Linux or Windows archive was built by this repository's release workflow, install it by hand and verify its attestation; on macOS, check the app's Developer ID signature and notarization ([Manual install and verification](#manual-install-and-verification)). Both run the new `shuttle --version` and keep the previous install when it does not start or the copy fails: `install.sh` checks the new program before it replaces the installed one, `install.ps1` moves the previous install aside and puts it back. Both refuse to replace a running install and change nothing, so quit a running daemon first (`pkill -f 'shuttle serve'`; Windows: also the agents' `shuttle mcp` sessions, which run from the install directory, see [Uninstall](#uninstall)). After an upgrade, restart your agents' `shuttle mcp` sessions: on Linux an open one cannot start the new daemon. There are no Homebrew or Scoop packages yet.
+Both installers download the archive and the release's `SHA256SUMS`, refuse an archive whose sha256 does not match, and need no administrator rights. The checksums come from the same release, so they catch a damaged download, not a replaced release: to check that a Linux or Windows archive was built by this repository's release workflow, install it by hand and verify its attestation; on macOS, check the app's Developer ID signature and notarization instead ([Manual install and verification](#manual-install-and-verification)). Both run the new `shuttle --version` and keep the previous install when it does not start or the copy fails: `install.sh` checks the new program before it replaces the installed one, `install.ps1` moves the previous install aside and puts it back. Both refuse to replace a running install and change nothing, so quit a running daemon first (`pkill -f 'shuttle serve'`; Windows: also the agents' `shuttle mcp` sessions, which run from the install directory, see [Uninstall](#uninstall)). After an upgrade, restart your agents' `shuttle mcp` sessions: on Linux an open one cannot start the new daemon. There are no Homebrew or Scoop packages yet.
 
 ## First-time setup
 
@@ -78,9 +78,10 @@ Download an archive and `SHA256SUMS` from the [releases](https://github.com/loom
 shasum -a 256 -c SHA256SUMS --ignore-missing     # Linux: sha256sum -c SHA256SUMS --ignore-missing
 gh attestation verify shuttle-vX.Y.Z-linux-x64.tar.gz -R loomhand/shuttle
 spctl --assess --type execute --verbose=2 Shuttle.app     # macOS, after unpacking: source=Notarized Developer ID
+codesign -dv Shuttle.app 2>&1 | grep TeamIdentifier      # macOS: TeamIdentifier=9M3JGFG665
 ```
 
-The attestation shows that a Linux or Windows archive, or an installer, was built by this repository's release workflow from the tagged commit. It is build provenance, not a code signature, and Windows does not read it. The macOS archives have no attestation: their `Shuttle.app` is signed with a Developer ID and notarized after the workflow built it, and `spctl` checks that signature.
+The attestation shows that a Linux or Windows archive, or an installer, was built by this repository's release workflow from the tagged commit. It is build provenance, not a code signature, and Windows does not read it. A macOS archive's attestation covers the build before signing: the published archive holds the same `Shuttle.app` signed with a Developer ID and notarized, so its sha256 differs, and `spctl` checks that it is notarized while `codesign` names the team.
 
 ## Uninstall
 

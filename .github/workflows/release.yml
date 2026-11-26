@@ -178,7 +178,8 @@ jobs:
       - name: Provenance
         uses: actions/attest-build-provenance@v4.2.2
         with:
-          subject-path: |
+          subject-path: dist/*
+|
             dist/*-linux-*
             dist/*-windows-*
             dist/install.sh

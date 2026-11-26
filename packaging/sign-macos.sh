@@ -22,16 +22,17 @@ for archive in "$@"; do
 	tar -xzf "$archive" -C "$WORK"
 	app="$WORK/Shuttle.app"
 	bin="$app/Contents/MacOS"
-	sign --entitlements "$DIR/cua-driver.entitlements" "$bin/cua-driver"
+	sign --entitlements "$DIR/apple-events.entitlements" "$bin/cua-driver"
 	sign "$bin/cua-cursor-theme"
 	sign --entitlements "$DIR/node.entitlements" "$bin/node"
-	sign "$app"
+	sign --entitlements "$DIR/apple-events.entitlements" "$app"
 	codesign --verify --strict --deep --verbose=2 "$app"
 	ditto -c -k --keepParent "$app" "$WORK/notarize.zip"
 	xcrun notarytool submit "$WORK/notarize.zip" --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" \
 		--wait --output-format plist >"$WORK/notary.plist"
 	status=$(plutil -extract status raw "$WORK/notary.plist")
-	[ "$status" = Accepted ] || { echo "notarization of $archive: $status" >&2; exit 1; }
+	id=$(plutil -extract id raw "$WORK/notary.plist")
+	[ "$status" = Accepted ] || { echo "notarization of $archive: $status (xcrun notarytool log $id …)" >&2; exit 1; }
 	rm "$WORK/notarize.zip" "$WORK/notary.plist"
 	xcrun stapler staple "$app"
 	spctl --assess --type execute --verbose=2 "$app"
