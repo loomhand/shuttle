@@ -179,11 +179,6 @@ jobs:
         uses: actions/attest-build-provenance@v4.2.2
         with:
           subject-path: dist/*
-|
-            dist/*-linux-*
-            dist/*-windows-*
-            dist/install.sh
-            dist/install.ps1
 
       - name: Publish
         env:
