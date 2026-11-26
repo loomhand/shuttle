@@ -17,6 +17,7 @@ async function editor(t: TestContext, role: string, flips: boolean) {
     item(),
   ]
   await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: nodes() })
     if (tool === 'desk_read') return JSON.stringify(item())
@@ -62,6 +63,7 @@ test('a Windows menu toggle read by pixels keeps the menu the plan opened and ne
     ] : []),
   ]
   await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
     if (tool === 'desk_windows') return JSON.stringify([win])
     if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: nodes() })
     if (tool === 'desk_read') { const n = nodes().find((x) => x.id === args.id); return n ? JSON.stringify(n) : { text: `no element ${String(args.id)}`, error: true } }
