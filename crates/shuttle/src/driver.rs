@@ -520,7 +520,10 @@ while True:
         let dir = tempfile::tempdir().unwrap();
         let exe = fake(dir.path(), FAKE).unwrap();
         let endpoint = endpoint(&dir.path().join("desk.sock").to_string_lossy());
-        drop(std::os::unix::net::UnixListener::bind(&endpoint).unwrap());
+        tokio::net::UnixSocket::new_stream()
+            .unwrap()
+            .bind(&endpoint)
+            .unwrap();
         let driver = Bundled::start(&exe, &endpoint, true, true, false)
             .await
             .unwrap()
@@ -561,7 +564,10 @@ while True:
         let file = dir.path().join("file.sock").to_string_lossy().into_owned();
         let link = dir.path().join("link.sock").to_string_lossy().into_owned();
         let _listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
-        drop(std::os::unix::net::UnixListener::bind(&dead).unwrap());
+        tokio::net::UnixSocket::new_stream()
+            .unwrap()
+            .bind(&dead)
+            .unwrap();
         std::fs::write(&file, "").unwrap();
         std::os::unix::fs::symlink(&file, &link).unwrap();
         for socket in [&live, &dead, &missing, &file, &link] {
