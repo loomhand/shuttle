@@ -170,6 +170,7 @@ impl Proc {
     fn stop_command(&self) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.args(["stop", "--socket", &self.endpoint])
+            .env(TELEMETRY, "false")
             .env_remove(crate::http::TOKEN_ENV)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -288,7 +289,7 @@ while True:
 "#;
 
     #[test]
-    fn the_driver_starts_without_the_http_token() {
+    fn the_driver_and_its_stop_start_without_the_http_token_or_telemetry() {
         let proc = Proc {
             bin: "/bin/true".into(),
             endpoint: "driver.sock".into(),
@@ -298,11 +299,12 @@ while True:
             watch: false,
         };
         let token = std::ffi::OsStr::new(crate::http::TOKEN_ENV);
+        let telemetry = std::ffi::OsStr::new(TELEMETRY);
         for cmd in [proc.command(), proc.stop_command()] {
+            let envs = || cmd.as_std().get_envs();
             assert!(
-                cmd.as_std()
-                    .get_envs()
-                    .any(|(k, v)| k == token && v.is_none()),
+                envs().any(|(k, v)| k == token && v.is_none())
+                    && envs().any(|(k, v)| k == telemetry && v == Some("false".as_ref())),
                 "{:?} {:?}",
                 cmd.as_std().get_args().collect::<Vec<_>>(),
                 cmd.as_std().get_envs().collect::<Vec<_>>()
