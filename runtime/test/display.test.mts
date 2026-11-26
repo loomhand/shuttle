@@ -181,13 +181,25 @@ test('a state check on a window of a second display crops the control from that 
 })
 
 test('a state check on a control that lies wholly outside the shot of its window or the screen stops and asks no model', async (t) => {
-  for (const [at, place, where] of [[[100, 10, 846, 774], -200, 'the screen shot of the main display'], [bounds, -1600, 'the shot of its window'], [[100, 10, 846, 774], 1400, 'the screen shot of the main display']] as const) {
-    const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [place, 100, 20, 20] }
+  const screen = [100, 10, 846, 774]; const full = 'the screen shot of the main display'
+  for (const [at, place, where] of [[screen, [-200, 100], full], [bounds, [-1600, 100], 'the shot of its window'], [screen, [1400, 100], full], [screen, [-30, 100], full], [screen, [-50, 100], full],[screen, [1290, 100], full], [screen, [300, -22], full], [screen, [300, 802], full], [bounds, [-1446, 100], 'the shot of its window']] as const) {
+    const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [...place, 20, 20] }
     let reads = 0
     const seen = await second(t, { at: [...at], nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
     const r = await main({ steps: [{ verify: 'Bold', on: true }] })
     assert.equal(r.escalate?.reason, `the state of "Bold" cannot be read: it lies outside ${where}`, JSON.stringify(r))
     assert.deepEqual(seen.asked, [], `${place}`)
+  }
+})
+
+test('a state check on a control partly inside the shot of its window or the screen reads the visible part', async (t) => {
+  for (const [at, place, shots, images] of [[[100, 10, 846, 774], [1270, 100], [{ x: 1230, y: 96, w: 50, h: 28 }], [[50, 28]]], [bounds, [-1426, 100], [own], [[50, 28]]]] as const) {
+    const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [...place, 20, 20] }
+    let reads = 0
+    const seen = await second(t, { at: [...at], nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
+    const r = await main({ steps: [{ verify: 'Bold', on: true }] })
+    assert.equal(r.ok, true, JSON.stringify(r))
+    assert.deepEqual([seen.shots, seen.images], [shots, images], `${place}`)
   }
 })
 

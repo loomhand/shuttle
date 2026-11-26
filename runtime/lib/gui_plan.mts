@@ -1389,9 +1389,10 @@ async function cropState(n: Node, unsent = true, w?: Win) {
   const fresh = ws.find((x) => x.id === w?.id && x.pid === w.pid)
   if (w?.bounds && !fresh) throw new Surprise(`"${w.title}" closed before the state of "${n.name}" was read`, await seen())
   const v = await windowView(fresh, ws)
-  const area = v?.area ?? await desk.screen(); const [x, y] = [b[0] - 40 - (area.left ?? 0), b[1] - 4 - (area.top ?? 0)]
-  const r = { x: Math.max(0, x), y: Math.max(0, y), w: b[2] + 80 + Math.min(0, x), h: b[3] + 8 + Math.min(0, y) }
-  if (r.w <= 0 || r.h <= 0 || r.x >= area.width || r.y >= area.height) throw new Surprise(`the state of "${n.name}" cannot be read: it lies outside ${v ? 'the shot of its window' : 'the screen shot of the main display'}`, await seen())
+  const area = v?.area ?? await desk.screen(); const [ox, oy] = [b[0] - (area.left ?? 0), b[1] - (area.top ?? 0)]
+  if (!crosses([ox, oy, b[2], b[3]], [0, 0, area.width, area.height])) throw new Surprise(`the state of "${n.name}" cannot be read: it lies outside ${v ? 'the shot of its window' : 'the screen shot of the main display'}`, await seen())
+  const [x, y] = [Math.max(0, ox - 40), Math.max(0, oy - 4)]
+  const r = { x, y, w: Math.min(area.width, ox + b[2] + 40) - x, h: Math.min(area.height, oy + b[3] + 4) - y }
   const img = v && unpng(v.png); const k = img ? img.w / area.width : 1
   const shot = img ? cut(img, Math.round(r.x * k), Math.round(r.y * k), Math.round(r.w * k), Math.round(r.h * k), 1) : await desk.shot(r)
   return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot, 'on')).on === true
