@@ -3346,7 +3346,10 @@ mod tests {
             let mut set = vec![0; clipboard_message("secret", 1).len()];
             peer.read_exact(&mut set).await.unwrap();
             drop(peer);
-            let (mut fresh, _) = listener.accept().await.unwrap();
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
             fresh.write_all(&[0]).await.unwrap();
             let mut clear = vec![0; clipboard_message("", 1).len()];
             let read =
@@ -3661,7 +3664,10 @@ mod tests {
         let (accepted, on_accept) = tokio::sync::oneshot::channel();
         let (closed, on_close) = tokio::sync::oneshot::channel::<()>();
         let device = tokio::spawn(async move {
-            let (mut fresh, _) = listener.accept().await.unwrap();
+            let (mut fresh, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
             let _ = accepted.send(());
             let _ = on_close.await;
             fresh.write_all(&[0]).await.unwrap();
