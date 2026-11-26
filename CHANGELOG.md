@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **The bundled cua-driver's `stop` runs with its telemetry off, so a shutdown leaves no stray cua-driver and sends no telemetry.** shuttle starts the driver with its telemetry off, but stopped it, at every daemon shutdown and when it cleared a stale driver at start, with a `cua-driver stop` that did not carry that setting. The driver counted that command as telemetry: it started a detached copy of itself with no arguments to send a content-free usage event, and on first run a registration event, to the driver's upstream analytics. On Linux that copy was left with parent pid 1 for up to about two minutes after a `SIGTERM` to the daemon. Both commands now carry the setting, on every platform. Cost: none.
+- **The bundled cua-driver's `stop` runs with its telemetry off, so a shutdown leaves no telemetry worker behind and sends no telemetry.** shuttle starts the driver with its telemetry off, but stopped it, at every daemon shutdown and when it cleared a stale driver at start, with a `cua-driver stop` that did not carry that setting. The driver counted that command as telemetry: it started a detached copy of itself with no arguments to send a content-free usage event, and on its first run and the first run of each new driver version a registration event, to the driver's upstream analytics. That copy was left orphaned, with parent pid 1; a hardware round on Linux saw it for up to about two minutes after a `SIGTERM` to the daemon. Both commands now carry the setting, on every platform. Cost: none.
 
 ## 0.1.61 - 2026-11-26
 
