@@ -1381,8 +1381,14 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
     for _ in 0..CONNECT_TRIES {
         if let Ok(mut stream) = TcpStream::connect(&addr).await {
             let mut ready = [0u8; 1];
-            if matches!(stream.read(&mut ready).await, Ok(1)) {
-                return Ok(stream);
+            match tokio::time::timeout(UI_TIMEOUT, stream.read(&mut ready)).await {
+                Ok(Ok(1)) => return Ok(stream),
+                Err(_) => {
+                    return Err(format!(
+                        "scrcpy control took the connection but sent nothing within {UI_TIMEOUT:?}"
+                    ));
+                }
+                _ => {}
             }
         }
         tokio::time::sleep(CONNECT_PAUSE).await;
@@ -4049,6 +4055,29 @@ mod tests {
         assert_eq!(end(serde_json::json!({"session": "cu-2"})).await, "ended");
         assert_eq!(end(serde_json::json!({"session": "cu-2"})).await, "ended");
         assert!(android.saved().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_control_server_that_takes_the_connection_and_never_sends_fails_the_open_in_time() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let started = tokio::time::Instant::now();
+        let opening = tokio::spawn(async move { connect_control(&port).await });
+        let (_peer, _) = listener.accept().await.unwrap();
+        let opened = tokio::time::timeout(UI_TIMEOUT * 6, opening).await;
+        let err = opened
+            .expect("the open still waits on a server that sends nothing")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "scrcpy control took the connection but sent nothing within 10s"
+        );
+        assert!(
+            started.elapsed() < UI_TIMEOUT + CONNECT_PAUSE,
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
