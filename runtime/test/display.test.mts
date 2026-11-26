@@ -180,6 +180,17 @@ test('a state check on a window of a second display crops the control from that 
   assert.deepEqual(seen.images, [[100, 28]])
 })
 
+test('a state check on a control that lies wholly outside the shot of its window or the screen stops and asks no model', async (t) => {
+  for (const [at, place, where] of [[[100, 10, 846, 774], -200, 'the screen shot of the main display'], [bounds, -1600, 'the shot of its window'], [[100, 10, 846, 774], 1400, 'the screen shot of the main display']] as const) {
+    const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [place, 100, 20, 20] }
+    let reads = 0
+    const seen = await second(t, { at: [...at], nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
+    const r = await main({ steps: [{ verify: 'Bold', on: true }] })
+    assert.equal(r.escalate?.reason, `the state of "Bold" cannot be read: it lies outside ${where}`, JSON.stringify(r))
+    assert.deepEqual(seen.asked, [], `${place}`)
+  }
+})
+
 test('a pick among same-named elements of a window on a second display places them in that window\'s shot', async (t) => {
   const button = (ref: number, x: number) => ({ ref, id: `1/${ref + 1}`, parent: 0, depth: 1, role: 'button', name: 'Send', states: ['showing'], bounds: [x, 100, 100, 40] })
   const seen = await second(t, { nodes: [root, button(1, -1300), button(2, -700)], pick: { r1: 0.95, r2: 0.05, none: 0 } })
