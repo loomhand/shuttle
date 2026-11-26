@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use desk_core::text::clip;
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, SAFEARRAY,
@@ -26,7 +26,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GA_ROOT, GUITHREADINFO, GW_OWNER, GetAncestor, GetForegroundWindow,
-    GetGUIThreadInfo, GetWindow, GetWindowTextW, GetWindowThreadProcessId, IsChild,
+    GetGUIThreadInfo, GetWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsChild,
     IsHungAppWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK,
     SendMessageTimeoutW, WM_CLOSE, WM_NULL, WindowFromPoint,
 };
@@ -410,6 +410,7 @@ impl Uia {
                     pid: Some(s.pid),
                     active: s.hwnd == foreground,
                     app,
+                    bounds: window_rect(s.hwnd),
                     number: u32::try_from(key).ok(),
                     ..Frame::default()
                 };
@@ -1034,6 +1035,13 @@ fn visible(hwnd: HWND) -> bool {
             .is_err()
                 || cloaked == 0)
     }
+}
+
+fn window_rect(hwnd: HWND) -> Option<[i32; 4]> {
+    let mut r = RECT::default();
+    // SAFETY: GetWindowRect takes any handle and writes only `r`; a stale handle fails.
+    unsafe { GetWindowRect(hwnd, &raw mut r) }.ok()?;
+    Some(uia_roles::rect_bounds(r.left, r.top, r.right, r.bottom))
 }
 
 fn foreground() -> HWND {

@@ -371,7 +371,7 @@ test('a plain background type right after a press, a double or right click, or a
   delete process.env.SHUTTLE_RUN
   const field = { ref: 1, id: 'p', parent: 0, depth: 1, role: 'textbox', name: 'Password', states: ['showing', 'protected'], bounds: [10, 10, 100, 20] }
   const win = { ...notepad(), bounds: [0, 0, 800, 600] }
-  for (const step of [{ click: 'Password' }, { click: 'Password', count: 2 }, { click: 'Password', button: 'right' }, ...(process.platform === 'win32' ? [] : [{ set: 'Password', value: 'pin' }])]) {
+  for (const step of [{ click: 'Password' }, ...(process.platform === 'darwin' ? [{ click: 'Password', count: 2 }, { click: 'Password', button: 'right' }] : []), ...(process.platform === 'win32' ? [] : [{ set: 'Password', value: 'pin' }])]) {
     const shown: string[] = []
     const d = desktop([user(), win], ({ tool, args }) => {
       if (tool === 'desk_snapshot') return JSON.stringify({ window: win, truncated: false, nodes: [{ ref: 0, id: 'r', parent: -1, depth: 0, role: 'window', name: win.title, states: [] }, field] })
@@ -460,7 +460,7 @@ test('when the plan window is gone a window of the app with the same title never
   assert.ok(!d.calls.some((c) => c.tool === 'desk_type'))
 })
 
-test('a background click with a button, count or modifiers goes into the plan window in its image pixels, not to the covering window', async (t) => {
+test('a background click with a button, count or modifiers goes into the plan window in its image pixels, not to the covering window', { skip: process.platform !== 'darwin' }, async (t) => {
   const report = { id: '1', title: 'Report', role: 'window', pid: 4, active: false, bounds: [100, 50, 600, 400] }
   const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [300, 250, 40, 20] }
   const d = desktop([user(), report], ({ tool }) => {
@@ -505,7 +505,7 @@ test('a background check whose state cannot be read after its press says the con
   assert.deepEqual(sent(d.calls, 'desk_press').map((a) => a.id), ['1/2'])
 })
 
-test('a background click with a count takes the image scale from the window of its own app when another app has a window of that title', async (t) => {
+test('a background click with a count takes the image scale from the window of its own app when another app has a window of that title', { skip: process.platform !== 'darwin' }, async (t) => {
   const finder = { id: '1', title: 'Downloads', role: 'window', pid: 4, active: false, app: 'Finder', bounds: [100, 50, 600, 400] }
   const browser = { id: '2', title: 'Downloads', role: 'window', pid: 8, active: false, app: 'Browser', bounds: [0, 0, 300, 200] }
   const file = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'button', name: 'report.txt', states: ['showing'], bounds: [300, 250, 40, 20] }

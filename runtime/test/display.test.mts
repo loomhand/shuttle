@@ -159,7 +159,7 @@ test('a state check on a window wholly on the main display crops the control fro
   assert.deepEqual(seen.shots, [{ x: 260, y: 96, w: 100, h: 28 }])
 })
 
-test('a recorded crop on a window of a second display is found in that window\'s shot and clicked in desk coordinates', async (t) => {
+test('a recorded crop on a window of a second display is found in that window\'s shot and clicked in desk coordinates', { skip: process.platform !== 'darwin' }, async (t) => {
   const crop = cut(unpng(pattern(846, 774, [100, 100])), 60, 80, 200, 100, 1).toString('base64')
   const seen = await second(t, { window: pattern(846, 774, [300, 250]) })
   const r = await main({ steps: [{ click: 'the Green button', recorded: { text: 'the Green button', crop, root: true } }] })
@@ -168,7 +168,7 @@ test('a recorded crop on a window of a second display is found in that window\'s
   assert.deepEqual(seen.shots, [own])
 })
 
-test('grounding on a window of a second display reads that window\'s shot at its own scale and checks a crop of it in window pixels', async (t) => {
+test('grounding on a window of a second display reads that window\'s shot at its own scale and checks a crop of it in window pixels', { skip: process.platform !== 'darwin' }, async (t) => {
   const seen = await second(t, { window: gray(1692, 1548) })
   const r = await main({ steps: [{ click: 'the yellow star' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
@@ -178,7 +178,7 @@ test('grounding on a window of a second display reads that window\'s shot at its
   assert.match(seen.prompts.find((p) => p.includes('crop')) ?? '', /^A 1280x800 crop of the window\. A click is about to land on its pixel \(640, 400\)\./)
 })
 
-test('a grounded check that zooms in on a window of a second display cuts the zoom from that window\'s shot', async (t) => {
+test('a grounded check that zooms in on a window of a second display cuts the zoom from that window\'s shot', { skip: process.platform !== 'darwin' }, async (t) => {
   const seen = await second(t, { window: gray(1692, 1548), truth: 0.8 })
   const r = await main({ steps: [{ click: 'the yellow star' }] })
   assert.equal(r.ok, true, JSON.stringify(r))
@@ -187,7 +187,7 @@ test('a grounded check that zooms in on a window of a second display cuts the zo
   assert.match(seen.prompts.filter((p) => p.includes('crop')).at(-1) ?? '', /^A 384x288 crop of the window\. A click is about to land on its pixel \(192, 144\)\./)
 })
 
-test('a state check on a window of a second display crops the control from that window\'s shot', async (t) => {
+test('a state check on a window of a second display crops the control from that window\'s shot', { skip: process.platform !== 'darwin' }, async (t) => {
   const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [-1000, 100, 20, 20] }
   let reads = 0
   const seen = await second(t, { nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
@@ -200,6 +200,7 @@ test('a state check on a window of a second display crops the control from that 
 test('a state check on a control that lies wholly outside the shot of its window or the screen stops and asks no model', async (t) => {
   const screen = [100, 10, 846, 774]; const full = 'the screen shot of the main display'
   for (const [at, place, where] of [[screen, [-200, 100], full], [bounds, [-1600, 100], 'the shot of its window'], [screen, [1400, 100], full], [screen, [-30, 100], full], [screen, [-50, 100], full],[screen, [1290, 100], full], [screen, [300, -22], full], [screen, [300, 802], full], [bounds, [-1446, 100], 'the shot of its window']] as const) {
+    if (at === bounds && process.platform !== 'darwin') continue
     const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [...place, 20, 20] }
     let reads = 0
     const seen = await second(t, { at: [...at], nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
@@ -222,6 +223,7 @@ test('a state check on a control with no width or height stops and asks no model
 
 test('a state check on a control partly inside the shot of its window or the screen reads the visible part', async (t) => {
   for (const [at, place, shots, images] of [[[100, 10, 846, 774], [1270, 100], [{ x: 1230, y: 96, w: 50, h: 28 }], [[50, 28]]], [bounds, [-1426, 100], [own], [[50, 28]]]] as const) {
+    if (at === bounds && process.platform !== 'darwin') continue
     const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [...place, 20, 20] }
     let reads = 0
     const seen = await second(t, { at: [...at], nodes: [root, box], read: () => reads++ % 2 ? JSON.stringify(box) : { text: 'no state', error: true } })
@@ -231,7 +233,7 @@ test('a state check on a control partly inside the shot of its window or the scr
   }
 })
 
-test('a pick among same-named elements of a window on a second display places them in that window\'s shot', async (t) => {
+test('a pick among same-named elements of a window on a second display places them in that window\'s shot', { skip: process.platform !== 'darwin' }, async (t) => {
   const button = (ref: number, x: number) => ({ ref, id: `1/${ref + 1}`, parent: 0, depth: 1, role: 'button', name: 'Send', states: ['showing'], bounds: [x, 100, 100, 40] })
   const seen = await second(t, { nodes: [root, button(1, -1300), button(2, -700)], pick: { r1: 0.95, r2: 0.05, none: 0 } })
   const r = await main({ steps: [{ click: 'Send' }] })
@@ -274,7 +276,7 @@ test('an expect whose window gets a same-titled twin before the shot checks the 
   assert.match(asked[0] ?? '', /^You check the state of the app window "Portal", with its menus and pop-ups, on a computer screen/)
 })
 
-test('grounding on a window that moves after its shot grounds again on a fresh shot, and stops when it moves again', async (t) => {
+test('grounding on a window that moves after its shot grounds again on a fresh shot, and stops when it moves again', { skip: process.platform !== 'darwin' }, async (t) => {
   const moved = [-1400, 20, 846, 774]
   const seen = await second(t, { moves: [moved] })
   const r = await main({ steps: [{ click: 'the yellow star' }] })
@@ -288,7 +290,7 @@ test('grounding on a window that moves after its shot grounds again on a fresh s
   assert.deepEqual(again.clicks, [])
 })
 
-test('grounding on a window on the main display that moves after the screen shot grounds again, and stops when it moves again', { skip: process.platform !== 'darwin' }, async (t) => {
+test('grounding on a window on the main display that moves after the screen shot grounds again, and stops when it moves again', async (t) => {
   const moved = [120, 20, 846, 774]
   const seen = await second(t, { at: [100, 10, 846, 774], ground: [500, 300], moves: [moved] })
   const r = await main({ steps: [{ click: 'the yellow star' }] })
@@ -301,7 +303,33 @@ test('grounding on a window on the main display that moves after the screen shot
   assert.deepEqual(again.clicks, [])
 })
 
-test('grounding again after a window off the main display moved takes the screen shot once a same-titled twin is listed', async (t) => {
+test('grounding on a window that moves while the model grounds its target grounds again and clicks the target where it is now, and stops when it moves again', async (t) => {
+  for (const moves of [1, 2]) {
+    const clicks: string[] = []; const grounds: number[] = []
+    let at = [100, 50, 640, 480]
+    const pad = { id: '6/1', title: 'notes.txt - Mousepad', role: 'window', pid: process.pid, active: true }
+    await daemon(t, ({ tool, args }) => {
+      if (tool === 'desk_windows') return JSON.stringify([{ ...pad, bounds: at }])
+      if (tool === 'desk_snapshot') return JSON.stringify({ window: { ...pad, bounds: at }, truncated: false, nodes: [{ ref: 0, id: '6/1', parent: -1, depth: 0, role: 'window', name: pad.title, states: ['showing'] }] })
+      if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+      if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
+      if (tool === 'model_ground') { const x = (at[0] ?? 0) + 320; grounds.push(x); if (grounds.length <= moves) at = [x - 170, 50, 640, 480]; return JSON.stringify({ x, y: 290, usage }) }
+      if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '6/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '6/1', role: 'window', name: pad.title }], pid: process.pid })
+      if (tool === 'model_decide') return JSON.stringify({ answers: { on: { probability: 0.95 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+      if (tool === 'desk_click') clicks.push(`${args.x},${args.y}`)
+      return '{"ok":true}'
+    })
+    const r = await main({ steps: [{ click: 'the Save button' }] })
+    assert.deepEqual(grounds, [420, 570], `${moves}`)
+    if (moves === 1) assert.deepEqual([r.ok, clicks], [true, ['570,290']], JSON.stringify(r))
+    else {
+      assert.match(r.escalate?.reason ?? '', /^"notes.txt - Mousepad" moved, changed size or closed while its target was found in its shot, so nothing was clicked/)
+      assert.deepEqual(clicks, [])
+    }
+  }
+})
+
+test('grounding again after a window off the main display moved takes the screen shot once a same-titled twin is listed', { skip: process.platform !== 'darwin' }, async (t) => {
   const seen = await second(t, { moves: [[-1400, 20, 846, 774]], twin: true })
   await main({ steps: [{ click: 'the yellow star' }] })
   assert.deepEqual(seen.shots.filter((x) => x.w === undefined), [own, {}])
@@ -348,7 +376,7 @@ test('a recorded point fallback places its point by where the window is now, not
   assert.deepEqual([clicks, r.trace?.[0]?.how], [['260,180'], 'point'])
 })
 
-test('a state check crops the control from the window where the window list places it now', async (t) => {
+test('a state check crops the control from the window where the window list places it now', { skip: process.platform !== 'darwin' }, async (t) => {
   const box = { ref: 1, id: '1/2', parent: 0, depth: 1, role: 'checkbox', name: 'Bold', states: ['showing'], bounds: [-1000, 100, 20, 20] }
   const px = Buffer.alloc(846 * 774 * 4, 200)
   for (let y = 0; y < 774; y++) for (let x = 360; x < 376; x++) px.fill(0, (y * 846 + x) * 4, (y * 846 + x) * 4 + 4)
@@ -397,7 +425,7 @@ test('an expect while an untitled window of the app covers a plan window off the
   assert.deepEqual(shots, [own])
 })
 
-test('a window that moves after its shot and whose next shot fails never takes a click at its old place', async (t) => {
+test('a window that moves after its shot and whose next shot fails never takes a click at its old place', { skip: process.platform !== 'darwin' }, async (t) => {
   const clicks: string[] = []
   let at = [-900, 0, 800, 600]; let shots = 0
   const pad = { id: '4/1', title: 'Sketch', role: 'window', pid: process.pid, active: true }

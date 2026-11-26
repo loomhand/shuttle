@@ -500,7 +500,7 @@ function lined(w: Win | null, ws: Win[], text: string): desk.Target {
   return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
 function alone(w: Win | null | undefined, ws = picked): Win | null {
-  return w && !ANDROID && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, ws) ? w : null
+  return w && MAC && w.owner === undefined && !twinId(w, ws) ? w : null
 }
 async function windowView(w: Win | undefined, ws = picked): Promise<View | null> {
   const of = alone(w, ws); const b = of?.bounds
@@ -902,7 +902,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
   const missed: string[] = []
   let v: View | undefined
   const settled = async (p: [number, number]): Promise<[number, number]> => {
-    const of = v?.of ?? (MAC ? host(w, ws) : undefined)
+    const of = v?.of ?? (ANDROID ? undefined : host(w, ws))
     if (!of?.bounds) return p
     const list = await desk.windows(); const get = (x: Win) => list.find((y) => y.id === x.id && y.pid === x.pid)
     const [now, fresh] = [get(of), get(w)]
@@ -952,7 +952,7 @@ function pointer(s: Step) {
 
 async function inWindow(w: Win, x: number, y: number): Promise<[number, number, desk.Target]> {
   if (!BG) return [x, y, FG]
-  const t = at(w); const to = listed.find((v) => v.title === t.window && v.pid === t.pid)
+  const t = at(w); const to = MAC ? listed.find((v) => v.title === t.window && v.pid === t.pid) : undefined
   if (!to?.bounds) {
     if (!AUTO) throw new Surprise(`"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window`, await seen())
     await front(w); return [x, y, FG]

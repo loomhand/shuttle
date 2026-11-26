@@ -227,6 +227,7 @@ fn frame(f: atspi::Frame) -> Frame {
         unlisted: !FRAME_ROLES.contains(&f.role),
         framed: f.role != WINDOW_ROLE,
         title: f.name,
+        bounds: f.bounds,
         ..Frame::default()
     }
 }
@@ -723,6 +724,7 @@ mod tests {
             states: 1 << 1,
             pid: Some(42),
             stale: false,
+            bounds: None,
         };
         let m = frame(f.clone());
         assert_eq!(
@@ -752,9 +754,25 @@ mod tests {
             states: 1 << 1,
             pid: Some(42),
             stale: false,
+            bounds: None,
         });
         assert!(!qt.unlisted && qt.framed);
         assert_eq!((qt.title.as_str(), qt.active), ("waits PyQt", true));
+    }
+
+    #[test]
+    fn a_frame_keeps_its_screen_extents_as_bounds() {
+        let f = atspi::Frame {
+            obj: Obj::parse("1.17/5").unwrap(),
+            role: 23,
+            name: "notes.txt - Mousepad".into(),
+            states: 0,
+            pid: Some(42),
+            stale: false,
+            bounds: Some([150, 40, 640, 480]),
+        };
+        assert_eq!(frame(f.clone()).bounds, Some([150, 40, 640, 480]));
+        assert_eq!(frame(atspi::Frame { bounds: None, ..f }).bounds, None);
     }
 
     struct Seg {

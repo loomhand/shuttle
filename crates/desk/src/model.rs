@@ -73,7 +73,7 @@ pub struct Frame {
     pub shell: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space: Option<&'static str>,
-    /// The window's rectangle in desk coordinates, where the backend reads it (macOS).
+    /// The window's rectangle in desk coordinates, where the backend reads it (macOS, Windows, Linux).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounds: Option<[i32; 4]>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
