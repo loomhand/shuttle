@@ -95,7 +95,7 @@ main() {
 	say "register it with an agent, e.g.: claude mcp add shuttle -- $PREFIX/bin/$NAME mcp"
 	if [ "$os" = macos ]; then
 		say "macOS: when $APP starts acting on the desktop, grant it Accessibility and Screen Recording in"
-		say "System Settings > Privacy & Security, adding $home; an upgrade replaces the ad hoc signature, so grant it again after each upgrade"
+		say "System Settings > Privacy & Security, adding $home; the grants stay across upgrades, except the first one from 0.1.60 or older"
 	fi
 }
 

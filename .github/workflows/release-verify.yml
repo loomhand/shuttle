@@ -1,0 +1,128 @@
+name: release-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The prerelease to install and promote, e.g. v0.1.61
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The tag is a prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::$TAG is not a vX.Y.Z tag"; exit 1 ;; esac
+          [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = true ] || { echo "::error::$TAG is not a prerelease"; exit 1; }
+
+  install:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            container: ubuntu:22.04
+          - runner: ubuntu-24.04-arm
+            container: ubuntu:24.04
+          - runner: macos-26
+          - runner: macos-15-intel
+          - runner: windows-2025
+          - runner: windows-2025
+            powershell: true
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    steps:
+      - name: Prerequisites
+        if: matrix.container
+        run: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates libx11-6 libxi6 libxkbcommon0
+
+      - name: Install
+        if: runner.os != 'Windows'
+        run: curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh" | SHUTTLE_VERSION="$TAG" sh
+
+      - name: Install (Windows)
+        if: runner.os == 'Windows' && !matrix.powershell
+        shell: pwsh
+        run: |
+          $env:SHUTTLE_VERSION = $env:TAG
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/install.ps1" | iex
+          "$env:LOCALAPPDATA\Programs\loomhand\shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Install (Windows PowerShell 5.1)
+        if: matrix.powershell
+        shell: powershell
+        run: |
+          $env:SHUTTLE_VERSION = $env:TAG
+          irm "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:TAG/install.ps1" | iex
+          "$env:LOCALAPPDATA\Programs\loomhand\shuttle" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: The macOS app is notarized
+        if: runner.os == 'macOS'
+        run: |
+          app=$HOME/Applications/Loomhand/Shuttle.app
+          spctl --assess --type execute --verbose=2 "$app" 2>&1 | tee spctl.txt
+          grep -q 'source=Notarized Developer ID' spctl.txt
+          xcrun stapler validate "$app"
+
+      - name: Status over MCP
+        shell: bash
+        run: |
+          [ "$RUNNER_OS" = Windows ] || export PATH="$HOME/.local/bin:$PATH"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}}' | shuttle mcp | tee status.json
+          grep -F "\\\"version\\\":\\\"${TAG#v}\\\"" status.json
+
+      - name: Bundled Node runs the runtime
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+          Linux) node=$HOME/.local/lib/loomhand/shuttle/node runtime=$HOME/.local/lib/loomhand/shuttle/runtime ;;
+          macOS) node=$HOME/Applications/Loomhand/Shuttle.app/Contents/MacOS/node runtime=$HOME/Applications/Loomhand/Shuttle.app/Contents/Resources/runtime ;;
+          Windows) node=$LOCALAPPDATA/Programs/loomhand/shuttle/node.exe runtime=$LOCALAPPDATA/Programs/loomhand/shuttle/runtime ;;
+          esac
+          "$node" --version
+          run=$RUNNER_TEMP/run
+          mkdir "$run"
+          echo '{"n":41}' > "$run/params.json"
+          echo 'export const main = ({ n }) => ({ n: n + 1, desk: typeof desk.windows })' > "$run/script.mjs"
+          SHUTTLE_SCRIPT="$run/script.mjs" SHUTTLE_RUN="$run" "$node" "$runtime/entry.mjs"
+          cat "$run/result.json"
+          grep -qF '{"n":42,"desk":"function"}' "$run/result.json"
+
+      - name: Bundled cua-driver starts and is built for this machine
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+          Linux) driver=$HOME/.local/lib/loomhand/shuttle/cua-driver ;;
+          macOS) driver=$HOME/Applications/Loomhand/Shuttle.app/Contents/MacOS/cua-driver ;;
+          Windows) driver=$LOCALAPPDATA/Programs/loomhand/shuttle/cua-driver.exe ;;
+          esac
+          "$driver" --version | tee driver.txt
+          grep -q '^cua-driver [0-9]' driver.txt
+          [ "$RUNNER_OS" != macOS ] || lipo -archs "$driver" | grep -qx "$(uname -m)"
+
+  promote:
+    needs: install
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: release-promote
+    permissions:
+      contents: write
+    steps:
+      - name: Mark the release as the latest unless a newer one is out
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          newest=$({ echo "$TAG"; gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --limit 100 --json tagName --jq '.[].tagName'; } | sort -V | tail -1)
+          latest=false
+          [ "$newest" != "$TAG" ] || latest=true
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --prerelease=false --latest="$latest"
