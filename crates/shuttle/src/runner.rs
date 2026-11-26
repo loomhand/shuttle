@@ -472,7 +472,7 @@ mod tests {
         for i in 0..200 {
             let path = dir.path().join(format!("{i}.json"));
             write_private(&path, &bytes).await.unwrap();
-            assert_eq!(std::fs::read(&path).unwrap().len(), bytes.len(), "file {i}");
+            assert_eq!(std::fs::metadata(&path).unwrap().len(), 4 << 20, "file {i}");
             std::fs::remove_file(&path).unwrap();
         }
     }
