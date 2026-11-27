@@ -952,9 +952,9 @@ function pointer(s: Step) {
 
 async function inWindow(w: Win, x: number, y: number): Promise<[number, number, desk.Target]> {
   if (!BG) return [x, y, FG]
-  const t = at(w); const to = MAC ? listed.find((v) => v.title === t.window && v.pid === t.pid) : undefined
-  if (!to?.bounds) {
-    if (!AUTO) throw new Surprise(`"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window`, await seen())
+  const t = at(w); const to = listed.find((v) => v.title === t.window && v.pid === t.pid)
+  if (!MAC || !to?.bounds) {
+    if (!AUTO) throw new Surprise(MAC ? `"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window` : `a background click with a button, count or modifiers reaches "${w.title}" only on macOS`, await seen())
     await front(w); return [x, y, FG]
   }
   const k = (await desk.shot({ window: t.window, pid: t.pid ?? undefined })).readUInt32BE(16) / to.bounds[2]
