@@ -62,11 +62,7 @@ impl Spi {
         ];
         let rects: Vec<(&str, [i32; 4])> = twins
             .iter()
-            .filter_map(|f| {
-                let obj = Obj::parse(&f.id).ok()?;
-                let rect = self.rt.block_on(self.atspi.extents(&obj)).ok()?;
-                Some((f.id.as_str(), rect))
-            })
+            .filter_map(|f| Some((f.id.as_str(), f.bounds?)))
             .collect();
         twin_in(&rects, place).map(str::to_owned)
     }

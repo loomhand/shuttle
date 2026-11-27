@@ -1701,9 +1701,10 @@ impl<B: Access + 'static, D: Input + Sync> Desk<B, D> {
                 let root = b.ancestors(&id)?.into_iter().next().unwrap_or(id);
                 let frame = b.frames_of(pid)?.into_iter().find(|f| f.id == root);
                 let frame = frame.ok_or(BACKGROUND_ELEMENT)?;
-                let bounds = match frame.number {
-                    Some(_) => None,
-                    None => b.node(&root, Extras::FRAME, 0)?.bounds,
+                let bounds = match (frame.number, frame.bounds) {
+                    (Some(_), _) => None,
+                    (None, Some(listed)) => Some(listed),
+                    (None, None) => b.node(&root, Extras::FRAME, 0)?.bounds,
                 };
                 Ok((frame, bounds))
             })

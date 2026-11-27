@@ -858,12 +858,7 @@ fn raw(el: &IUIAutomationElement, extras: Extras) -> Raw {
         control_type: raw_control_type(el),
         name: text(UIA_NamePropertyId),
         help: text(UIA_HelpTextPropertyId),
-        bounds: [
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-        ],
+        bounds: uia_roles::rect_bounds(rect.left, rect.top, rect.right, rect.bottom),
         accel: if extras.keys {
             text(UIA_AcceleratorKeyPropertyId)
         } else {
