@@ -11,7 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use desk_core::args::parse;
 use desk_core::shot::png_size;
-use desk_core::wire::{MCP_TOKEN_ENV, Output, into_password_field};
+use desk_core::wire::{Output, into_password_field};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -102,6 +102,7 @@ pub struct Device {
     pub scrcpy_jar: PathBuf,
     /// The helper that runs the paste server as the system uid; none runs it as adb's shell uid.
     pub su: Option<PathBuf>,
+    pub key_vars: Vec<String>,
 }
 
 /// adb on an Android device, with the front window and element centres of each session's latest computer_state.
@@ -672,7 +673,9 @@ impl Android {
 
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.device.adb);
-        cmd.env_remove(MCP_TOKEN_ENV);
+        for var in &self.device.key_vars {
+            cmd.env_remove(var);
+        }
         if let Some(serial) = &self.device.serial {
             cmd.args(["-s", serial]);
         }
@@ -1378,8 +1381,14 @@ async fn connect_control(port: &str) -> Result<TcpStream, String> {
     for _ in 0..CONNECT_TRIES {
         if let Ok(mut stream) = TcpStream::connect(&addr).await {
             let mut ready = [0u8; 1];
-            if matches!(stream.read(&mut ready).await, Ok(1)) {
-                return Ok(stream);
+            match tokio::time::timeout(UI_TIMEOUT, stream.read(&mut ready)).await {
+                Ok(Ok(1)) => return Ok(stream),
+                Err(_) => {
+                    return Err(format!(
+                        "scrcpy control took the connection but sent nothing within {UI_TIMEOUT:?}"
+                    ));
+                }
+                _ => {}
             }
         }
         tokio::time::sleep(CONNECT_PAUSE).await;
@@ -1419,6 +1428,8 @@ async fn read_ack<R: AsyncRead + Unpin>(r: &mut R, sequence: u64) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
+    use desk_core::wire::MCP_TOKEN_ENV;
+
     use super::*;
 
     #[cfg(unix)]
@@ -1430,13 +1441,16 @@ mod tests {
     const CRASH_LOG: &str = "10-19 08:01:40.100  3200  3200 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:40.100  3200  3200 F DEBUG   : Abort message: 'not ours'\n10-19 08:01:50.777  3318  3318 F DEBUG   : Cmdline: app_process / shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : pid: 3308, tid: 3308, name: main  >>> app_process <<<\n10-19 08:01:50.777  3318  3318 F DEBUG   : Abort message: 'No pending exception expected: java.lang.ClassNotFoundException: shuttle.Ui\n10-19 08:01:50.777  3318  3318 F DEBUG   : (Throwable with empty stack trace)'\n10-19 08:01:51.000  3330  3330 F DEBUG   : Cmdline: /system/bin/other\n10-19 08:01:51.000  3330  3330 F DEBUG   : Abort message: 'later, not ours'\n";
 
     #[test]
-    fn adb_runs_without_the_http_token() {
-        let cmd = android_at("/bin/true").command();
-        let token = std::ffi::OsStr::new(MCP_TOKEN_ENV);
+    fn adb_runs_without_the_model_key_or_the_http_token() {
+        let key_vars = ["OPENROUTER_API_KEY", MCP_TOKEN_ENV, "MY_KEY"];
+        let mut android = android_at("/bin/true");
+        android.device.key_vars = key_vars.map(str::to_owned).to_vec();
+        let cmd = android.command();
         assert!(
-            cmd.as_std()
+            key_vars.iter().all(|var| cmd
+                .as_std()
                 .get_envs()
-                .any(|(k, v)| k == token && v.is_none()),
+                .any(|(k, v)| k == *var && v.is_none())),
             "{:?}",
             cmd.as_std().get_envs().collect::<Vec<_>>()
         );
@@ -4043,6 +4057,29 @@ mod tests {
         assert!(android.saved().is_empty());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_control_server_that_takes_the_connection_and_never_sends_fails_the_open_in_time() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let started = tokio::time::Instant::now();
+        let opening = tokio::spawn(async move { connect_control(&port).await });
+        let (_peer, _) = listener.accept().await.unwrap();
+        let opened = tokio::time::timeout(UI_TIMEOUT * 6, opening).await;
+        let err = opened
+            .expect("the open still waits on a server that sends nothing")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "scrcpy control took the connection but sent nothing within 10s"
+        );
+        assert!(
+            started.elapsed() < UI_TIMEOUT + CONNECT_PAUSE,
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
     #[test]
     fn clipboard_message_is_scrcpy_set_clipboard_without_its_paste_key() {
         let msg = clipboard_message("\u{4f60}\u{597d}", 7);
@@ -5027,6 +5064,7 @@ mod tests {
             ui_jar: "/u.jar".into(),
             scrcpy_jar: "/s.jar".into(),
             su: None,
+            key_vars: Vec::new(),
         })
     }
 }

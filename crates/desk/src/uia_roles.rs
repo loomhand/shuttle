@@ -155,6 +155,10 @@ pub fn first_window(
     handles.into_iter().find(|h| *h != Ok(0)).transpose()
 }
 
+pub fn rect_bounds(left: i32, top: i32, right: i32, bottom: i32) -> [i32; 4] {
+    [left, top, right - left, bottom - top]
+}
+
 pub fn menu_family(control_type: i32) -> bool {
     matches!(control_type, 50009..=50011)
 }
@@ -380,6 +384,12 @@ mod tests {
             Err("element not available".to_owned()),
             "a WinForms context entry: the read on its popup fails, and the form beyond it, whose root is not the popup's, has a handle"
         );
+    }
+
+    #[test]
+    fn a_window_rect_maps_to_its_origin_and_size() {
+        assert_eq!(rect_bounds(150, 40, 790, 520), [150, 40, 640, 480]);
+        assert_eq!(rect_bounds(-8, -8, 1928, 1040), [-8, -8, 1936, 1048]);
     }
 
     #[test]

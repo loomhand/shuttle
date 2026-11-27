@@ -109,6 +109,12 @@ impl Config {
         Ok(config)
     }
 
+    pub fn key_env(path: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let table: toml::Table = toml::from_str(&text).ok()?;
+        table.get("api_key_env")?.as_str().map(str::to_owned)
+    }
+
     /// The key: `api_key` when set, else the `api_key_env` variable, else none.
     pub fn key(&self) -> Option<Secret> {
         self.api_key.clone().or_else(|| {

@@ -532,11 +532,12 @@ fn listed(list: Vec<WindowInfo>) -> Vec<WindowInfo> {
     shown
 }
 
-/// A window short of the screen is a dialog over another window; alone it is an activity in a transition.
+/// A window short of the screen is a dialog; alone, it is one only when inset on every side, unlike an activity in a transition.
 fn frame(w: WindowInfo, alone: bool, screen: (i32, i32)) -> Frame {
     let [l, t, r, b] = w.bounds;
     let bounds = [l, t, r - l, b - t];
-    let full = alone || fills(bounds, screen);
+    let inset = l > 0 && t > 0 && r < screen.0 && b < screen.1;
+    let full = fills(bounds, screen) || (alone && !inset);
     let title = if w.title.trim().is_empty() || w.title == w.package {
         w.package.clone()
     } else {
@@ -1355,6 +1356,7 @@ mod tests {
 
     const REDROID: (i32, i32) = (720, 1280);
     const DUMP: &str = r#"<hierarchy><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[0,0][720,1280]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[0,300][720,400]" /><node text="Dark theme" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0" bounds="[40,320][400,380]" /><node text="" class="android.widget.Switch" content-desc="" hint="" showing-hint="false" checkable="true" checked="true" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.1" bounds="[600,320][680,380]" /><node text="Search…" class="android.widget.EditText" content-desc="" hint="Search…" showing-hint="true" checkable="false" checked="false" clickable="true" long-clickable="false" editable="true" password="false" enabled="false" focused="true" selected="false" scrollable="false" visible="true" path="0.1" bounds="[40,100][680,180]" /><node text="gone" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="false" path="0.2" bounds="[0,0][0,0]" /></hierarchy>"#;
+    const DISCARD_DUMP: &str = r#"<hierarchy window="475"><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0" bounds="[18,480][702,752]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0" bounds="[50,512][670,720]" /><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0" bounds="[50,512][670,720]" /><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0" bounds="[50,512][670,720]" /><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0" bounds="[50,512][670,720]" /><node text="" class="androidx.appcompat.widget.LinearLayoutCompat" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0" bounds="[50,512][670,720]" /><node text="" class="android.widget.FrameLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.0" bounds="[50,512][670,608]" /><node text="" class="android.widget.ScrollView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.0.0" bounds="[50,512][670,591]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.0.0.0" bounds="[50,512][670,591]" /><node text="" class="android.view.View" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.0.0.0.0" bounds="[50,512][670,548]" /><node text="Discard changes?" class="android.widget.TextView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.0.0.0.1" bounds="[50,548][670,591]" /><node text="" class="android.widget.ScrollView" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="true" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.1" bounds="[50,608][670,720]" /><node text="" class="android.widget.LinearLayout" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="false" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.1.0" bounds="[50,608][670,720]" /><node text="CANCEL" class="android.widget.Button" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.1.0.0" bounds="[328,616][482,712]" /><node text="DISCARD" class="android.widget.Button" content-desc="" hint="" showing-hint="false" checkable="false" checked="false" clickable="true" long-clickable="false" editable="false" password="false" enabled="true" focused="false" selected="false" scrollable="false" visible="true" path="0.0.0.0.0.0.1.0.1" bounds="[482,616][646,712]" /></hierarchy>"#;
 
     #[test]
     fn a_text_read_keeps_its_head_or_with_tail_its_end_and_says_when_it_was_cut() {
@@ -1762,7 +1764,54 @@ mod tests {
         assert!(f.pid >= PID_BASE);
         assert_eq!(f.pid, package_pid("com.android.settings"));
         assert!(frame(window([40, 400, 680, 900]), false, REDROID).dialog);
-        assert!(!frame(window([40, 400, 680, 900]), true, REDROID).dialog);
+    }
+
+    #[test]
+    fn a_lone_window_inset_on_every_side_is_a_dialog() {
+        let discard = r#"[{"id":465,"type":3,"layer":2,"title":"Navigation bar","package":"com.android.launcher3","active":false,"focused":false,"bounds":[0,1184,720,1280]},{"id":471,"type":3,"layer":1,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,0,720,48]},{"id":475,"type":1,"layer":0,"title":"","package":"com.android.contacts","active":true,"focused":true,"bounds":[18,480,702,752]}]"#;
+        let frames = frames_of(serde_json::from_str(discard).unwrap(), REDROID);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].json()["role"], "dialog", "{:?}", frames[0]);
+        let nodes = nodes(&frames[0], &raws(DISCARD_DUMP));
+        assert_eq!(nodes[0].role, "dialog");
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert!(
+            names.contains(&"CANCEL") && names.contains(&"DISCARD"),
+            "{names:?}"
+        );
+        for list in [
+            r#"[{"id":432,"type":3,"layer":2,"title":"Navigation bar","package":"com.android.launcher3","active":false,"focused":false,"bounds":[0,1184,720,1280]},{"id":434,"type":3,"layer":1,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,0,720,48]},{"id":438,"type":1,"layer":0,"title":"","package":"com.android.contacts","active":true,"focused":true,"bounds":[18,404,702,827]}]"#,
+            r#"[{"id":5,"type":3,"layer":2,"title":"Navigation bar","package":"com.android.launcher3","active":false,"focused":false,"bounds":[0,1184,720,1280]},{"id":4,"type":3,"layer":1,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,0,720,48]},{"id":10,"type":1,"layer":0,"title":"Device name","package":"com.android.settings","active":true,"focused":true,"bounds":[18,435,702,797]}]"#,
+            r#"[{"id":53,"type":3,"layer":3,"title":"Navigation bar","package":"com.android.launcher3","active":false,"focused":false,"bounds":[0,1184,720,1280]},{"id":50,"type":3,"layer":2,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,0,720,48]},{"id":51,"type":2,"layer":1,"title":"","package":"com.android.inputmethod.latin","active":false,"focused":false,"bounds":[0,658,720,1184]},{"id":102,"type":1,"layer":0,"title":"New folder","package":"com.android.documentsui","active":true,"focused":true,"bounds":[18,129,702,577]}]"#,
+            r#"[{"id":53,"type":3,"layer":2,"title":"Navigation bar","package":"com.android.launcher3","active":false,"focused":false,"bounds":[0,1184,720,1280]},{"id":50,"type":3,"layer":1,"title":"","package":"com.android.systemui","active":false,"focused":false,"bounds":[0,0,720,48]},{"id":101,"type":1,"layer":0,"title":"Popup Window","package":"com.android.documentsui","active":true,"focused":true,"bounds":[320,144,712,720]}]"#,
+        ] {
+            let frames = frames_of(serde_json::from_str(list).unwrap(), REDROID);
+            assert_eq!(frames.len(), 1, "{list}");
+            assert_eq!(frames[0].json()["role"], "dialog", "{list}");
+        }
+    }
+
+    #[test]
+    fn a_lone_window_at_an_edge_of_the_screen_is_a_frame() {
+        for bounds in [
+            [0, 0, 720, 700],
+            [0, 0, 600, 1100],
+            [0, 300, 720, 1280],
+            [0, 48, 720, 1184],
+            [200, 0, 720, 1280],
+            [0, 0, 520, 1280],
+        ] {
+            let frames = frames_of(
+                vec![bar(18, 3, 1, [0, 0, 720, 48]), window(bounds)],
+                REDROID,
+            );
+            assert_eq!(frames.len(), 1, "{bounds:?}");
+            assert_eq!(frames[0].json()["role"], "frame", "{bounds:?}");
+        }
+        let system = r#"[{"id":430,"type":3,"layer":1,"title":"Navigation bar","package":"com.android.launcher3","active":false,"focused":false,"bounds":[0,1184,720,1280]},{"id":438,"type":3,"layer":0,"title":"","package":"com.android.systemui","active":true,"focused":true,"bounds":[0,274,720,909]}]"#;
+        let frames = frames_of(serde_json::from_str(system).unwrap(), REDROID);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].json()["role"], "frame");
     }
 
     #[test]
@@ -2155,6 +2204,7 @@ mod tests {
             ui_jar: "/u.jar".into(),
             scrcpy_jar: "/s.jar".into(),
             su: None,
+            key_vars: Vec::new(),
         });
         let launch = json!({"app": "com.android.settings", "args": ["https://example.test"]});
         let err = run(&android, "desk_launch", launch).await.unwrap_err();

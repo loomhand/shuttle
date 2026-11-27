@@ -500,7 +500,7 @@ function lined(w: Win | null, ws: Win[], text: string): desk.Target {
   return !to.title.trim() || ws.some((y) => !under(y) && y.pid === to.pid && y.title === to.title) ? FG : { ...FG, window: to.title, pid: to.pid }
 }
 function alone(w: Win | null | undefined, ws = picked): Win | null {
-  return w && !ANDROID && !(OS === 'darwin' && w.owner !== undefined) && !twinId(w, ws) ? w : null
+  return w && MAC && w.owner === undefined && !twinId(w, ws) ? w : null
 }
 async function windowView(w: Win | undefined, ws = picked): Promise<View | null> {
   const of = alone(w, ws); const b = of?.bounds
@@ -902,10 +902,11 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
   const missed: string[] = []
   let v: View | undefined
   const settled = async (p: [number, number]): Promise<[number, number]> => {
-    const of = v?.of ?? (MAC ? host(w, ws) : undefined)
+    const of = v?.of ?? (ANDROID ? undefined : host(w, ws))
     if (!of?.bounds) return p
     const list = await desk.windows(); const get = (x: Win) => list.find((y) => y.id === x.id && y.pid === x.pid)
     const [now, fresh] = [get(of), get(w)]
+    if (now?.stale || fresh?.stale) throw new Surprise(`"${w.title}" did not answer the window list in time, so where it is now is unknown and nothing was clicked`, await seen())
     if (now && fresh && isDeepStrictEqual(now.bounds, of.bounds)) return p
     if (!now || !fresh || again) throw new Surprise(`"${w.title}" moved, changed size or closed while its target was found in its shot, so nothing was clicked`, await seen())
     return spot(r, target, fresh, rec, true, list)
@@ -936,7 +937,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
     if (!r || spent(e) || e instanceof Surprise) throw e
     missed.push(`grounding failed: ${e instanceof Error ? e.message : String(e)}`)
   }
-  const b = same && r.at && r.size ? (await desk.windows()).find((x) => x.id === w.id && x.pid === w.pid)?.bounds : undefined
+  const b = same && r.at && r.size ? (await desk.windows()).find((x) => x.id === w.id && x.pid === w.pid && !x.stale)?.bounds : undefined
   if (same && r.at && r.size && b && Math.abs(b[2] - r.size[0]) <= 2 && Math.abs(b[3] - r.size[1]) <= 2) {
     const [x, y] = [b[0] + r.at[0], b[1] + r.at[1]]
     const t0 = Date.now(); const c = await placed(x, y, w, roots); tick('check', t0)
@@ -953,8 +954,8 @@ function pointer(s: Step) {
 async function inWindow(w: Win, x: number, y: number): Promise<[number, number, desk.Target]> {
   if (!BG) return [x, y, FG]
   const t = at(w); const to = listed.find((v) => v.title === t.window && v.pid === t.pid)
-  if (!to?.bounds) {
-    if (!AUTO) throw new Surprise(`"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window`, await seen())
+  if (!MAC || !to?.bounds) {
+    if (!AUTO) throw new Surprise(MAC ? `"${w.title}" has no screen bounds, and a background click with a button, count or modifiers needs them to reach its window` : `a background click with a button, count or modifiers reaches "${w.title}" only on macOS`, await seen())
     await front(w); return [x, y, FG]
   }
   const k = (await desk.shot({ window: t.window, pid: t.pid ?? undefined })).readUInt32BE(16) / to.bounds[2]
@@ -1385,12 +1386,15 @@ async function cropState(n: Node, unsent = true, w?: Win) {
   if (BG) await front(frontOf(await desk.windows()))
   const b = (await desk.read(n.id)).bounds ?? n.bounds
   if (!b) throw new Error(`"${n.name}" has no screen position`)
+  if (b[2] <= 0 || b[3] <= 0) throw new Surprise(`the state of "${n.name}" cannot be read: it has no size on the screen`, await seen())
   const ws = w?.bounds ? await desk.windows() : []
   const fresh = ws.find((x) => x.id === w?.id && x.pid === w.pid)
   if (w?.bounds && !fresh) throw new Surprise(`"${w.title}" closed before the state of "${n.name}" was read`, await seen())
   const v = await windowView(fresh, ws)
-  const area = v?.area ?? await desk.screen(); const [x, y] = [b[0] - 40 - (area.left ?? 0), b[1] - 4 - (area.top ?? 0)]
-  const r = { x: Math.max(0, x), y: Math.max(0, y), w: b[2] + 80 + Math.min(0, x), h: b[3] + 8 + Math.min(0, y) }
+  const area = v?.area ?? await desk.screen(); const [ox, oy] = [b[0] - (area.left ?? 0), b[1] - (area.top ?? 0)]
+  if (!crosses([ox, oy, b[2], b[3]], [0, 0, area.width, area.height])) throw new Surprise(`the state of "${n.name}" cannot be read: it lies outside ${v ? 'the shot of its window' : 'the screen shot of the main display'}`, await seen())
+  const [x, y] = [Math.max(0, ox - 40), Math.max(0, oy - 4)]
+  const r = { x, y, w: Math.min(area.width, ox + b[2] + 40) - x, h: Math.min(area.height, oy + b[3] + 4) - y }
   const img = v && unpng(v.png); const k = img ? img.w / area.width : 1
   const shot = img ? cut(img, Math.round(r.x * k), Math.round(r.y * k), Math.round(r.w * k), Math.round(r.h * k), 1) : await desk.shot(r)
   return (await vision(`This is one control of a desktop app: "${n.name}". Is it switched on (a check mark, tick, filled box or pressed state)? {"on": true or false}`, shot, 'on')).on === true
@@ -1560,7 +1564,9 @@ async function run(s: Step, rec: Rec, kept?: Kept) {
     const off = MAC && !(b && inside(b, await desk.screen()))
     const of = off && now?.id === w.id && now.pid === w.pid && !over(now) ? alone(now, ws) : null
     if (off && !of) throw new Surprise(`the condition cannot be checked: the screen shot of the main display cannot show every window the check needs: ${s.expect}`, await seen())
-    const what = of ? `the app window "${of.title}", which the image shows alone` : 'a computer screen'
+    const mine = me ?? w
+    const who = mine.title.trim() ? `the app window "${mine.title}"${mine.app ? ` of the app "${mine.app}"` : ''}` : mine.app ? `the untitled ${mine.role} of the app "${mine.app}"` : ''
+    const what = of ? `the app window "${of.title}", which the image shows alone` : who ? `${who}, with its menus and pop-ups, on a computer screen that can show other windows too` : 'a computer screen, on which the window to check is unknown'
     const v = await vision(`You check the state of ${what}.\nCondition: ${s.expect}\n{"ok": true or false, "why": "one short sentence"}`, await desk.shot(of ? { window: of.title, pid: of.pid } : {}), 'ok'); rec.verdict = v
     if (!v.ok) throw new Surprise(`expectation not met: ${s.expect} (${v.why})`, await seen())
     return

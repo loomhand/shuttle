@@ -363,6 +363,7 @@ pub struct Frame {
     pub states: u64,
     pub pid: Option<u32>,
     pub stale: bool,
+    pub bounds: Option<[i32; 4]>,
 }
 
 impl Frame {
@@ -774,8 +775,12 @@ impl Atspi {
             return (pid, Vec::new());
         };
         let frames = join_all(kids.into_iter().map(|obj| async move {
-            let (role, name, states) =
-                tokio::join!(self.role(&obj), self.name(&obj), self.state(&obj));
+            let (role, name, states, bounds) = tokio::join!(
+                self.role(&obj),
+                self.name(&obj),
+                self.state(&obj),
+                self.extents(&obj)
+            );
             Some(Frame {
                 role: role.ok()?,
                 name: name.unwrap_or_default(),
@@ -783,6 +788,7 @@ impl Atspi {
                 obj,
                 pid,
                 stale: false,
+                bounds: bounds.ok(),
             })
         }))
         .await
@@ -1782,6 +1788,7 @@ mod tests {
             states: 0,
             pid: Some(7),
             stale: false,
+            bounds: None,
         };
         let mut seen = HashMap::new();
         let now = Instant::now();
@@ -1815,6 +1822,7 @@ mod tests {
             states: 1 << ACTIVE,
             pid: Some(4242),
             stale: false,
+            bounds: None,
         };
         let mut seen = HashMap::new();
         let now = Instant::now();

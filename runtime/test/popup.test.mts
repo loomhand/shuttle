@@ -170,10 +170,12 @@ test('a call that continues the chain of a plan that named its app stops at an u
   assert.deepEqual(keys, [])
   const pending = `${process.env.SHUTTLE_FLOWS}/.pending.json`
   const held = JSON.parse(readFileSync(pending, 'utf8')) as Record<string, Record<string, unknown>>
-  for (const [field, value] of [['at', Date.now() - 11 * 60 * 1000], ['window', 'elsewhere']] as const) {
-    writeFileSync(pending, JSON.stringify({ '': { ...held[''], [field]: value, ...(field === 'window' ? { pid: 77 } : {}) } }))
-    const r = await plan({ steps: [{ key: 'shift+a' }] })
-    assert.equal(r.ok, true, `${field} ${JSON.stringify(r)}`)
+  writeFileSync(`${process.env.SHUTTLE_FLOWS}/shift-a.json`, JSON.stringify({ name: 'shift-a', params: {}, steps: [{ key: 'shift+a' }], idempotent: false, saved_at: new Date().toISOString() }))
+  const typed = { steps: [{ key: 'shift+a' }] }
+  for (const [row, change, call] of [['at', { at: Date.now() - 11 * 60 * 1000 }, typed], ['window', { window: 'elsewhere', pid: 77 }, typed], ['flow', {}, { flow: 'shift-a' }]] as const) {
+    writeFileSync(pending, JSON.stringify({ '': { ...held[''], ...change } }))
+    const r = await plan(call)
+    assert.equal(r.ok, true, `${row} ${JSON.stringify(r)}`)
   }
   rmSync(pending, { force: true })
   const fresh = await plan({ steps: [{ key: 'shift+a' }] })

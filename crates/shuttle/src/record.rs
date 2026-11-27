@@ -45,13 +45,12 @@ const NOTHING: &str = "no recording is running, and none was made since the daem
 const GONE: &str = "the recording worker is gone";
 const SECURE_INPUT: &str = "secure input is on, so macOS hides every key from the recorder until it ends: the recording keeps your clicks but no keys until then. An app holds it while it shows a password field or prompt or has Secure Keyboard Entry on, and it can be an app that is not in front: close that field, prompt or app to record typing";
 
-type Keyboard = Box<dyn Fn() -> Vec<u32> + Send + Sync>;
+type Keyboard = Box<dyn Fn() + Send + Sync>;
 type Listen = Box<
     dyn Fn(
             UnboundedSender<Input>,
             Arc<AtomicUsize>,
             &[String],
-            Vec<u32>,
         ) -> Result<(Box<dyn Send>, bool), String>
         + Send
         + Sync,
@@ -218,15 +217,14 @@ impl Recorder {
         &self,
         apps: Vec<String>,
         halted: impl Fn() -> bool,
-        keyboard: impl FnOnce() -> Vec<u32>,
+        keyboard: impl FnOnce(),
         listen: impl FnOnce(
             UnboundedSender<Input>,
             Arc<AtomicUsize>,
             &[String],
-            Vec<u32>,
         ) -> Result<(T, bool), String>,
     ) -> Result<Value, String> {
-        let layout = keyboard();
+        keyboard();
         let mut live = lock(&self.live);
         if live.is_some() {
             return Err(RECORDING.to_owned());
@@ -235,7 +233,7 @@ impl Recorder {
             return Err(STOPPED.to_owned());
         }
         let (notes, inputs) = unbounded_channel();
-        let (tap, held) = listen(notes.clone(), Arc::clone(&self.acting), &apps, layout)?;
+        let (tap, held) = listen(notes.clone(), Arc::clone(&self.acting), &apps)?;
         let id = format!("rec-{}", now_ms());
         let path = self.path(&id);
         let (done, made) = oneshot::channel();
@@ -474,7 +472,6 @@ fn listen(
     tx: UnboundedSender<Input>,
     acting: Arc<AtomicUsize>,
     apps: &[String],
-    layout: Vec<u32>,
 ) -> Result<(Box<dyn Send>, bool), String> {
     if !tap::allowed() {
         tap::ask();
@@ -483,7 +480,7 @@ fn listen(
     if let Some(app) = shuttle_desk::ax::secure_keyboard_entry(|a| covers(apps, a)) {
         return Err(hidden(app));
     }
-    Tap::start(tx, acting, layout).map(|(tap, held)| (Box::new(tap) as Box<dyn Send>, held))
+    Tap::start(tx, acting).map(|(tap, held)| (Box::new(tap) as Box<dyn Send>, held))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -491,20 +488,17 @@ fn listen(
     _: UnboundedSender<Input>,
     _: Arc<AtomicUsize>,
     _: &[String],
-    _: Vec<u32>,
 ) -> Result<(Box<dyn Send>, bool), String> {
     Err(OTHER_OS.to_owned())
 }
 
 #[cfg(target_os = "macos")]
-fn keyboard() -> Vec<u32> {
-    dispatch2::run_on_main(|_| tap::layout())
+fn keyboard() {
+    dispatch2::run_on_main(|_| tap::watch());
 }
 
 #[cfg(not(target_os = "macos"))]
-fn keyboard() -> Vec<u32> {
-    Vec::new()
-}
+fn keyboard() {}
 
 fn started(id: String, held: bool) -> Value {
     let mut reply = json!({"ok": true, "id": id});
@@ -739,12 +733,11 @@ mod tests {
     impl Recorder {
         pub(crate) fn tapped(
             mut self,
-            keyboard: impl Fn() -> Vec<u32> + Send + Sync + 'static,
+            keyboard: impl Fn() + Send + Sync + 'static,
             listen: impl Fn(
                 UnboundedSender<Input>,
                 Arc<AtomicUsize>,
                 &[String],
-                Vec<u32>,
             ) -> Result<(Box<dyn Send>, bool), String>
             + Send
             + Sync
@@ -1231,8 +1224,8 @@ mod tests {
         let out = r.start_with(
             Vec::new(),
             || true,
-            Vec::new,
-            |_, _, _, _| {
+            || {},
+            |_, _, _| {
                 listened = true;
                 Ok(((), false))
             },
@@ -1252,9 +1245,8 @@ mod tests {
                     r.live.try_lock().is_ok(),
                     "the layout is read under the lock"
                 );
-                Vec::new()
             },
-            |_, _, _, _| {
+            |_, _, _| {
                 assert!(
                     r.live.try_lock().is_err(),
                     "the tap starts outside the lock"
@@ -1288,8 +1280,8 @@ mod tests {
         let out = r.start_with(
             Vec::new(),
             || false,
-            Vec::new,
-            |_, _, _, _| {
+            || {},
+            |_, _, _| {
                 listening.send(()).unwrap();
                 stop_issued.recv().unwrap();
                 Ok((Fake(Arc::clone(&dropped)), false))
@@ -1307,8 +1299,8 @@ mod tests {
         let failed = r.start_with(
             Vec::new(),
             || false,
-            Vec::new,
-            |_, _, _, _| Err::<((), bool), _>("no event tap".to_owned()),
+            || {},
+            |_, _, _| Err::<((), bool), _>("no event tap".to_owned()),
         );
         assert_eq!(failed, Err("no event tap".to_owned()));
         assert!(!r.recording());
@@ -1316,8 +1308,8 @@ mod tests {
         let next = r.start_with(
             Vec::new(),
             || false,
-            Vec::new,
-            |_, _, _, _| {
+            || {},
+            |_, _, _| {
                 tried = true;
                 Ok(((), false))
             },
@@ -1329,9 +1321,9 @@ mod tests {
     #[test]
     fn a_second_start_while_one_is_live_is_refused() {
         let r = Recorder::new(std::env::temp_dir(), Arc::default());
-        let first = r.start_with(Vec::new(), || false, Vec::new, |_, _, _, _| Ok(((), false)));
+        let first = r.start_with(Vec::new(), || false, || {}, |_, _, _| Ok(((), false)));
         assert!(first.is_ok(), "{first:?}");
-        let second = r.start_with(Vec::new(), || false, Vec::new, |_, _, _, _| Ok(((), false)));
+        let second = r.start_with(Vec::new(), || false, || {}, |_, _, _| Ok(((), false)));
         assert_eq!(second, Err(RECORDING.to_owned()));
         assert!(r.recording());
         r.end();
