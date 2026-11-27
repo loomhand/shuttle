@@ -937,7 +937,7 @@ async function spot(r: Recorded | undefined, target: string, w: Win, rec: Rec, a
     if (!r || spent(e) || e instanceof Surprise) throw e
     missed.push(`grounding failed: ${e instanceof Error ? e.message : String(e)}`)
   }
-  const b = same && r.at && r.size ? (await desk.windows()).find((x) => x.id === w.id && x.pid === w.pid)?.bounds : undefined
+  const b = same && r.at && r.size ? (await desk.windows()).find((x) => x.id === w.id && x.pid === w.pid && !x.stale)?.bounds : undefined
   if (same && r.at && r.size && b && Math.abs(b[2] - r.size[0]) <= 2 && Math.abs(b[3] - r.size[1]) <= 2) {
     const [x, y] = [b[0] + r.at[0], b[1] + r.at[1]]
     const t0 = Date.now(); const c = await placed(x, y, w, roots); tick('check', t0)
