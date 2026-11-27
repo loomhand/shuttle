@@ -105,7 +105,7 @@ mod tests {
             "automation_consent_pending: macOS may ask the user for Automation consent for TextEdit; nothing was sent, and the background route works once it is granted",
         );
         let denied = save(
-            "automation_denied: macOS does not allow Cua Driver to control TextEdit. The user can allow it in System Settings > Privacy & Security > Automation",
+            "automation_denied: macOS does not allow Shuttle to control TextEdit. The user can allow it in System Settings > Privacy & Security > Automation",
         );
         assert!(!pre_send("desk_key", Os::Mac, &none, &pending));
         assert!(pre_send("desk_key", Os::Mac, &none, &denied));
