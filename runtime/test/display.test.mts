@@ -329,6 +329,25 @@ test('grounding on a window that moves while the model grounds its target ground
   }
 })
 
+test('grounding stops without a click when the window list read before the click marks the window stale with its old bounds', async (t) => {
+  const clicks: string[] = []; let grounded = false
+  const pad = { id: '6/1', title: 'notes.txt - Mousepad', role: 'window', pid: process.pid, active: true, bounds: [100, 50, 640, 480] }
+  await daemon(t, ({ tool, args }) => {
+    if (tool === 'desk_windows') return JSON.stringify([grounded ? { ...pad, stale: true } : pad])
+    if (tool === 'desk_snapshot') return JSON.stringify({ window: pad, truncated: false, nodes: [{ ref: 0, id: '6/1', parent: -1, depth: 0, role: 'window', name: pad.title, states: ['showing'] }] })
+    if (tool === 'desk_screen') return '{"width":1280,"height":800}'
+    if (tool === 'desk_shot') return { text: '{"ok":true}', image: gray(Number(args.w ?? 1280), Number(args.h ?? 800)).toString('base64') }
+    if (tool === 'model_ground') { grounded = true; return JSON.stringify({ x: 420, y: 290, usage }) }
+    if (tool === 'desk_at') return JSON.stringify({ found: { ref: 1, id: '6/2', parent: 0, depth: 1, role: 'image', name: '', states: [] }, path: [{ id: '6/1', role: 'window', name: pad.title }], pid: process.pid })
+    if (tool === 'model_decide') return JSON.stringify({ answers: { on: { probability: 0.95 } }, served: { model: 'm', build: BUILD, id: null }, usage })
+    if (tool === 'desk_click') clicks.push(`${args.x},${args.y}`)
+    return '{"ok":true}'
+  })
+  const r = await main({ steps: [{ click: 'the Save button' }] })
+  assert.match(r.escalate?.reason ?? '', /^"notes.txt - Mousepad" did not answer the window list in time, so where it is now is unknown and nothing was clicked/, JSON.stringify(r))
+  assert.deepEqual(clicks, [])
+})
+
 test('grounding again after a window off the main display moved takes the screen shot once a same-titled twin is listed', { skip: process.platform !== 'darwin' }, async (t) => {
   const seen = await second(t, { moves: [[-1400, 20, 846, 774]], twin: true })
   await main({ steps: [{ click: 'the yellow star' }] })
